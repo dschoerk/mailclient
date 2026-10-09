@@ -1,0 +1,138 @@
+// Account setup form.
+
+import { Button, LineEdit, CheckBox, Palette, Spinner } from "std-widgets.slint";
+import { SetupData } from "types.slint";
+import { Theme, Divider, Field } from "widgets.slint";
+
+export component SetupView inherits Rectangle {
+    in-out property <SetupData> data;
+    in property <string> error;
+    in property <bool> busy;
+    /// Adding a further account, which can be abandoned.
+    in property <bool> can-cancel;
+    callback email-edited(string);
+    callback submit();
+    callback cancel();
+    background: Palette.background;
+    // Drawn over the mail view: keep clicks from reaching it.
+    TouchArea { }
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                width: min(520px, root.width - 32px);
+                spacing: 10px;
+                Text {
+                    text: root.can-cancel ? "Add a mail account" : "Set up your mail account";
+                    font-size: 22px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "Use an app password for Gmail, iCloud and Fastmail. Outlook.com and Microsoft 365 sign in through your browser.";
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+                Field {
+                    label: "Email";
+                    text <=> data.email;
+                    placeholder: "you@example.org";
+                    edited(t) => root.email-edited(t);
+                }
+                Field {
+                    label: "Your name";
+                    text <=> data.name;
+                }
+                if !data.oauth: Field {
+                    label: "Password";
+                    text <=> data.password;
+                    input-type: InputType.password;
+                }
+                Divider {
+                    height: 1px;
+                }
+                Field {
+                    label: "Username";
+                    text <=> data.username;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Field {
+                        label: "IMAP server";
+                        text <=> data.imap-host;
+                    }
+                    LineEdit {
+                        accessible-label: "IMAP port";
+                        width: 56px;
+                        text <=> data.imap-port;
+                    }
+                }
+                // Own row: next to host and port it does not fit on phones.
+                HorizontalLayout {
+                    padding-left: 98px;
+                    CheckBox {
+                        text: "IMAP: STARTTLS instead of TLS";
+                        checked <=> data.imap-starttls;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Field {
+                        label: "SMTP server";
+                        text <=> data.smtp-host;
+                    }
+                    LineEdit {
+                        accessible-label: "SMTP port";
+                        width: 56px;
+                        text <=> data.smtp-port;
+                    }
+                }
+                // Own row: next to host and port it does not fit on phones.
+                HorizontalLayout {
+                    padding-left: 98px;
+                    CheckBox {
+                        text: "SMTP: STARTTLS instead of TLS";
+                        checked <=> data.smtp-starttls;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 98px;
+                    CheckBox {
+                        text: "Sign in with Microsoft (Outlook.com, Microsoft 365)";
+                        checked <=> data.oauth;
+                    }
+                }
+                if root.error != "": Text {
+                    text: root.error;
+                    color: #d33;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 10px;
+                    if root.busy: Spinner {
+                        indeterminate: true;
+                        width: 24px;
+                        height: 24px;
+                    }
+                    if root.can-cancel: Button {
+                        text: "Cancel";
+                        enabled: !root.busy;
+                        clicked => root.cancel();
+                    }
+                    Button {
+                        text: data.oauth ? "Sign in with Microsoft" : "Save and connect";
+                        primary: true;
+                        enabled: !root.busy;
+                        clicked => root.submit();
+                    }
+                }
+            }
+        }
+    }
+}

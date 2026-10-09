@@ -1,0 +1,244 @@
+// Rows of the folder sidebar and the message list.
+
+import { Palette } from "std-widgets.slint";
+import { FolderItem, MessageItem, ConversationItem } from "types.slint";
+import { Theme, Divider } from "widgets.slint";
+
+export component FolderRow inherits Rectangle {
+    in property <FolderItem> folder;
+    in property <bool> selected;
+    callback clicked();
+    accessible-role: list-item;
+    accessible-label: (folder.role == "account" ? "Account " : "Folder ") + folder.label;
+    accessible-action-default => { root.clicked(); }
+    height: 30px;
+    border-radius: 6px;
+    background: selected ? Theme.selection : touch.has-hover ? Palette.foreground.with-alpha(0.05) : transparent;
+    HorizontalLayout {
+        padding-left: 10px + folder.depth * 14px;
+        padding-right: 10px;
+        spacing: 8px;
+        // Account heading: the same bar that marks the account's messages in the list.
+        if folder.role == "account": Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: folder.color;
+        }
+        if folder.role != "account": Image {
+            width: 16px;
+            colorize: Theme.muted;
+            source: folder.role == "inbox" ? @image-url("icons/inbox.svg")
+                : folder.role == "unified" ? @image-url("icons/mails.svg")
+                : folder.role == "sent" ? @image-url("icons/send.svg")
+                : folder.role == "drafts" ? @image-url("icons/file-pen-line.svg")
+                : folder.role == "trash" ? @image-url("icons/trash.svg")
+                : folder.role == "junk" ? @image-url("icons/shield-alert.svg")
+                : folder.role == "archive" ? @image-url("icons/archive.svg")
+                : folder.role == "all" ? @image-url("icons/mails.svg")
+                : folder.role == "flagged" ? @image-url("icons/star.svg")
+                : @image-url("icons/folder.svg");
+        }
+        Text {
+            text: folder.label;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            font-weight: folder.unread > 0 || folder.role == "account" ? 600 : 400;
+            color: folder.role == "account" ? Theme.muted : Palette.foreground;
+        }
+        if folder.unread > 0: Text {
+            text: folder.unread;
+            vertical-alignment: center;
+            color: Theme.muted;
+            font-size: 12px;
+        }
+    }
+    touch := TouchArea {
+        clicked => root.clicked();
+    }
+}
+
+/// One message on the timeline of an open conversation in the list.
+export component TimelineItem inherits Rectangle {
+    in property <ConversationItem> item;
+    in property <bool> current;
+    in property <bool> first;
+    in property <bool> last;
+    in property <color> line-color;
+    callback clicked();
+    accessible-role: list-item;
+    accessible-label: "Conversation: " + item.sender + ", " + item.date;
+    accessible-action-default => { root.clicked(); }
+    height: 30px;
+    border-radius: 4px;
+    background: current ? Theme.selection : touch.has-hover ? Palette.foreground.with-alpha(0.05) : transparent;
+    // The line runs through all items; it starts at the first dot and ends at the last.
+    Rectangle {
+        x: 11px;
+        y: root.first ? root.height / 2 : 0;
+        width: 2px;
+        height: (root.first || root.last) ? root.height / 2 : root.height;
+        background: root.line-color;
+    }
+    Rectangle {
+        x: 12px - self.width / 2;
+        width: root.current ? 10px : 8px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: item.seen ? Palette.background : root.line-color;
+        border-width: 2px;
+        border-color: root.line-color;
+    }
+    HorizontalLayout {
+        padding-left: 26px;
+        padding-right: 6px;
+        spacing: 8px;
+        Text {
+            text: item.sender;
+            font-weight: item.seen ? 400 : 700;
+            vertical-alignment: center;
+            width: 90px;
+            overflow: elide;
+        }
+        Text {
+            text: item.snippet;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: item.date;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => root.clicked();
+    }
+}
+
+export component MessageRow inherits Rectangle {
+    in property <MessageItem> msg;
+    in property <bool> selected;
+    /// Messages of the open conversation, oldest first; shown under the selected row.
+    in property <[ConversationItem]> thread;
+    in property <int> thread-current: -1;
+    callback clicked();
+    callback thread-clicked(int);
+    property <bool> expanded: root.selected && root.thread.length > 1;
+    accessible-role: list-item;
+    accessible-label: msg.sender + ": " + msg.subject;
+    accessible-action-default => { root.clicked(); }
+    height: 74px + (root.expanded ? root.thread.length * 30px + 8px : 0px);
+    // Expanded, the open message is marked on the timeline instead.
+    background: root.expanded ? Palette.foreground.with-alpha(0.03)
+        : root.selected ? Theme.selection
+        : touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
+    HorizontalLayout {
+        height: 74px;
+        y: 0;
+        padding: 10px;
+        padding-left: 6px;
+        spacing: 6px;
+        Rectangle {
+            width: 10px;
+            Rectangle {
+                y: 6px;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: msg.seen ? transparent : Theme.unread-dot;
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: msg.sender;
+                    font-weight: msg.seen ? 400 : 700;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if msg.count > 1: Text {
+                    text: msg.count;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    accessible-label: msg.count + " messages";
+                }
+                if msg.answered: Image {
+                    source: @image-url("icons/reply.svg");
+                    colorize: Theme.muted;
+                    width: 14px;
+                    accessible-role: image;
+                    accessible-label: "replied";
+                }
+                if msg.attachments: Image {
+                    source: @image-url("icons/paperclip.svg");
+                    colorize: Theme.muted;
+                    width: 14px;
+                    accessible-role: image;
+                    accessible-label: "has attachments";
+                }
+                if msg.flagged: Image {
+                    source: @image-url("icons/star.svg");
+                    colorize: Theme.flag;
+                    width: 14px;
+                    accessible-role: image;
+                    accessible-label: "flagged";
+                }
+                Text {
+                    text: msg.date;
+                    color: Theme.muted;
+                    font-size: 12px;
+                }
+            }
+            Text {
+                text: msg.subject;
+                font-weight: msg.seen ? 400 : 600;
+                overflow: elide;
+            }
+            Text {
+                text: msg.snippet;
+                color: Theme.muted;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+    }
+    // Which account the message belongs to.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 4px;
+        height: parent.height;
+        background: msg.color;
+    }
+    Divider {
+        y: parent.height - 1px;
+        height: 1px;
+    }
+    touch := TouchArea {
+        y: 0;
+        height: 74px;
+        clicked => root.clicked();
+    }
+    if root.expanded: VerticalLayout {
+        y: 74px;
+        height: root.height - 74px;
+        padding-left: 12px;
+        padding-right: 8px;
+        padding-bottom: 8px;
+        for item[i] in root.thread: TimelineItem {
+            item: item;
+            current: i == root.thread-current;
+            first: i == 0;
+            last: i == root.thread.length - 1;
+            line-color: root.msg.color.alpha > 0 ? root.msg.color : Theme.accent;
+            clicked => root.thread-clicked(i);
+        }
+    }
+}

@@ -142,20 +142,17 @@ impl Composer {
         self.send_id.set(Some(id));
     }
 
-    /// shortcut: no file picker on Android yet (needs the Storage Access Framework via JNI).
-    #[cfg(target_os = "android")]
-    fn attach(self: &Rc<Self>) {
-        self.app().set_compose_error("Attaching files is not supported on Android yet".into());
-    }
-
-    #[cfg(not(target_os = "android"))]
     fn attach(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         let _ = slint::spawn_local(async move {
-            let Some(files) = rfd::AsyncFileDialog::new().pick_files().await else { return };
-            if let Some(c) = weak.upgrade() {
-                c.attachments.borrow_mut().extend(files.iter().map(|f| f.path().to_path_buf()));
-                c.refresh_attachments();
+            let files = crate::platform::pick_files().await;
+            let Some(c) = weak.upgrade() else { return };
+            match files {
+                Ok(files) => {
+                    c.attachments.borrow_mut().extend(files);
+                    c.refresh_attachments();
+                }
+                Err(e) => c.app().set_compose_error(e.to_string().into()),
             }
         });
     }

@@ -1,0 +1,183 @@
+import { Button, LineEdit, TextEdit, Spinner } from "std-widgets.slint";
+import { AttachmentItem } from "types.slint";
+import { Theme, ToolButton } from "widgets.slint";
+
+/// Compose form. Lives inside the main window (Android has a single window surface).
+export component ComposeView {
+
+    in-out property <string> to;
+    in-out property <string> cc;
+    in-out property <string> bcc;
+    in-out property <string> subject;
+    in-out property <string> body;
+    in property <[AttachmentItem]> attachments;
+    in property <bool> sending;
+    in property <string> error;
+
+    callback send();
+    callback attach();
+    callback remove-attachment(int);
+    callback discard();
+
+    init => {
+        if root.to == "" {
+            to-edit.focus();
+        } else {
+            body-edit.focus();
+        }
+    }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.modifiers.control && event.text == Key.Return {
+                root.send();
+                return accept;
+            }
+            // Android Back discards the draft rather than closing the app.
+            if event.text == Key.Back && !root.sending {
+                root.discard();
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            // Top bar: Discard where a back button usually is, actions on the right.
+            HorizontalLayout {
+                spacing: 8px;
+                ToolButton {
+                    text: "Discard";
+                    icon: @image-url("icons/x.svg");
+                    show-text: false;
+                    enabled: !root.sending;
+                    clicked => root.discard();
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                if root.sending: Spinner {
+                    indeterminate: true;
+                    width: 24px;
+                    height: 24px;
+                }
+                ToolButton {
+                    text: "Attach…";
+                    icon: @image-url("icons/paperclip.svg");
+                    show-text: false;
+                    enabled: !root.sending;
+                    clicked => root.attach();
+                }
+                Button {
+                    // Ctrl+Enter also sends.
+                    text: "Send";
+                    icon: @image-url("icons/send.svg");
+                    colorize-icon: true;
+                    primary: true;
+                    enabled: !root.sending;
+                    clicked => root.send();
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "To";
+                    width: 60px;
+                    vertical-alignment: center;
+                    color: Theme.muted;
+                }
+                to-edit := LineEdit {
+                    accessible-label: "To";
+                    text <=> root.to;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Cc";
+                    width: 60px;
+                    vertical-alignment: center;
+                    color: Theme.muted;
+                }
+                LineEdit {
+                    accessible-label: "Cc";
+                    text <=> root.cc;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Bcc";
+                    width: 60px;
+                    vertical-alignment: center;
+                    color: Theme.muted;
+                }
+                LineEdit {
+                    accessible-label: "Bcc";
+                    text <=> root.bcc;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Subject";
+                    width: 60px;
+                    vertical-alignment: center;
+                    color: Theme.muted;
+                }
+                LineEdit {
+                    accessible-label: "Subject";
+                    text <=> root.subject;
+                }
+            }
+            body-edit := TextEdit {
+                accessible-label: "Body";
+                text <=> root.body;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+            }
+            if root.attachments.length > 0: HorizontalLayout {
+                spacing: 6px;
+                for att[i] in root.attachments: Rectangle {
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.divider;
+                    height: 28px;
+                    min-width: chip.preferred-width;
+                    chip := HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        Image {
+                            source: @image-url("icons/paperclip.svg");
+                            colorize: Theme.muted;
+                            width: 14px;
+                        }
+                        Text {
+                            text: att.name + "  " + att.size;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Image {
+                            source: @image-url("icons/x.svg");
+                            colorize: Theme.muted;
+                            width: 14px;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => root.remove-attachment(i);
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+            if root.error != "": Text {
+                text: root.error;
+                color: #d33;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

@@ -1,0 +1,343 @@
+//! Showing the selected message: header, body (in the webview or as text), links and attachments.
+
+use super::*;
+
+impl Controller {
+    #[cfg(feature = "servo")]
+    pub(super) fn init_webview(self: &Rc<Self>, window: &AppWindow) {
+        use crate::webview::{MailView, delegate::Hooks};
+
+        let weak = Rc::downgrade(self);
+        let initialized = std::cell::Cell::new(false);
+        let result = window.window().set_rendering_notifier(move |state, graphics_api| {
+            if !matches!(state, slint::RenderingState::RenderingSetup) || initialized.get() {
+                return;
+            }
+            let slint::GraphicsAPI::WGPU30 { device, queue, .. } = graphics_api else {
+                log::error!("renderer is not wgpu 30; HTML view disabled");
+                return;
+            };
+            let Some(controller) = weak.upgrade() else { return };
+            let link_target = weak.clone();
+            let status_target = weak.clone();
+            let hooks = Hooks {
+                on_link: Box::new(move |url| {
+                    if let Some(c) = link_target.upgrade() {
+                        c.open_link(url.as_str());
+                    }
+                }),
+                on_status: Box::new(move |text| {
+                    if let Some(c) = status_target.upgrade() {
+                        let engine_status = c.state.borrow().engine_status.clone();
+                        c.window().set_status(text.unwrap_or(engine_status).into());
+                    }
+                }),
+            };
+            let view = MailView::new(&controller.window(), device.clone(), queue.clone(), hooks);
+            *controller.viewer.borrow_mut() = Some(view);
+            initialized.set(true);
+            // A message may have been selected before the view existed.
+            controller.render_selected();
+        });
+        if let Err(e) = result {
+            log::error!("cannot install rendering notifier: {e:?}");
+        }
+    }
+    // ---- reading ----
+
+    /// Shows a message file read-only, without connecting to any account.
+    pub(super) fn open_file(&self, path: &std::path::Path) -> Result<()> {
+        let raw = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let summary = mime::summary_from_headers("", 0, &raw, None);
+        {
+            let mut state = self.state.borrow_mut();
+            state.selected = Some((0, String::new(), 0));
+            state.standalone = Some((summary, raw));
+        }
+        let window = self.window();
+        window.set_list_title(path.file_name().unwrap_or_default().to_string_lossy().as_ref().into());
+        window.set_account_label("Viewing file — no account".into());
+        self.render_selected();
+        Ok(())
+    }
+
+    pub(super) fn raw_of(&self, account: usize, m: &MessageSummary) -> Result<Option<Vec<u8>>> {
+        let state = self.state.borrow();
+        if let Some((_, raw)) = &state.standalone {
+            return Ok(Some(raw.clone()));
+        }
+        match state.accounts.get(account) {
+            Some(a) => a.store.raw(&m.folder, m.uid),
+            None => Ok(None),
+        }
+    }
+
+    /// The selected message and its account.
+    pub(super) fn selected_summary(&self) -> Option<(usize, MessageSummary)> {
+        let state = self.state.borrow();
+        if let Some((summary, _)) = &state.standalone {
+            return Some((0, summary.clone()));
+        }
+        let (account, folder, uid) = state.selected.as_ref()?;
+        let row = state.selected_row()?;
+        let m = state.conversations[row].iter().find(|m| &m.folder == folder && m.uid == *uid)?;
+        Some((*account, m.clone()))
+    }
+
+    pub(super) fn select_message(&self, index: usize) {
+        let Some((account, summary)) = self.state.borrow().messages.get(index).cloned() else { return };
+        let key = (account, summary.folder.clone(), summary.uid);
+        if self.state.borrow().selected.as_ref() == Some(&key) {
+            return;
+        }
+        {
+            let mut state = self.state.borrow_mut();
+            state.selected = Some(key);
+            state.body = None;
+        }
+        self.window().set_current_message(index as i32);
+        // Opening a conversation reads all of it.
+        let unread: Vec<MessageSummary> =
+            self.state.borrow().conversations[index].iter().filter(|m| !m.seen).cloned().collect();
+        if !unread.is_empty() {
+            self.apply(account, &unread, PendingOp::SetSeen(true));
+        }
+        self.render_selected();
+    }
+
+    /// Shows another message of the open conversation.
+    pub(super) fn select_in_conversation(&self, index: usize) {
+        let found = {
+            let state = self.state.borrow();
+            state.selected_row().and_then(|row| Some((state.messages[row].0, state.conversations[row].get(index)?.clone())))
+        };
+        let Some((account, m)) = found else { return };
+        {
+            let mut state = self.state.borrow_mut();
+            state.selected = Some((account, m.folder.clone(), m.uid));
+            state.body = None;
+        }
+        if !m.seen {
+            self.apply(account, std::slice::from_ref(&m), PendingOp::SetSeen(true));
+        }
+        self.render_selected();
+    }
+
+    pub(super) fn close_message(&self) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.selected = None;
+            state.body = None;
+        }
+        self.window().set_current_message(-1);
+        self.clear_reader();
+    }
+
+    pub(super) fn clear_reader(&self) {
+        let window = self.window();
+        window.set_has_message(false);
+        window.set_msg_loading(false);
+        self.attachment_model.set_vec(Vec::new());
+        self.conversation_model.set_vec(Vec::new());
+        #[cfg(feature = "servo")]
+        if let Some(view) = self.viewer.borrow().as_ref() {
+            view.clear();
+        }
+    }
+
+    pub(super) fn update_reader_header(&self) {
+        let Some((_, m)) = self.selected_summary() else { return };
+        let window = self.window();
+        window.set_has_message(true);
+        window.set_msg_subject(if m.subject.is_empty() { "(no subject)".into() } else { m.subject.clone().into() });
+        window.set_msg_from(format::person(&m.from_name, &m.from_addr).into());
+        window.set_msg_to(m.to.clone().into());
+        window.set_msg_cc(m.cc.clone().into());
+        window.set_msg_date(format::full_date(m.date).into());
+        window.set_msg_seen(m.seen);
+        window.set_msg_flagged(m.flagged);
+        let state = self.state.borrow();
+        let conversation = state.selected_row().map(|row| state.conversations[row].as_slice()).unwrap_or_default();
+        // A single message needs no conversation strip.
+        let items: Vec<ConversationItem> = if conversation.len() < 2 {
+            Vec::new()
+        } else {
+            conversation
+                .iter()
+                .map(|c| ConversationItem {
+                    sender: if c.from_name.is_empty() { c.from_addr.clone() } else { c.from_name.clone() }.into(),
+                    date: format::list_date(c.date).into(),
+                    snippet: c.snippet.clone().into(),
+                    seen: c.seen,
+                })
+                .collect()
+        };
+        let position = conversation.iter().position(|c| c.folder == m.folder && c.uid == m.uid);
+        window.set_current_in_conversation(position.map(|i| i as i32).unwrap_or(-1));
+        self.conversation_model.set_vec(items);
+    }
+
+    /// Shows the selected message with the rest of its conversation, downloading missing bodies.
+    pub(super) fn render_selected(&self) {
+        let Some((account, summary)) = self.selected_summary() else { return };
+        self.update_reader_header();
+        let window = self.window();
+        let conversation = {
+            let state = self.state.borrow();
+            match state.selected_row() {
+                Some(row) if state.standalone.is_none() => state.conversations[row].clone(),
+                _ => vec![summary.clone()],
+            }
+        };
+        let current = conversation.iter().position(|m| m.folder == summary.folder && m.uid == summary.uid).unwrap_or(0);
+        let mut raws = Vec::new();
+        for m in &conversation {
+            match self.raw_of(account, m) {
+                Ok(raw) => raws.push(raw),
+                Err(e) => return self.show_error(&e),
+            }
+        }
+        // Each arrives with BodyReady, which renders again.
+        for (m, _) in conversation.iter().zip(&raws).filter(|(_, raw)| raw.is_none()) {
+            if self.state.borrow_mut().fetching.insert((account, m.folder.clone(), m.uid)) {
+                self.send(account, Command::FetchBody { folder: m.folder.clone(), uid: m.uid });
+            }
+        }
+        if raws[current].is_none() {
+            window.set_msg_loading(true);
+            window.set_msg_text("".into());
+            window.set_msg_remote_blocked(false);
+            self.attachment_model.set_vec(Vec::new());
+            #[cfg(feature = "servo")]
+            if let Some(view) = self.viewer.borrow().as_ref() {
+                view.clear();
+            }
+            return;
+        }
+        window.set_msg_loading(false);
+        let bodies: Vec<Option<Body>> = raws.iter().map(|raw| raw.as_deref().map(mime::body_from_raw)).collect();
+        let body = bodies[current].clone().expect("checked above");
+        let allow_remote = {
+            let state = self.state.borrow();
+            conversation.iter().all(|m| state.remote_allowed.contains(&(account, m.folder.clone(), m.uid)))
+        };
+        let has_remote = bodies.iter().flatten().any(|b| b.has_remote_content);
+        window.set_msg_remote_blocked(has_remote && !allow_remote && cfg!(feature = "servo"));
+        let headings: Vec<String> = conversation
+            .iter()
+            .map(|m| format!("{} — {}", format::person(&m.from_name, &m.from_addr), format::full_date(m.date)))
+            .collect();
+        window.set_msg_text(
+            if conversation.len() == 1 {
+                body.text.clone()
+            } else {
+                headings
+                    .iter()
+                    .zip(&bodies)
+                    .map(|(h, b)| format!("{h}\n\n{}", b.as_ref().map_or("Loading…", |b| b.text.as_str())))
+                    .collect::<Vec<_>>()
+                    .join("\n\n────────\n\n")
+            }
+            .into(),
+        );
+        self.attachment_model.set_vec(
+            body.attachments
+                .iter()
+                .map(|a| AttachmentItem {
+                    index: a.index as i32,
+                    name: a.name.clone().into(),
+                    size: format::size(a.size).into(),
+                })
+                .collect::<Vec<_>>(),
+        );
+        #[cfg(feature = "servo")]
+        if let Some(view) = self.viewer.borrow().as_ref() {
+            let (document, anchor) = if conversation.len() == 1 {
+                (mime::render_document(&body), String::new())
+            } else {
+                let parts: Vec<(String, Option<&Body>)> = headings.into_iter().zip(bodies.iter().map(Option::as_ref)).collect();
+                (mime::render_conversation(&parts, current), format!("m{current}"))
+            };
+            view.show(crate::webview::delegate::MessageContent {
+                document,
+                csp: mime::content_security_policy(allow_remote),
+                // shortcut: one map for all messages; Content-IDs are meant to be globally unique.
+                inline_parts: bodies.iter().flatten().flat_map(|b| b.inline_parts.clone()).collect(),
+                allow_remote,
+                anchor,
+            });
+        }
+        self.state.borrow_mut().body = Some(body);
+    }
+
+    /// Allows remote images for the open conversation.
+    pub(super) fn load_remote_images(&self) {
+        let Some(key) = self.state.borrow().selected.clone() else { return };
+        let keys: Vec<Key> = {
+            let state = self.state.borrow();
+            match state.selected_row() {
+                Some(row) => state.conversations[row].iter().map(|m| (key.0, m.folder.clone(), m.uid)).collect(),
+                None => vec![key],
+            }
+        };
+        self.state.borrow_mut().remote_allowed.extend(keys);
+        self.render_selected();
+    }
+
+    #[cfg_attr(not(feature = "servo"), allow(dead_code))]
+    pub(super) fn open_link(&self, url: &str) {
+        if let Some(mailto) = url.strip_prefix("mailto:") {
+            let (to, query) = mailto.split_once('?').unwrap_or((mailto, ""));
+            let mut draft = Draft { to: mime::percent_decode(to), ..Default::default() };
+            for pair in query.split('&') {
+                if let Some((k, v)) = pair.split_once('=') {
+                    let v = mime::percent_decode(&v.replace('+', " "));
+                    match k.to_ascii_lowercase().as_str() {
+                        "subject" => draft.subject = v,
+                        "cc" => draft.cc = v,
+                        "body" => draft.body = v,
+                        _ => {}
+                    }
+                }
+            }
+            self.open_composer(self.compose_account(), draft, None);
+        } else if (url.starts_with("https://") || url.starts_with("http://"))
+            && let Err(e) = crate::platform::open_url(url)
+        {
+            self.show_error(&e);
+        }
+    }
+
+    pub(super) fn save_attachment(&self, index: usize) {
+        let Some((account, summary)) = self.selected_summary() else { return };
+        let Ok(Some(raw)) = self.raw_of(account, &summary) else { return };
+        let Some(name) = self
+            .state
+            .borrow()
+            .body
+            .as_ref()
+            .and_then(|b| b.attachments.iter().find(|a| a.index == index))
+            .map(|a| a.name.clone())
+        else {
+            return;
+        };
+        let weak = self.window.clone();
+        let _ = slint::spawn_local(async move {
+            let result = match crate::platform::save_file(&name).await {
+                Ok(None) => return,
+                Ok(Some(path)) => mime::attachment_data(&raw, index)
+                    .ok_or_else(|| anyhow!("attachment not found"))
+                    .and_then(|data| std::fs::write(&path, data).map_err(Into::into))
+                    .map(|()| format!("Saved {}", path.display()))
+                    .map_err(|e| anyhow!("saving attachment: {e:#}")),
+                Err(e) => Err(e),
+            };
+            if let Some(window) = weak.upgrade() {
+                window.set_status(match result {
+                    Ok(text) => text.into(),
+                    Err(e) => format!("⚠ {e:#}").into(),
+                });
+            }
+        });
+    }
+}

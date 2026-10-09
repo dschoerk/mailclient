@@ -1,0 +1,56 @@
+// Data passed between Rust and the UI.
+
+export struct FolderItem {
+    name: string,
+    role: string,
+    label: string,
+    unread: int,
+    depth: int,
+    /// Account color; transparent with a single account.
+    color: color,
+}
+
+export struct MessageItem {
+    folder: string,
+    uid: int,
+    sender: string,
+    subject: string,
+    snippet: string,
+    date: string,
+    seen: bool,
+    flagged: bool,
+    answered: bool,
+    attachments: bool,
+    /// Account color; transparent with a single account.
+    color: color,
+    /// Messages in the conversation.
+    count: int,
+}
+
+export struct ConversationItem {
+    sender: string,
+    date: string,
+    snippet: string,
+    seen: bool,
+}
+
+export struct AttachmentItem {
+    index: int,
+    name: string,
+    size: string,
+}
+
+export struct SetupData {
+    name: string,
+    email: string,
+    username: string,
+    password: string,
+    imap-host: string,
+    imap-port: string,
+    imap-starttls: bool,
+    smtp-host: string,
+    smtp-port: string,
+    smtp-starttls: bool,
+    /// Sign in with Microsoft in the browser instead of a password.
+    oauth: bool,
+}
