@@ -128,6 +128,7 @@ fn user_stories() {
         smtp_host: "localhost".into(),
         smtp_port: 3465,
         smtp_security: Security::Tls,
+        auth: mailcore::Auth::Password,
     };
     // A realistic mailbox: special folders and two received messages.
     {

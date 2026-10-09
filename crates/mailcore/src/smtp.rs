@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use lettre::address::Envelope;
-use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
-use crate::config::{AccountConfig, Security};
+use crate::config::{AccountConfig, Auth, Security};
 
 pub async fn send(account: &AccountConfig, password: &str, raw: &[u8], recipients: &[String]) -> Result<()> {
     let mut builder = match account.smtp_security {
@@ -19,6 +19,10 @@ pub async fn send(account: &AccountConfig, password: &str, raw: &[u8], recipient
             Security::Tls => Tls::Wrapper(params),
             Security::StartTls => Tls::Required(params),
         });
+    }
+    if account.auth != Auth::Password {
+        // `password` is the access token; lettre builds the XOAUTH2 string itself.
+        builder = builder.authentication(vec![Mechanism::Xoauth2]);
     }
     let transport = builder
         .port(account.smtp_port)

@@ -231,6 +231,7 @@ pub fn test_account() -> AccountConfig {
         smtp_host: "localhost".into(),
         smtp_port: 3465,
         smtp_security: Security::Tls,
+        auth: mailcore::Auth::Password,
     }
 }
 

@@ -42,14 +42,17 @@ fn send_sync_flag_delete_idle() {
         smtp_host: "localhost".into(),
         smtp_port: 3465,
         smtp_security: Security::Tls,
+        auth: mailcore::Auth::Password,
     };
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("cache.sqlite");
+    // Create the cache before the engine, as the app does: two connections racing to
+    // switch a new file to WAL can fail with "database is locked".
+    let mut store = Store::open(&db).unwrap();
     let (tx, rx) = mpsc::channel();
     let engine = Engine::start(account.clone(), db.clone(), move |e| {
         let _ = tx.send(e);
     });
-    let mut store = Store::open(&db).unwrap();
     let wait_event = |pred: &dyn Fn(&Event) -> bool| loop {
         match rx.recv_timeout(Duration::from_secs(20)).expect("engine event") {
             Event::Error(e) => panic!("engine error: {e}"),

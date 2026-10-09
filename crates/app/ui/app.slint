@@ -41,6 +41,8 @@ export struct SetupData {
     smtp-host: string,
     smtp-port: string,
     smtp-starttls: bool,
+    /// Sign in with Microsoft in the browser instead of a password.
+    oauth: bool,
 }
 
 global Theme {
@@ -298,7 +300,7 @@ component SetupView inherits Rectangle {
                     font-weight: 600;
                 }
                 Text {
-                    text: "Use an app password for Gmail, iCloud and Fastmail. Outlook.com requires OAuth sign-in, which is not supported yet.";
+                    text: "Use an app password for Gmail, iCloud and Fastmail. Outlook.com and Microsoft 365 sign in through your browser.";
                     color: Theme.muted;
                     wrap: word-wrap;
                 }
@@ -312,7 +314,7 @@ component SetupView inherits Rectangle {
                     label: "Your name";
                     text <=> data.name;
                 }
-                Field {
+                if !data.oauth: Field {
                     label: "Password";
                     text <=> data.password;
                     input-type: InputType.password;
@@ -364,6 +366,13 @@ component SetupView inherits Rectangle {
                         checked <=> data.smtp-starttls;
                     }
                 }
+                HorizontalLayout {
+                    padding-left: 98px;
+                    CheckBox {
+                        text: "Sign in with Microsoft (Outlook.com, Microsoft 365)";
+                        checked <=> data.oauth;
+                    }
+                }
                 if root.error != "": Text {
                     text: root.error;
                     color: #d33;
@@ -378,7 +387,7 @@ component SetupView inherits Rectangle {
                         height: 24px;
                     }
                     Button {
-                        text: "Save and connect";
+                        text: data.oauth ? "Sign in with Microsoft" : "Save and connect";
                         primary: true;
                         enabled: !root.busy;
                         clicked => root.submit();

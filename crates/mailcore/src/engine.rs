@@ -11,8 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
+use crate::auth::Credentials;
+use crate::backend::Backend;
 use crate::config::AccountConfig;
 use crate::imap::Imap;
 use crate::mime::{self, Draft};
@@ -73,8 +75,8 @@ impl Engine {
                     .expect("tokio runtime");
                 let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(on_event);
                 runtime.block_on(async move {
-                    let password = match account.password() {
-                        Ok(p) => p,
+                    let creds = match Credentials::load(&account) {
+                        Ok(c) => Arc::new(c),
                         Err(e) => {
                             on_event(Event::Error(e.to_string()));
                             return;
@@ -87,8 +89,9 @@ impl Engine {
                             return;
                         }
                     };
-                    tokio::spawn(idle_loop(account.clone(), password.clone(), idle_tx));
-                    Worker { account, password, store, imap: None, active: None, on_event }.run(rx).await;
+                    // The only backend so far; a protocol choice in AccountConfig would branch here.
+                    tokio::spawn(idle_loop::<Imap>(account.clone(), creds.clone(), idle_tx));
+                    Worker::<Imap> { account, creds, store, conn: None, active: None, on_event }.run(rx).await;
                 });
             })
             .expect("spawning engine thread");
@@ -123,22 +126,16 @@ pub fn archive_op(store: &Store, folder: &str) -> Result<PendingOp> {
     Ok(PendingOp::Move(dest))
 }
 
-struct Worker {
+struct Worker<B: Backend> {
     account: AccountConfig,
-    password: String,
+    creds: Arc<Credentials>,
     store: Store,
-    imap: Option<Imap>,
+    conn: Option<B>,
     active: Option<String>,
     on_event: Arc<dyn Fn(Event) + Send + Sync>,
 }
 
-fn is_server_rejection(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| {
-        matches!(c.downcast_ref::<async_imap::error::Error>(), Some(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)))
-    })
-}
-
-impl Worker {
+impl<B: Backend> Worker<B> {
     fn emit(&self, event: Event) {
         (self.on_event)(event);
     }
@@ -161,35 +158,36 @@ impl Worker {
             let retry = (!matches!(command, Command::Send { .. })).then(|| command.clone());
             let mut result = self.handle(command).await;
             if let (Err(e), Some(command)) = (&result, retry) {
-                if !is_server_rejection(e) {
+                if !B::is_rejection(e) {
                     // Usually a connection the server dropped while idle: reconnect and try again once.
                     log::info!("engine: {e:#}; reconnecting");
-                    self.imap = None;
+                    self.conn = None;
                     result = self.handle(command).await;
                 }
             }
             if let Err(e) = result {
                 log::warn!("engine: {e:#}");
-                if !is_server_rejection(&e) {
+                if !B::is_rejection(&e) {
                     // Assume the connection is broken; reconnect on next use.
-                    self.imap = None;
+                    self.conn = None;
                     self.emit(Event::Online(false));
                 }
                 self.emit(Event::Error(format!("{e:#}")));
             }
         }
-        if let Some(imap) = self.imap.take() {
-            imap.logout().await;
+        if let Some(conn) = self.conn.take() {
+            conn.logout().await;
         }
     }
 
-    async fn imap(&mut self) -> Result<&mut Imap> {
-        if self.imap.is_none() {
+    async fn conn(&mut self) -> Result<&mut B> {
+        if self.conn.is_none() {
             self.emit(Event::Status(format!("Connecting to {}…", self.account.imap_host)));
-            self.imap = Some(Imap::connect(&self.account, &self.password).await?);
+            let secret = self.creds.secret().await?;
+            self.conn = Some(B::connect(&self.account, &secret).await?);
             self.emit(Event::Online(true));
         }
-        Ok(self.imap.as_mut().unwrap())
+        Ok(self.conn.as_mut().unwrap())
     }
 
     async fn handle(&mut self, command: Command) -> Result<()> {
@@ -197,7 +195,7 @@ impl Worker {
             Command::SyncAll => {
                 self.flush().await?;
                 self.emit(Event::Status("Syncing folders…".into()));
-                let folders = self.imap().await?.list_folders().await?;
+                let folders = self.conn().await?.list_folders().await?;
                 self.store.sync_folders(&folders)?;
                 self.emit(Event::FoldersChanged);
                 let inbox = self.store.folder_by_role(Role::Inbox)?;
@@ -239,18 +237,11 @@ impl Worker {
     async fn flush(&mut self) -> Result<()> {
         let ops = self.store.pending_ops()?;
         for (id, folder, uid, op) in ops {
-            let imap = self.imap().await?;
-            let result = match &op {
-                PendingOp::SetSeen(v) => imap.store_flag(&folder, uid, "\\Seen", *v).await,
-                PendingOp::SetFlagged(v) => imap.store_flag(&folder, uid, "\\Flagged", *v).await,
-                PendingOp::SetAnswered => imap.store_flag(&folder, uid, "\\Answered", true).await,
-                PendingOp::Move(dest) => imap.move_message(&folder, uid, dest).await,
-                PendingOp::Expunge => imap.expunge(&folder, uid).await,
-            };
+            let result = self.conn().await?.apply(&folder, uid, &op).await;
             match result {
                 Ok(()) => self.store.remove_pending_op(id)?,
                 // The server refused (message gone, folder missing): retrying won't help.
-                Err(e) if is_server_rejection(&e) => {
+                Err(e) if B::is_rejection(&e) => {
                     log::warn!("dropping {op:?} on {folder}/{uid}: {e:#}");
                     self.store.remove_pending_op(id)?;
                 }
@@ -262,7 +253,7 @@ impl Worker {
 
     async fn sync_folder(&mut self, folder: &str) -> Result<()> {
         self.emit(Event::Status(format!("Syncing {folder}…")));
-        let state = self.imap().await?.select(folder).await?;
+        let state = self.conn().await?.select(folder).await?;
         if let Some(v) = state.uid_validity
             && self.store.check_uidvalidity(folder, v)? {
                 log::info!("UIDVALIDITY of {folder} changed, cache reset");
@@ -270,9 +261,9 @@ impl Worker {
 
         match (self.store.min_uid(folder)?, self.store.max_uid(folder)?) {
             (Some(min), Some(max)) => {
-                let new = self.imap().await?.fetch_new(folder, max).await?;
+                let new = self.conn().await?.fetch_new(folder, max).await?;
                 self.store.upsert_messages(&new)?;
-                let flags = self.imap().await?.fetch_flags(folder, min, max).await?;
+                let flags = self.conn().await?.fetch_flags(folder, min, max).await?;
                 let on_server: std::collections::HashSet<u32> = flags.iter().map(|f| f.0).collect();
                 let gone: Vec<u32> = self
                     .store
@@ -284,7 +275,7 @@ impl Worker {
                 self.store.update_flags(folder, &flags)?;
             }
             _ => {
-                let latest = self.imap().await?.fetch_latest(folder, state.exists, INITIAL_WINDOW).await?;
+                let latest = self.conn().await?.fetch_latest(folder, state.exists, INITIAL_WINDOW).await?;
                 self.store.upsert_messages(&latest)?;
             }
         }
@@ -300,7 +291,7 @@ impl Worker {
     }
 
     async fn download_bodies(&mut self, folder: &str, uids: &[u32]) -> Result<()> {
-        let bodies = self.imap().await?.fetch_bodies(folder, uids).await?;
+        let bodies = self.conn().await?.fetch_bodies(folder, uids).await?;
         for (uid, raw) in bodies {
             let body = mime::body_from_raw(&raw);
             self.store.set_body(folder, uid, &raw, &body.snippet, &body.text, !body.attachments.is_empty())?;
@@ -320,7 +311,8 @@ impl Worker {
         draft.from_name = self.account.name.clone();
         draft.from_addr = self.account.email.clone();
         let built = mime::build_message(&draft)?;
-        crate::smtp::send(&self.account, &self.password, &built.raw, &built.recipients).await?;
+        let secret = self.creds.secret().await?;
+        B::send(&self.account, &secret, &built.raw, &built.recipients).await?;
         sent.set(true);
         self.emit(Event::Sent(id));
         self.emit(Event::Status("Message sent".into()));
@@ -329,11 +321,9 @@ impl Worker {
             self.store.apply_local(&folder, uid, &PendingOp::SetAnswered)?;
             self.emit(Event::MessagesChanged(folder));
         }
-        // Gmail files messages sent over SMTP itself; appending would duplicate them.
-        let server_saves_sent = self.account.smtp_host.ends_with("gmail.com");
-        if !server_saves_sent
+        if !B::files_sent(&self.account)
             && let Some(sent) = self.store.folder_by_role(Role::Sent)? {
-                self.imap().await?.append(&sent, "(\\Seen)", &built.raw).await?;
+                self.conn().await?.save_sent(&sent, &built.raw).await?;
                 if self.active.as_deref() == Some(sent.as_str()) {
                     self.sync_folder(&sent).await?;
                 }
@@ -345,28 +335,25 @@ impl Worker {
 
 /// Keeps a second connection in IDLE on the inbox and requests a sync whenever
 /// the server reports a change. Falls back to the poll timer while failing.
-async fn idle_loop(
+async fn idle_loop<B: Backend>(
     account: AccountConfig,
-    password: String,
+    creds: Arc<Credentials>,
     tx: mpsc::UnboundedSender<Command>,
 ) {
-    let never = Notify::new();
     let mut backoff = Duration::from_secs(10);
     loop {
         let result: Result<()> = async {
-            let mut imap = Imap::connect(&account, &password).await?;
+            let mut conn = B::connect(&account, &creds.secret().await?).await?;
             backoff = Duration::from_secs(10);
             loop {
-                let (next, changed) = imap.idle("INBOX", IDLE_TIMEOUT, &never).await?;
-                imap = next;
+                let (next, changed) = conn.wait_for_change("INBOX", IDLE_TIMEOUT).await?;
+                conn = next;
                 if changed {
                     // Give the server a moment to finish delivering a batch.
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     if tx.send(Command::SyncAll).is_err() {
                         return Ok(());
                     }
-                } else {
-                    imap.noop().await?;
                 }
             }
         }

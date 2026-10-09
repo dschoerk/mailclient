@@ -1,6 +1,8 @@
 //! UI-independent mail backend: account config, local cache, MIME handling,
-//! and the IMAP/SMTP sync engine.
+//! and the sync engine with its built-in IMAP/SMTP backend.
 
+pub mod auth;
+pub mod backend;
 pub mod config;
 pub mod engine;
 pub mod imap;
@@ -8,7 +10,8 @@ pub mod mime;
 pub mod smtp;
 pub mod store;
 
-pub use config::{AccountConfig, Security};
+pub use backend::Backend;
+pub use config::{AccountConfig, Auth, Security};
 pub use engine::{Command, Engine, Event};
 pub use store::{Folder, MessageSummary, Store};
 

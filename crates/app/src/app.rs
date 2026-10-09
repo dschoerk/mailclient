@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow};
-use mailcore::config::{self, AccountConfig, Security};
+use mailcore::config::{self, AccountConfig, Auth, Security};
 use mailcore::engine::{self, Command, Engine, Event};
 use mailcore::mime::{self, Body, Draft, ReplyKind};
 use mailcore::store::{Folder, MessageSummary, PendingOp, Role, Store};
@@ -231,6 +231,7 @@ impl Controller {
         data.smtp_host = guess.smtp_host.into();
         data.smtp_port = guess.smtp_port.to_string().into();
         data.smtp_starttls = guess.smtp_security == Security::StartTls;
+        data.oauth = guess.auth != Auth::Password;
         // Follow the address while the name still looks auto-filled (typing arrives per character).
         let name = data.name.to_string();
         if name.is_empty() || guess.name.starts_with(&name) || name.starts_with(&guess.name) {
@@ -252,6 +253,7 @@ impl Controller {
             smtp_host: data.smtp_host.trim().to_string(),
             smtp_port: port(&data.smtp_port, "SMTP")?,
             smtp_security: security(data.smtp_starttls),
+            auth: if data.oauth { Auth::Microsoft } else { Auth::Password },
         };
         if !account.email.contains('@') {
             return Err(anyhow!("enter a valid email address"));
@@ -259,7 +261,7 @@ impl Controller {
         if account.imap_host.is_empty() || account.smtp_host.is_empty() {
             return Err(anyhow!("enter the IMAP and SMTP servers"));
         }
-        if data.password.is_empty() {
+        if account.auth == Auth::Password && data.password.is_empty() {
             return Err(anyhow!("enter your password"));
         }
         Ok(account)
@@ -283,12 +285,25 @@ impl Controller {
                 .map_err(anyhow::Error::from)
                 .and_then(|rt| {
                     rt.block_on(async {
-                        let imap = mailcore::imap::Imap::connect(&account, &password).await?;
+                        // (secret to log in with now, secret to keep in the keyring)
+                        let (login, keep) = match account.auth {
+                            Auth::Password => (password.clone(), password),
+                            Auth::Microsoft => {
+                                let sign_in = mailcore::auth::SignIn::start(&account.email).await?;
+                                open_url(&sign_in.url)?;
+                                let tokens = tokio::time::timeout(std::time::Duration::from_secs(300), sign_in.finish())
+                                    .await
+                                    .map_err(|_| anyhow!("sign-in timed out; try again"))??;
+                                let refresh = tokens.refresh.ok_or_else(|| anyhow!("Microsoft returned no refresh token"))?;
+                                (tokens.access, refresh)
+                            }
+                        };
+                        let imap = mailcore::imap::Imap::connect(&account, &login).await?;
                         imap.logout().await;
-                        anyhow::Ok(())
+                        anyhow::Ok(keep)
                     })
                 })
-                .and_then(|()| account.store_password(&password))
+                .and_then(|keep| account.store_password(&keep))
                 .and_then(|()| config::save_account(&account));
             with_controller(move |c| {
                 let window = c.window();
@@ -661,12 +676,10 @@ impl Controller {
                 }
             }
             self.open_composer(draft, None);
-        } else if url.starts_with("https://") || url.starts_with("http://") {
-            // shortcut: Android needs an ACTION_VIEW intent via JNI; not wired up yet.
-            #[cfg(not(target_os = "android"))]
-            if let Err(e) = open::that_detached(url) {
-                self.show_error(&anyhow!("opening {url}: {e}"));
-            }
+        } else if (url.starts_with("https://") || url.starts_with("http://"))
+            && let Err(e) = open_url(url)
+        {
+            self.show_error(&e);
         }
     }
 
@@ -813,4 +826,33 @@ impl Controller {
         let composer = Composer::open(&self.window(), draft, replied_to, on_send, on_close);
         *self.composer.borrow_mut() = Some(composer);
     }
+}
+
+/// Opens `url` in the system browser.
+fn open_url(url: &str) -> Result<()> {
+    #[cfg(not(target_os = "android"))]
+    open::that_detached(url).with_context(|| format!("opening {url}"))?;
+    #[cfg(target_os = "android")]
+    android_view(url).map_err(|e| anyhow!("opening {url}: {e}"))?;
+    Ok(())
+}
+
+/// Starts an ACTION_VIEW intent, which Android routes to the default browser.
+#[cfg(target_os = "android")]
+fn android_view(url: &str) -> jni::errors::Result<()> {
+    let ctx = ndk_context::android_context();
+    // SAFETY: android-activity fills ndk_context with the process's JavaVM and the running activity.
+    let (vm, activity) = unsafe {
+        (jni::JavaVM::from_raw(ctx.vm().cast())?, jni::objects::JObject::from_raw(ctx.context().cast()))
+    };
+    let mut env = vm.attach_current_thread()?;
+    let url = env.new_string(url)?;
+    let uri = env
+        .call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[(&url).into()])?
+        .l()?;
+    let action = env.new_string("android.intent.action.VIEW")?;
+    let intent =
+        env.new_object("android/content/Intent", "(Ljava/lang/String;Landroid/net/Uri;)V", &[(&action).into(), (&uri).into()])?;
+    env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[(&intent).into()])?;
+    Ok(())
 }

@@ -11,9 +11,10 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
-use crate::config::{AccountConfig, Security};
+use crate::backend::{Backend, FolderState};
+use crate::config::{AccountConfig, Auth, Security};
 use crate::mime;
-use crate::store::{MessageSummary, Role};
+use crate::store::{MessageSummary, PendingOp, Role};
 
 pub type Session = async_imap::Session<TlsStream<TcpStream>>;
 
@@ -50,11 +51,6 @@ pub struct Imap {
     has_move: bool,
 }
 
-pub struct FolderState {
-    pub exists: u32,
-    pub uid_validity: Option<u32>,
-}
-
 impl Imap {
     pub async fn connect(account: &AccountConfig, password: &str) -> Result<Imap> {
         let addr = (account.imap_host.as_str(), account.imap_port);
@@ -79,10 +75,11 @@ impl Imap {
         };
 
         let client = async_imap::Client::new(tls);
-        let mut session = client
-            .login(&account.username, password)
-            .await
-            .map_err(|(e, _)| anyhow!("IMAP login failed: {e}"))?;
+        let mut session = match account.auth {
+            Auth::Password => client.login(&account.username, password).await,
+            Auth::Microsoft => client.authenticate("XOAUTH2", XOAuth2(crate::auth::xoauth2(&account.username, password))).await,
+        }
+        .map_err(|(e, _)| anyhow!("IMAP login failed: {e}"))?;
         let caps = session.capabilities().await?;
         let has_move = caps.has_str("MOVE");
         Ok(Imap { session, selected: None, has_move })
@@ -276,6 +273,88 @@ impl Imap {
         let changed = matches!(result?, IdleResponse::NewData(_));
         let session = handle.done().await.context("ending IDLE")?;
         Ok((Imap { session, selected, has_move }, changed))
+    }
+}
+
+impl Backend for Imap {
+    async fn connect(account: &AccountConfig, secret: &str) -> Result<Imap> {
+        Imap::connect(account, secret).await
+    }
+
+    async fn logout(self) {
+        Imap::logout(self).await
+    }
+
+    fn is_rejection(e: &anyhow::Error) -> bool {
+        use async_imap::error::Error;
+        e.chain().any(|c| matches!(c.downcast_ref::<Error>(), Some(Error::No(_) | Error::Bad(_))))
+    }
+
+    async fn list_folders(&mut self) -> Result<Vec<(String, Option<String>, Role)>> {
+        Imap::list_folders(self).await
+    }
+
+    async fn select(&mut self, folder: &str) -> Result<FolderState> {
+        Imap::select(self, folder).await
+    }
+
+    async fn fetch_new(&mut self, folder: &str, after: u32) -> Result<Vec<MessageSummary>> {
+        Imap::fetch_new(self, folder, after).await
+    }
+
+    async fn fetch_latest(&mut self, folder: &str, exists: u32, count: u32) -> Result<Vec<MessageSummary>> {
+        Imap::fetch_latest(self, folder, exists, count).await
+    }
+
+    async fn fetch_flags(&mut self, folder: &str, from: u32, to: u32) -> Result<Vec<(u32, bool, bool, bool)>> {
+        Imap::fetch_flags(self, folder, from, to).await
+    }
+
+    async fn fetch_bodies(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+        Imap::fetch_bodies(self, folder, uids).await
+    }
+
+    async fn apply(&mut self, folder: &str, uid: u32, op: &PendingOp) -> Result<()> {
+        match op {
+            PendingOp::SetSeen(v) => self.store_flag(folder, uid, "\\Seen", *v).await,
+            PendingOp::SetFlagged(v) => self.store_flag(folder, uid, "\\Flagged", *v).await,
+            PendingOp::SetAnswered => self.store_flag(folder, uid, "\\Answered", true).await,
+            PendingOp::Move(dest) => self.move_message(folder, uid, dest).await,
+            PendingOp::Expunge => self.expunge(folder, uid).await,
+        }
+    }
+
+    async fn send(account: &AccountConfig, secret: &str, raw: &[u8], recipients: &[String]) -> Result<()> {
+        crate::smtp::send(account, secret, raw, recipients).await
+    }
+
+    fn files_sent(account: &AccountConfig) -> bool {
+        // Gmail files messages sent over SMTP itself; appending would duplicate them.
+        account.smtp_host.ends_with("gmail.com")
+    }
+
+    async fn save_sent(&mut self, folder: &str, raw: &[u8]) -> Result<()> {
+        self.append(folder, "(\\Seen)", raw).await
+    }
+
+    async fn wait_for_change(self, folder: &str, timeout: Duration) -> Result<(Imap, bool)> {
+        let never = tokio::sync::Notify::new();
+        let (mut imap, changed) = self.idle(folder, timeout, &never).await?;
+        if !changed {
+            imap.noop().await?;
+        }
+        Ok((imap, changed))
+    }
+}
+
+/// `password` is the access token here; XOAUTH2 sends everything in the first response.
+struct XOAuth2(String);
+
+impl async_imap::Authenticator for XOAuth2 {
+    type Response = String;
+    fn process(&mut self, _challenge: &[u8]) -> String {
+        // A second challenge carries the server's error details; an empty reply ends the exchange.
+        std::mem::take(&mut self.0)
     }
 }
 

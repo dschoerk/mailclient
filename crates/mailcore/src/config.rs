@@ -14,6 +14,16 @@ pub enum Security {
     StartTls,
 }
 
+/// How the account logs in. The keyring holds the password or the OAuth refresh token.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Auth {
+    #[default]
+    Password,
+    /// OAuth2 via Microsoft identity (Outlook.com, Microsoft 365).
+    Microsoft,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountConfig {
     pub name: String,
@@ -25,6 +35,8 @@ pub struct AccountConfig {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_security: Security,
+    #[serde(default)]
+    pub auth: Auth,
 }
 
 /// App preferences, stored next to the accounts in `config.toml`.
@@ -49,11 +61,10 @@ impl AccountConfig {
     /// Best-effort server settings for a mail address, used to prefill the setup form.
     pub fn guess(email: &str) -> AccountConfig {
         let domain = email.rsplit_once('@').map(|(_, d)| d.to_lowercase()).unwrap_or_default();
+        let microsoft = matches!(domain.split('.').next(), Some("outlook" | "hotmail" | "live" | "msn"));
         let (imap, smtp, smtp_port, smtp_security) = match domain.as_str() {
             "gmail.com" | "googlemail.com" => ("imap.gmail.com", "smtp.gmail.com", 465, Security::Tls),
-            "outlook.com" | "hotmail.com" | "live.com" => {
-                ("outlook.office365.com", "smtp.office365.com", 587, Security::StartTls)
-            }
+            _ if microsoft => ("outlook.office365.com", "smtp.office365.com", 587, Security::StartTls),
             "fastmail.com" | "fastmail.fm" => ("imap.fastmail.com", "smtp.fastmail.com", 465, Security::Tls),
             "icloud.com" | "me.com" => ("imap.mail.me.com", "smtp.mail.me.com", 587, Security::StartTls),
             "gmx.net" | "gmx.at" | "gmx.de" => ("imap.gmx.net", "mail.gmx.net", 587, Security::StartTls),
@@ -71,6 +82,7 @@ impl AccountConfig {
             smtp_host: or_prefixed(smtp, "smtp"),
             smtp_port,
             smtp_security,
+            auth: if microsoft { Auth::Microsoft } else { Auth::Password },
         }
     }
 
@@ -92,7 +104,7 @@ impl AccountConfig {
             .context("opening Android keystore")
     }
 
-    /// Password from `MAILCLIENT_PASSWORD` (for development) or the system keyring.
+    /// Password or OAuth refresh token, from `MAILCLIENT_PASSWORD` (for development) or the system keyring.
     pub fn password(&self) -> Result<String> {
         if let Ok(pw) = std::env::var("MAILCLIENT_PASSWORD") {
             return Ok(pw);
@@ -183,6 +195,9 @@ mod tests {
         let gmail = AccountConfig::guess("someone@gmail.com");
         assert_eq!(gmail.imap_host, "imap.gmail.com");
         assert_eq!(gmail.smtp_port, 465);
+        assert_eq!(gmail.auth, Auth::Password);
+        let hotmail = AccountConfig::guess("someone@hotmail.co.uk");
+        assert_eq!((hotmail.imap_host.as_str(), hotmail.auth), ("outlook.office365.com", Auth::Microsoft));
 
         let other = AccountConfig::guess("me@example.org");
         assert_eq!(other.imap_host, "imap.example.org");

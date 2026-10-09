@@ -78,8 +78,11 @@ copy the test CA into the app (debug builds only):
 then set up `corpus@localhost` with IMAP `localhost:3993`, SMTP `localhost:3465`.
 If the emulator crashes in its GL translator, start it with `-gpu swiftshader_indirect`.
 
-Not yet on Android: HTML view (Servo), attaching/saving files, opening links, push while
-the app is in the background.
+Not yet on Android: HTML view (Servo), attaching/saving files, push while the app is in
+the background.
+
+Outlook.com and Microsoft 365 need OAuth sign-in, which requires a one-time Microsoft app
+registration: see [docs/oauth-microsoft.md](docs/oauth-microsoft.md).
 
 Slint is pinned to a git revision: Slint 1.18 on crates.io conflicts with Servo 0.7's
 ICU dependency, and 1.17 lacks the wgpu 30 integration. `rusqlite` is pinned to 0.38
