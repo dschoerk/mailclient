@@ -1,5 +1,5 @@
 //! Login secrets: a password, or OAuth2 tokens for providers that refuse passwords
-//! (Microsoft). OAuth uses the authorization code flow with PKCE and a loopback
+//! (Microsoft, Google). OAuth uses the authorization code flow with PKCE and a loopback
 //! redirect (RFC 8252), which works the same on desktop and Android.
 
 use std::time::{Duration, Instant};
@@ -14,17 +14,78 @@ use url::form_urlencoded;
 
 use crate::config::{AccountConfig, Auth};
 
-/// Application (client) ID of the Entra app registration, baked in at build time.
-// shortcut: replace with the literal ID once the app is registered; it is public, not a secret.
-const MICROSOFT_CLIENT_ID: Option<&str> = option_env!("MAILCLIENT_MS_CLIENT_ID");
-const MICROSOFT_AUTHORIZE: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
-const MICROSOFT_TOKEN_HOST: &str = "login.microsoftonline.com";
-const MICROSOFT_TOKEN_PATH: &str = "/common/oauth2/v2.0/token";
-const MICROSOFT_SCOPES: &str =
-    "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send";
+/// An OAuth2 identity provider. Client IDs (and Google's secret, which Google treats as
+/// public for desktop apps) are baked in at build time from env vars.
+struct Provider {
+    name: &'static str,
+    client_id: Option<&'static str>,
+    client_secret: Option<&'static str>,
+    id_var: &'static str,
+    authorize: &'static str,
+    token_host: &'static str,
+    token_path: &'static str,
+    scopes: &'static str,
+    /// Extra authorize parameters.
+    extra: &'static [(&'static str, &'static str)],
+}
 
-fn microsoft_client_id() -> Result<&'static str> {
-    MICROSOFT_CLIENT_ID.ok_or_else(|| anyhow!("this build has no Microsoft client ID (set MAILCLIENT_MS_CLIENT_ID when building)"))
+const MICROSOFT: Provider = Provider {
+    name: "Microsoft",
+    // shortcut: replace with the literal ID once the app is registered; it is public, not a secret.
+    client_id: option_env!("MAILCLIENT_MS_CLIENT_ID"),
+    client_secret: None,
+    id_var: "MAILCLIENT_MS_CLIENT_ID",
+    authorize: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    token_host: "login.microsoftonline.com",
+    token_path: "/common/oauth2/v2.0/token",
+    scopes: "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
+    extra: &[("response_mode", "query")],
+};
+
+const GOOGLE: Provider = Provider {
+    name: "Google",
+    client_id: option_env!("MAILCLIENT_GOOGLE_CLIENT_ID"),
+    client_secret: option_env!("MAILCLIENT_GOOGLE_CLIENT_SECRET"),
+    id_var: "MAILCLIENT_GOOGLE_CLIENT_ID",
+    authorize: "https://accounts.google.com/o/oauth2/v2/auth",
+    token_host: "oauth2.googleapis.com",
+    token_path: "/token",
+    scopes: "https://mail.google.com/",
+    // Without these Google returns no refresh token.
+    extra: &[("access_type", "offline"), ("prompt", "consent")],
+};
+
+fn provider(auth: Auth) -> Result<&'static Provider> {
+    match auth {
+        Auth::Microsoft => Ok(&MICROSOFT),
+        Auth::Google => Ok(&GOOGLE),
+        Auth::Password => bail!("password accounts have no sign-in provider"),
+    }
+}
+
+/// Whether this build can sign in with `auth`'s provider.
+pub fn available(auth: Auth) -> bool {
+    provider(auth).is_ok_and(|p| p.client_id.is_some())
+}
+
+impl Provider {
+    fn client_id(&self) -> Result<&'static str> {
+        self.client_id.ok_or_else(|| {
+            anyhow!(
+                "this build has no {} client ID (set {} when building)",
+                self.name,
+                self.id_var
+            )
+        })
+    }
+
+    /// Token request form: the grant-specific fields plus client credentials.
+    async fn token_request(&self, grant: &[(&str, &str)]) -> Result<Tokens> {
+        let mut form = vec![("client_id", self.client_id()?)];
+        form.extend(self.client_secret.map(|s| ("client_secret", s)));
+        form.extend_from_slice(grant);
+        token_request(self.token_host, self.token_path, &form).await
+    }
 }
 
 pub struct Tokens {
@@ -44,7 +105,10 @@ pub struct Credentials {
 impl Credentials {
     /// Reads the password or refresh token from the keyring.
     pub fn load(account: &AccountConfig) -> Result<Credentials> {
-        Ok(Credentials { account: account.clone(), state: tokio::sync::Mutex::new((account.password()?, None)) })
+        Ok(Credentials {
+            account: account.clone(),
+            state: tokio::sync::Mutex::new((account.password()?, None)),
+        })
     }
 
     /// The password, or an access token valid for at least another minute.
@@ -58,7 +122,9 @@ impl Credentials {
         {
             return Ok(token.clone());
         }
-        let tokens = refresh(&state.0).await.context("signing in again (remove and re-add the account if this persists)")?;
+        let tokens = refresh(self.account.auth, &state.0)
+            .await
+            .context("signing in again (remove and re-add the account if this persists)")?;
         if let Some(new) = tokens.refresh {
             // Rotated: the sliding expiry only extends for the newest refresh token.
             self.account.store_password(&new)?;
@@ -73,6 +139,7 @@ impl Credentials {
 /// A browser sign-in in progress: open [`SignIn::url`], then await [`SignIn::finish`].
 pub struct SignIn {
     pub url: String,
+    provider: &'static Provider,
     listeners: Vec<TcpListener>,
     redirect_uri: String,
     verifier: String,
@@ -80,9 +147,12 @@ pub struct SignIn {
 }
 
 impl SignIn {
-    pub async fn start(login_hint: &str) -> Result<SignIn> {
-        let client_id = microsoft_client_id()?;
-        let v4 = TcpListener::bind("127.0.0.1:0").await.context("opening sign-in listener")?;
+    pub async fn start(auth: Auth, login_hint: &str) -> Result<SignIn> {
+        let provider = provider(auth)?;
+        let client_id = provider.client_id()?;
+        let v4 = TcpListener::bind("127.0.0.1:0")
+            .await
+            .context("opening sign-in listener")?;
         let port = v4.local_addr()?.port();
         let mut listeners = vec![v4];
         // Browsers may resolve "localhost" to ::1 first.
@@ -92,19 +162,29 @@ impl SignIn {
         let redirect_uri = format!("http://localhost:{port}");
         let verifier = random_token()?;
         let state = random_token()?;
-        let challenge = URL_SAFE_NO_PAD.encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()));
+        let challenge = URL_SAFE_NO_PAD.encode(ring::digest::digest(
+            &ring::digest::SHA256,
+            verifier.as_bytes(),
+        ));
         let query = form_urlencoded::Serializer::new(String::new())
             .append_pair("client_id", client_id)
             .append_pair("response_type", "code")
             .append_pair("redirect_uri", &redirect_uri)
-            .append_pair("response_mode", "query")
-            .append_pair("scope", MICROSOFT_SCOPES)
+            .extend_pairs(provider.extra)
+            .append_pair("scope", provider.scopes)
             .append_pair("state", &state)
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("login_hint", login_hint)
             .finish();
-        Ok(SignIn { url: format!("{MICROSOFT_AUTHORIZE}?{query}"), listeners, redirect_uri, verifier, state })
+        Ok(SignIn {
+            url: format!("{}?{query}", provider.authorize),
+            provider,
+            listeners,
+            redirect_uri,
+            verifier,
+            state,
+        })
     }
 
     /// Waits for the browser to come back with a code and trades it for tokens.
@@ -119,8 +199,13 @@ impl SignIn {
                 Ok(Some(params)) => {
                     let result = callback_code(&params, &self.state);
                     let page = match &result {
-                        Ok(_) => "Signed in. You can close this tab and return to Mail.".to_string(),
-                        Err(e) => format!("Sign-in failed: {}", html_escape::encode_text(&format!("{e:#}"))),
+                        Ok(_) => {
+                            "Signed in. You can close this tab and return to Mail.".to_string()
+                        }
+                        Err(e) => format!(
+                            "Sign-in failed: {}",
+                            html_escape::encode_text(&format!("{e:#}"))
+                        ),
                     };
                     respond(&mut stream, "200 OK", &page).await;
                     break result?;
@@ -130,32 +215,35 @@ impl SignIn {
                 Err(e) => log::info!("sign-in listener: {e:#}"),
             }
         };
-        token_request(&[
-            ("client_id", microsoft_client_id()?),
-            ("grant_type", "authorization_code"),
-            ("code", &code),
-            ("redirect_uri", &self.redirect_uri),
-            ("code_verifier", &self.verifier),
-            ("scope", MICROSOFT_SCOPES),
-        ])
-        .await
+        self.provider
+            .token_request(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", &self.redirect_uri),
+                ("code_verifier", &self.verifier),
+                ("scope", self.provider.scopes),
+            ])
+            .await
     }
 }
 
-pub async fn refresh(refresh_token: &str) -> Result<Tokens> {
-    token_request(&[
-        ("client_id", microsoft_client_id()?),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("scope", MICROSOFT_SCOPES),
-    ])
-    .await
+pub async fn refresh(auth: Auth, refresh_token: &str) -> Result<Tokens> {
+    let provider = provider(auth)?;
+    provider
+        .token_request(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("scope", provider.scopes),
+        ])
+        .await
 }
 
 fn random_token() -> Result<String> {
     use ring::rand::SecureRandom;
     let mut bytes = [0u8; 32];
-    ring::rand::SystemRandom::new().fill(&mut bytes).map_err(|_| anyhow!("no system random source"))?;
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| anyhow!("no system random source"))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
@@ -172,22 +260,33 @@ async fn read_redirect(stream: &mut TcpStream) -> Result<Option<Vec<(String, Str
     }
     let line = String::from_utf8_lossy(&buf);
     let target = line.split_whitespace().nth(1).unwrap_or_default();
-    Ok(target.strip_prefix("/?").map(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect()))
+    Ok(target
+        .strip_prefix("/?")
+        .map(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect()))
 }
 
 fn callback_code(params: &[(String, String)], expected_state: &str) -> Result<String> {
-    let get = |k: &str| params.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+    let get = |k: &str| {
+        params
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.as_str())
+    };
     if let Some(error) = get("error") {
         bail!("{}", get("error_description").unwrap_or(error));
     }
     if get("state") != Some(expected_state) {
         bail!("sign-in response does not match this request");
     }
-    get("code").map(str::to_string).ok_or_else(|| anyhow!("sign-in response has no code"))
+    get("code")
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("sign-in response has no code"))
 }
 
 async fn respond(stream: &mut TcpStream, status: &str, text: &str) {
-    let body = format!("<!DOCTYPE html><meta charset=utf-8><title>Mail</title><p style=\"font:16px sans-serif\">{text}</p>");
+    let body = format!(
+        "<!DOCTYPE html><meta charset=utf-8><title>Mail</title><p style=\"font:16px sans-serif\">{text}</p>"
+    );
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -207,39 +306,63 @@ struct TokenResponse {
 
 /// POSTs a form to the token endpoint. HTTP/1.0 keeps the response un-chunked and
 /// closed after the body, so no HTTP client library is needed for this one call.
-async fn token_request(form: &[(&str, &str)]) -> Result<Tokens> {
-    let body = form_urlencoded::Serializer::new(String::new()).extend_pairs(form).finish();
+async fn token_request(host: &str, path: &str, form: &[(&str, &str)]) -> Result<Tokens> {
+    let body = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(form)
+        .finish();
     let request = format!(
-        "POST {MICROSOFT_TOKEN_PATH} HTTP/1.0\r\nHost: {MICROSOFT_TOKEN_HOST}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}",
+        "POST {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     let response = tokio::time::timeout(Duration::from_secs(30), async {
-        let tcp = TcpStream::connect((MICROSOFT_TOKEN_HOST, 443)).await?;
-        let name = rustls::pki_types::ServerName::try_from(MICROSOFT_TOKEN_HOST)?;
+        let tcp = TcpStream::connect((host, 443)).await?;
+        let name = rustls::pki_types::ServerName::try_from(host.to_string())?;
         let mut tls = crate::imap::tls_connector()?.connect(name, tcp).await?;
         tls.write_all(request.as_bytes()).await?;
         let mut response = Vec::new();
-        tls.read_to_end(&mut response).await?;
+        match tls.read_to_end(&mut response).await {
+            // Google closes without TLS close_notify; a truncated body fails the JSON parse below.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !response.is_empty() => {}
+            r => {
+                r?;
+            }
+        }
         anyhow::Ok(response)
     })
     .await
-    .map_err(|_| anyhow!("timed out contacting {MICROSOFT_TOKEN_HOST}"))?
-    .with_context(|| format!("contacting {MICROSOFT_TOKEN_HOST}"))?;
+    .map_err(|_| anyhow!("timed out contacting {host}"))?
+    .with_context(|| format!("contacting {host}"))?;
     parse_token_response(&response)
 }
 
 fn parse_token_response(response: &[u8]) -> Result<Tokens> {
-    let split = response.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| anyhow!("malformed token response"))?;
-    let parsed: TokenResponse = serde_json::from_slice(&response[split + 4..]).context("parsing token response")?;
+    let split = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| anyhow!("malformed token response"))?;
+    let parsed: TokenResponse =
+        serde_json::from_slice(&response[split + 4..]).context("parsing token response")?;
     match parsed {
-        TokenResponse { access_token: Some(access), refresh_token, expires_in, .. } => Ok(Tokens {
+        TokenResponse {
+            access_token: Some(access),
+            refresh_token,
+            expires_in,
+            ..
+        } => Ok(Tokens {
             access,
             refresh: refresh_token,
             expires_in: Duration::from_secs(expires_in.unwrap_or(3600)),
         }),
-        TokenResponse { error, error_description, .. } => {
-            Err(anyhow!("{}", error_description.or(error).unwrap_or_else(|| "token request failed".into())))
-        }
+        TokenResponse {
+            error,
+            error_description,
+            ..
+        } => Err(anyhow!(
+            "{}",
+            error_description
+                .or(error)
+                .unwrap_or_else(|| "token request failed".into())
+        )),
     }
 }
 
@@ -254,10 +377,20 @@ mod tests {
 
     #[test]
     fn redirect_callback() {
-        let params = |q: &str| form_urlencoded::parse(q.as_bytes()).into_owned().collect::<Vec<_>>();
-        assert_eq!(callback_code(&params("code=abc%2F1&state=s1"), "s1").unwrap(), "abc/1");
+        let params = |q: &str| {
+            form_urlencoded::parse(q.as_bytes())
+                .into_owned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            callback_code(&params("code=abc%2F1&state=s1"), "s1").unwrap(),
+            "abc/1"
+        );
         assert!(callback_code(&params("code=abc&state=other"), "s1").is_err());
-        let denied = callback_code(&params("error=access_denied&error_description=User+cancelled"), "s1");
+        let denied = callback_code(
+            &params("error=access_denied&error_description=User+cancelled"),
+            "s1",
+        );
         assert_eq!(denied.unwrap_err().to_string(), "User cancelled");
     }
 
@@ -265,20 +398,31 @@ mod tests {
     fn token_responses() {
         let ok = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"access_token\":\"A\",\"refresh_token\":\"R\",\"expires_in\":3599}";
         let tokens = parse_token_response(ok).unwrap();
-        assert_eq!((tokens.access.as_str(), tokens.refresh.as_deref()), ("A", Some("R")));
+        assert_eq!(
+            (tokens.access.as_str(), tokens.refresh.as_deref()),
+            ("A", Some("R"))
+        );
         let bad = b"HTTP/1.1 400 Bad Request\r\n\r\n{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70000: expired\"}";
-        assert_eq!(parse_token_response(bad).err().unwrap().to_string(), "AADSTS70000: expired");
+        assert_eq!(
+            parse_token_response(bad).err().unwrap().to_string(),
+            "AADSTS70000: expired"
+        );
     }
 
     #[test]
     fn reads_browser_redirect() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let browser = tokio::spawn(async move {
                 let mut s = TcpStream::connect(addr).await.unwrap();
-                s.write_all(b"GET /?code=c1&state=s1 HTTP/1.1\r\nHost: localhost\r\n\r\n").await.unwrap();
+                s.write_all(b"GET /?code=c1&state=s1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                    .await
+                    .unwrap();
                 let mut page = String::new();
                 s.read_to_string(&mut page).await.unwrap();
                 page

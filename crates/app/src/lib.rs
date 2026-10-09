@@ -66,6 +66,26 @@ fn parses_args() {
     assert!(parse(&["--config"]).is_err());
 }
 
+/// The hidden webview keeps its last rendered page; it must not squash the reply body.
+#[cfg(test)]
+#[test]
+fn reply_body_is_not_squashed_by_hidden_webview() {
+    use slint::ComponentHandle;
+    i_slint_backend_testing::init_no_event_loop();
+    let w = AppWindow::new().unwrap();
+    w.window().set_size(slint::PhysicalSize::new(1200, 800));
+    w.set_use_webview(true);
+    // A rendered message taller than the window.
+    let page = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(600, 2000);
+    w.global::<WebviewLogic>().set_web_content(slint::Image::from_rgba8(page));
+    w.show().unwrap();
+    w.set_has_message(true);
+    w.set_compose_to("someone@example.org".into());
+    w.set_composing(true);
+    let body = i_slint_backend_testing::ElementHandle::find_by_accessible_label(&w, "Body").next().expect("Body field");
+    assert!(body.size().height > 300.0, "reply body squashed to {}px", body.size().height);
+}
+
 /// Debugging aid: saves a picture of the window a few seconds after start and exits.
 #[cfg(feature = "servo")]
 fn schedule_snapshot(window: &AppWindow, path: std::path::PathBuf) {

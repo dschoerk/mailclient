@@ -30,12 +30,18 @@ pub trait Backend: Sized + Send + 'static {
     fn is_rejection(e: &anyhow::Error) -> bool;
 
     /// (name, hierarchy delimiter, role) of every selectable folder.
-    fn list_folders(&mut self) -> impl Future<Output = Result<Vec<(String, Option<String>, Role)>>> + Send;
+    fn list_folders(
+        &mut self,
+    ) -> impl Future<Output = Result<Vec<(String, Option<String>, Role)>>> + Send;
 
     fn select(&mut self, folder: &str) -> impl Future<Output = Result<FolderState>> + Send;
 
     /// Headers of messages with UID greater than `after`.
-    fn fetch_new(&mut self, folder: &str, after: u32) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
+    fn fetch_new(
+        &mut self,
+        folder: &str,
+        after: u32,
+    ) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
 
     /// Headers of the newest `count` of the `exists` messages in `folder`.
     fn fetch_latest(
@@ -54,10 +60,19 @@ pub trait Backend: Sized + Send + 'static {
     ) -> impl Future<Output = Result<Vec<(u32, bool, bool, bool)>>> + Send;
 
     /// Full RFC 822 source of messages, without marking them read.
-    fn fetch_bodies(&mut self, folder: &str, uids: &[u32]) -> impl Future<Output = Result<Vec<(u32, Vec<u8>)>>> + Send;
+    fn fetch_bodies(
+        &mut self,
+        folder: &str,
+        uids: &[u32],
+    ) -> impl Future<Output = Result<Vec<(u32, Vec<u8>)>>> + Send;
 
     /// Pushes one locally queued change to the server.
-    fn apply(&mut self, folder: &str, uid: u32, op: &PendingOp) -> impl Future<Output = Result<()>> + Send;
+    fn apply(
+        &mut self,
+        folder: &str,
+        uid: u32,
+        op: &PendingOp,
+    ) -> impl Future<Output = Result<()>> + Send;
 
     /// Delivers a built message. Needs no open session, so sending works while sync is down.
     fn send(
@@ -74,5 +89,9 @@ pub trait Backend: Sized + Send + 'static {
 
     /// Waits until `folder` changes or `timeout` passes, keeping the session alive.
     /// Returns the session and whether something changed.
-    fn wait_for_change(self, folder: &str, timeout: Duration) -> impl Future<Output = Result<(Self, bool)>> + Send;
+    fn wait_for_change(
+        self,
+        folder: &str,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(Self, bool)>> + Send;
 }

@@ -469,6 +469,8 @@ export component AppWindow inherits Window {
                         }
                         Rectangle {
                             vertical-stretch: root.has-message && !root.composing ? 1 : 0;
+                            // The hidden webview's rendered page would otherwise claim its height and squash the composer.
+                            preferred-height: 0px;
                             // The webview stays alive for the whole session; Servo
                             // renders into it, so it is only hidden, never destroyed.
                             if root.use-webview: Webview {

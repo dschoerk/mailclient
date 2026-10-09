@@ -38,7 +38,12 @@ pub struct Body {
 
 fn first_addr(addr: Option<&Address>) -> (String, String) {
     addr.and_then(|a| a.first())
-        .map(|a| (a.name().unwrap_or_default().to_string(), a.address().unwrap_or_default().to_string()))
+        .map(|a| {
+            (
+                a.name().unwrap_or_default().to_string(),
+                a.address().unwrap_or_default().to_string(),
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -62,19 +67,35 @@ pub fn format_addresses(addr: Option<&Address>) -> String {
 fn header_ids(value: &HeaderValue) -> String {
     match value {
         HeaderValue::Text(t) => format!("<{t}>"),
-        HeaderValue::TextList(list) => list.iter().map(|t| format!("<{t}>")).collect::<Vec<_>>().join(" "),
+        HeaderValue::TextList(list) => list
+            .iter()
+            .map(|t| format!("<{t}>"))
+            .collect::<Vec<_>>()
+            .join(" "),
         _ => String::new(),
     }
 }
 
 /// Builds a list entry from a header-only fetch.
-pub fn summary_from_headers(folder: &str, uid: u32, headers: &[u8], internal_date: Option<i64>) -> MessageSummary {
+pub fn summary_from_headers(
+    folder: &str,
+    uid: u32,
+    headers: &[u8],
+    internal_date: Option<i64>,
+) -> MessageSummary {
     let parsed = match fix_ut_dates(headers) {
-        Some(fixed) => MessageParser::default().parse_headers(&fixed).map(|m| m.into_owned()),
+        Some(fixed) => MessageParser::default()
+            .parse_headers(&fixed)
+            .map(|m| m.into_owned()),
         None => MessageParser::default().parse_headers(headers),
     };
     let Some(msg) = parsed else {
-        return MessageSummary { folder: folder.into(), uid, date: internal_date.unwrap_or(0), ..Default::default() };
+        return MessageSummary {
+            folder: folder.into(),
+            uid,
+            date: internal_date.unwrap_or(0),
+            ..Default::default()
+        };
     };
     let (from_name, from_addr) = first_addr(msg.from());
     let has_attachments = msg
@@ -84,13 +105,20 @@ pub fn summary_from_headers(folder: &str, uid: u32, headers: &[u8], internal_dat
     MessageSummary {
         folder: folder.into(),
         uid,
-        message_id: msg.message_id().map(|id| format!("<{id}>")).unwrap_or_default(),
+        message_id: msg
+            .message_id()
+            .map(|id| format!("<{id}>"))
+            .unwrap_or_default(),
         subject: msg.subject().unwrap_or_default().to_string(),
         from_name,
         from_addr,
         to: format_addresses(msg.to()),
         cc: format_addresses(msg.cc()),
-        date: msg.date().map(|d| d.to_timestamp()).or(internal_date).unwrap_or(0),
+        date: msg
+            .date()
+            .map(|d| d.to_timestamp())
+            .or(internal_date)
+            .unwrap_or(0),
         has_attachments,
         in_reply_to: header_ids(msg.in_reply_to()),
         references: header_ids(msg.references()),
@@ -100,7 +128,9 @@ pub fn summary_from_headers(folder: &str, uid: u32, headers: &[u8], internal_dat
 
 pub fn parse(raw: &[u8]) -> Option<Message<'_>> {
     match fix_ut_dates(raw) {
-        Some(fixed) => MessageParser::default().parse(&fixed).map(|m| m.into_owned()),
+        Some(fixed) => MessageParser::default()
+            .parse(&fixed)
+            .map(|m| m.into_owned()),
         None => MessageParser::default().parse(raw),
     }
 }
@@ -119,7 +149,10 @@ fn fix_ut_dates(raw: &[u8]) -> Option<Vec<u8>> {
             break; // end of headers
         }
         consumed += line.len();
-        if content.len() > 5 && content[..5].eq_ignore_ascii_case(b"date:") && content.ends_with(b" UT") {
+        if content.len() > 5
+            && content[..5].eq_ignore_ascii_case(b"date:")
+            && content.ends_with(b" UT")
+        {
             out.extend_from_slice(&content[..content.len() - 2]);
             out.extend_from_slice(b"GMT");
             out.extend_from_slice(&line[content.len()..]);
@@ -135,7 +168,11 @@ fn fix_ut_dates(raw: &[u8]) -> Option<Vec<u8>> {
 pub fn body_from_raw(raw: &[u8]) -> Body {
     let Some(msg) = parse(raw) else {
         let text = String::from_utf8_lossy(raw).into_owned();
-        return Body { snippet: snippet(&text), text, ..Default::default() };
+        return Body {
+            snippet: snippet(&text),
+            text,
+            ..Default::default()
+        };
     };
 
     let html_source = msg.html_bodies().find_map(|p| match &p.body {
@@ -158,10 +195,15 @@ pub fn body_from_raw(raw: &[u8]) -> Body {
             .map(|ct| format!("{}/{}", ct.ctype(), ct.subtype().unwrap_or("octet-stream")))
             .unwrap_or_else(|| "application/octet-stream".into());
         if let Some(cid) = part.content_id() {
-            inline_parts.insert(cid.trim_matches(['<', '>']).to_string(), (mime_type.clone(), part.contents().to_vec()));
+            inline_parts.insert(
+                cid.trim_matches(['<', '>']).to_string(),
+                (mime_type.clone(), part.contents().to_vec()),
+            );
         }
         let name = part.attachment_name().map(str::to_string).or_else(|| {
-            part.message().and_then(|m| m.subject()).map(|s| format!("{s}.eml"))
+            part.message()
+                .and_then(|m| m.subject())
+                .map(|s| format!("{s}.eml"))
         });
         // Inline images without a filename are part of the HTML, not something to save.
         if name.is_none() && part.content_id().is_some() {
@@ -183,7 +225,14 @@ pub fn body_from_raw(raw: &[u8]) -> Body {
         None => (None, false),
     };
 
-    Body { snippet: snippet(&text), text, html, attachments, inline_parts, has_remote_content }
+    Body {
+        snippet: snippet(&text),
+        text,
+        html,
+        attachments,
+        inline_parts,
+        has_remote_content,
+    }
 }
 
 /// Raw bytes of the attachment with the given index, for saving to disk.
@@ -209,7 +258,10 @@ pub fn snippet(text: &str) -> String {
         .filter(|l| !l.trim_start().starts_with('>'))
         .flat_map(str::split_whitespace)
         // html2text draws table borders with box-drawing characters.
-        .filter(|w| !w.chars().all(|c| ('\u{2500}'..='\u{257F}').contains(&c) || c == '.'))
+        .filter(|w| {
+            !w.chars()
+                .all(|c| ('\u{2500}'..='\u{257F}').contains(&c) || c == '.')
+        })
         .collect::<Vec<_>>()
         .join(" ");
     collapsed.chars().take(160).collect()
@@ -228,25 +280,32 @@ pub fn sanitize_html(html: &str) -> (String, bool) {
             .add_tags(["style", "center", "font"])
             .rm_clean_content_tags(["style"])
             .add_generic_attributes([
-                "style", "class", "id", "align", "valign", "width", "height", "bgcolor", "border", "dir", "lang",
-                "title", "color",
+                "style", "class", "id", "align", "valign", "width", "height", "bgcolor", "border",
+                "dir", "lang", "title", "color",
             ])
             .add_tag_attributes("table", ["cellpadding", "cellspacing", "background"])
             .add_tag_attributes("td", ["background", "nowrap"])
             .add_tag_attributes("font", ["face", "size"])
-            .url_schemes(HashSet::from(["http", "https", "mailto", "cid", "data", "tel"]))
+            .url_schemes(HashSet::from([
+                "http", "https", "mailto", "cid", "data", "tel",
+            ]))
             .url_relative(ammonia::UrlRelative::Deny)
             .link_rel(Some("noopener noreferrer"))
             .attribute_filter(move |_element, attribute, value| {
                 let lower = value.trim_start().to_ascii_lowercase();
                 if lower.starts_with("cid:") {
                     let cid = &value.trim_start()[4..];
-                    return Some(Cow::Owned(format!("{CONTENT_ORIGIN}/cid/{}", percent_encode(cid))));
+                    return Some(Cow::Owned(format!(
+                        "{CONTENT_ORIGIN}/cid/{}",
+                        percent_encode(cid)
+                    )));
                 }
                 if lower.starts_with("data:") && !lower.starts_with("data:image/") {
                     return None;
                 }
-                if matches!(attribute, "src" | "background") && (lower.starts_with("http:") || lower.starts_with("https:")) {
+                if matches!(attribute, "src" | "background")
+                    && (lower.starts_with("http:") || lower.starts_with("https:"))
+                {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 if attribute == "style" && lower.contains("url(") {
@@ -256,14 +315,17 @@ pub fn sanitize_html(html: &str) -> (String, bool) {
             });
         builder.clean(html).to_string()
     };
-    let remote = remote.load(std::sync::atomic::Ordering::Relaxed) || cleaned.to_ascii_lowercase().contains("url(http");
+    let remote = remote.load(std::sync::atomic::Ordering::Relaxed)
+        || cleaned.to_ascii_lowercase().contains("url(http");
     (cleaned, remote)
 }
 
 fn percent_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'@' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'@' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -274,12 +336,16 @@ pub fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
-            && let Some(b) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Some(b) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
         out.push(bytes[i]);
         i += 1;
     }
@@ -336,8 +402,14 @@ pub fn render_document(body: &Body) -> String {
 pub fn render_conversation(messages: &[(String, Option<&Body>)], current: usize) -> String {
     let mut content = String::new();
     for (i, (heading, body)) in messages.iter().enumerate() {
-        let class = if i == current { "message current" } else { "message" };
-        let inner = body.map(body_html).unwrap_or_else(|| "<p class=\"loading\">Loading…</p>".into());
+        let class = if i == current {
+            "message current"
+        } else {
+            "message"
+        };
+        let inner = body
+            .map(body_html)
+            .unwrap_or_else(|| "<p class=\"loading\">Loading…</p>".into());
         content.push_str(&format!(
             "<section id=\"m{i}\" class=\"{class}\"><h2>{}</h2>{inner}</section>",
             html_escape::encode_text(heading)
@@ -367,7 +439,11 @@ fn document(content: &str) -> String {
 /// `allow-scripts` disables scripting entirely; the fetch directives are a second
 /// layer behind the renderer's own request blocking.
 pub fn content_security_policy(allow_remote_images: bool) -> String {
-    let img = if allow_remote_images { "https: http: data:" } else { "data:" };
+    let img = if allow_remote_images {
+        "https: http: data:"
+    } else {
+        "data:"
+    };
     format!(
         "sandbox; default-src 'none'; style-src 'unsafe-inline'; \
          img-src {CONTENT_ORIGIN} {img}; font-src {CONTENT_ORIGIN} data:; form-action 'none'"
@@ -440,7 +516,12 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
     let to = parse_address_list(&draft.to);
     let cc = parse_address_list(&draft.cc);
     let bcc = parse_address_list(&draft.bcc);
-    let recipients: Vec<String> = to.iter().chain(&cc).chain(&bcc).map(|(_, a)| a.clone()).collect();
+    let recipients: Vec<String> = to
+        .iter()
+        .chain(&cc)
+        .chain(&bcc)
+        .map(|(_, a)| a.clone())
+        .collect();
     if recipients.is_empty() {
         return Err(anyhow!("add at least one recipient"));
     }
@@ -451,7 +532,14 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
     }
     let to_mb = |list: &[(String, String)]| {
         MbAddress::new_list(
-            list.iter().map(|(n, a)| MbAddress::new_address(if n.is_empty() { None } else { Some(n.clone()) }, a.clone())).collect(),
+            list.iter()
+                .map(|(n, a)| {
+                    MbAddress::new_address(
+                        if n.is_empty() { None } else { Some(n.clone()) },
+                        a.clone(),
+                    )
+                })
+                .collect(),
         )
     };
 
@@ -463,7 +551,11 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
     if !cc.is_empty() {
         builder = builder.cc(to_mb(&cc));
     }
-    let strip = |s: &str| s.split_whitespace().map(|id| id.trim_matches(['<', '>']).to_string()).collect::<Vec<_>>();
+    let strip = |s: &str| {
+        s.split_whitespace()
+            .map(|id| id.trim_matches(['<', '>']).to_string())
+            .collect::<Vec<_>>()
+    };
     if !draft.in_reply_to.is_empty() {
         builder = builder.in_reply_to(strip(&draft.in_reply_to));
     }
@@ -472,7 +564,10 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
     }
     for path in &draft.attachments {
         let data = std::fs::read(path).map_err(|e| anyhow!("reading {}: {e}", path.display()))?;
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "attachment".into());
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "attachment".into());
         builder = builder.attachment(guess_mime(&name), name, data);
     }
     let raw = builder.write_to_vec()?;
@@ -480,7 +575,12 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
 }
 
 fn guess_mime(name: &str) -> &'static str {
-    match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+    match name
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("pdf") => "application/pdf",
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
@@ -510,7 +610,11 @@ fn prefixed(prefix: &str, subject: &str) -> String {
 
 fn format_date(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
-        .map(|d| d.with_timezone(&chrono::Local).format("%a, %d %b %Y at %H:%M").to_string())
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%a, %d %b %Y at %H:%M")
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -537,8 +641,16 @@ pub fn reply_draft(kind: ReplyKind, original: &MessageSummary, body_text: &str, 
             let cc = if matches!(kind, ReplyKind::ReplyAll) {
                 parse_address_list(&format!("{}, {}", original.to, original.cc))
                     .into_iter()
-                    .filter(|(_, a)| !a.eq_ignore_ascii_case(me) && !a.eq_ignore_ascii_case(&original.from_addr))
-                    .map(|(n, a)| if n.is_empty() { a } else { format!("{n} <{a}>") })
+                    .filter(|(_, a)| {
+                        !a.eq_ignore_ascii_case(me) && !a.eq_ignore_ascii_case(&original.from_addr)
+                    })
+                    .map(|(n, a)| {
+                        if n.is_empty() {
+                            a
+                        } else {
+                            format!("{n} <{a}>")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             } else {
@@ -554,7 +666,10 @@ pub fn reply_draft(kind: ReplyKind, original: &MessageSummary, body_text: &str, 
                 to: sender.clone(),
                 cc,
                 subject: prefixed("Re:", &original.subject),
-                body: format!("\n\nOn {}, {sender} wrote:\n{quoted}", format_date(original.date)),
+                body: format!(
+                    "\n\nOn {}, {sender} wrote:\n{quoted}",
+                    format_date(original.date)
+                ),
                 in_reply_to: original.message_id.clone(),
                 references,
                 ..Default::default()
@@ -594,15 +709,36 @@ iVBORw0KGgo=\r\n\
     fn sanitizes_active_content() {
         let body = body_from_raw(HTML_MAIL);
         let html = body.html.unwrap();
-        for bad in ["<script", "alert(1)", "onload", "javascript:", "<form", "<input", "<iframe", "target="] {
+        for bad in [
+            "<script",
+            "alert(1)",
+            "onload",
+            "javascript:",
+            "<form",
+            "<input",
+            "<iframe",
+            "target=",
+        ] {
             assert!(!html.contains(bad), "{bad} survived: {html}");
         }
-        assert!(html.contains("p{color:red}"), "style should be kept: {html}");
-        assert!(html.contains("https://message.invalid/cid/logo@x"), "{html}");
+        assert!(
+            html.contains("p{color:red}"),
+            "style should be kept: {html}"
+        );
+        assert!(
+            html.contains("https://message.invalid/cid/logo@x"),
+            "{html}"
+        );
         assert!(html.contains("noopener"));
         assert!(body.has_remote_content);
-        assert_eq!(body.inline_parts.get("logo@x").map(|p| p.0.as_str()), Some("image/png"));
-        assert!(body.attachments.is_empty(), "inline image is not an attachment");
+        assert_eq!(
+            body.inline_parts.get("logo@x").map(|p| p.0.as_str()),
+            Some("image/png")
+        );
+        assert!(
+            body.attachments.is_empty(),
+            "inline image is not an attachment"
+        );
         assert!(body.text.contains("Hi"));
     }
 
@@ -649,13 +785,21 @@ iVBORw0KGgo=\r\n\
     #[test]
     fn reply_all_excludes_self_and_threads() {
         let original = summary_from_headers("INBOX", 1, HTML_MAIL, None);
-        let d = reply_draft(ReplyKind::ReplyAll, &original, "line1\nline2", "bob@example.org");
+        let d = reply_draft(
+            ReplyKind::ReplyAll,
+            &original,
+            "line1\nline2",
+            "bob@example.org",
+        );
         assert_eq!(d.to, "Alice <alice@example.org>");
         assert_eq!(d.cc, "carol@example.org");
         assert_eq!(d.subject, "Re: Grüße");
         assert_eq!(d.in_reply_to, "<abc@example.org>");
         assert!(d.body.contains("> line1\n> line2"));
-        assert_eq!(reply_draft(ReplyKind::Reply, &original, "", "").subject, "Re: Grüße");
+        assert_eq!(
+            reply_draft(ReplyKind::Reply, &original, "", "").subject,
+            "Re: Grüße"
+        );
         assert_eq!(prefixed("Re:", "RE: x"), "RE: x");
     }
 
@@ -672,9 +816,15 @@ iVBORw0KGgo=\r\n\
             ..Default::default()
         };
         let built = build_message(&draft).unwrap();
-        assert_eq!(built.recipients, vec!["you@example.org", "hidden@example.org"]);
+        assert_eq!(
+            built.recipients,
+            vec!["you@example.org", "hidden@example.org"]
+        );
         let raw = String::from_utf8(built.raw.clone()).unwrap();
-        assert!(!raw.contains("hidden@example.org"), "Bcc must not appear in headers");
+        assert!(
+            !raw.contains("hidden@example.org"),
+            "Bcc must not appear in headers"
+        );
         let parsed = parse(&built.raw).unwrap();
         assert_eq!(parsed.subject(), Some("Hello"));
         assert_eq!(parsed.in_reply_to().as_text(), Some("abc@example.org"));
@@ -685,7 +835,10 @@ iVBORw0KGgo=\r\n\
     fn parses_obsolete_ut_zone() {
         let raw = b"Date: Sat, 14 Sep 2002 06:00:48 UT\nFrom: A <a@b.c>\nSubject: x\n\nbody\n";
         let s = summary_from_headers("INBOX", 1, raw, None);
-        assert_eq!((s.from_addr.as_str(), s.subject.as_str(), s.date), ("a@b.c", "x", 1031983248));
+        assert_eq!(
+            (s.from_addr.as_str(), s.subject.as_str(), s.date),
+            ("a@b.c", "x", 1031983248)
+        );
         assert!(body_from_raw(raw).text.contains("body"));
     }
 
@@ -696,7 +849,12 @@ iVBORw0KGgo=\r\n\
 
     #[test]
     fn html_to_text_has_no_markup() {
-        assert_eq!(html_to_text("<h1>Hi</h1><p><b>there</b></p>").split_whitespace().collect::<Vec<_>>(), ["Hi", "there"]);
+        assert_eq!(
+            html_to_text("<h1>Hi</h1><p><b>there</b></p>")
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            ["Hi", "there"]
+        );
     }
 
     #[test]
@@ -708,8 +866,13 @@ iVBORw0KGgo=\r\n\
     fn renders_conversation_with_anchors() {
         let body = body_from_raw(b"Subject: x\r\n\r\nHello <there>\r\n");
         let doc = render_conversation(&[("Bob <b@x>".into(), Some(&body)), ("Me".into(), None)], 1);
-        assert!(doc.contains("<section id=\"m0\" class=\"message\"><h2>Bob &lt;b@x&gt;</h2>"), "{doc}");
+        assert!(
+            doc.contains("<section id=\"m0\" class=\"message\"><h2>Bob &lt;b@x&gt;</h2>"),
+            "{doc}"
+        );
         assert!(doc.contains("Hello &lt;there&gt;"));
-        assert!(doc.contains("<section id=\"m1\" class=\"message current\"><h2>Me</h2><p class=\"loading\">"));
+        assert!(doc.contains(
+            "<section id=\"m1\" class=\"message current\"><h2>Me</h2><p class=\"loading\">"
+        ));
     }
 }

@@ -70,6 +70,10 @@ Builds without Servo for now (HTML is shown as text). Toolchain: JDK 21, Android
 `platforms;android-35`, `build-tools;35.0.0`, `ndk;28.2.13676358`, Rust targets
 `x86_64-linux-android`/`aarch64-linux-android`, and `cargo install cargo-apk`.
 
+`scripts/run-android.sh` does all of the following: it starts the emulator (AVD `mailclient`) if
+no phone is connected, builds for the device's architecture, installs, sets up access to the
+local test server when there is one, and launches the app. By hand:
+
 ```sh
 export JAVA_HOME=~/Android/jdk ANDROID_HOME=~/Android/Sdk ANDROID_NDK_ROOT=~/Android/Sdk/ndk/28.2.13676358 PATH=~/Android/jdk/bin:$PATH
 cargo apk build -p mailclient --lib --no-default-features --target x86_64-linux-android   # emulator
@@ -88,6 +92,7 @@ the background.
 
 Outlook.com and Microsoft 365 need OAuth sign-in, which requires a one-time Microsoft app
 registration: see [docs/oauth-microsoft.md](docs/oauth-microsoft.md).
+Gmail signs in the same way with a Google OAuth client: see [docs/oauth-google.md](docs/oauth-google.md).
 
 Slint is pinned to a git revision: Slint 1.18 on crates.io conflicts with Servo 0.7's
 ICU dependency, and 1.17 lacks the wgpu 30 integration. `rusqlite` is pinned to 0.38

@@ -68,5 +68,4 @@ has it. Without an ID, the sign-in button reports "this build has no Microsoft c
 - Microsoft 365 organizations may block unapproved third-party apps until an admin consents.
 - Consent screens show "unverified" until publisher verification (needs a Microsoft Partner
   Network ID).
-- Gmail needs the same flow with Google endpoints, plus Google's verification for the
-  restricted `https://mail.google.com/` scope.
+- Gmail uses the same flow: see [oauth-google.md](oauth-google.md).

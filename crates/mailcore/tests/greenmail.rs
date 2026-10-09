@@ -31,7 +31,13 @@ fn send_sync_flag_delete_idle() {
     mailcore::init_tls();
 
     // Fresh mailbox per run; GreenMail creates users on first login.
-    let user = format!("t{}@localhost", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    let user = format!(
+        "t{}@localhost",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
     let account = AccountConfig {
         name: "Test".into(),
         email: user.clone(),
@@ -54,7 +60,10 @@ fn send_sync_flag_delete_idle() {
         let _ = tx.send(e);
     });
     let wait_event = |pred: &dyn Fn(&Event) -> bool| loop {
-        match rx.recv_timeout(Duration::from_secs(20)).expect("engine event") {
+        match rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("engine event")
+        {
             Event::Error(e) => panic!("engine error: {e}"),
             e if pred(&e) => return e,
             _ => {}
@@ -72,8 +81,14 @@ fn send_sync_flag_delete_idle() {
         attachments: vec![attachment],
         ..Default::default()
     };
-    engine.send(Command::Send { id: 1, draft, replied_to: None });
-    if let Event::SendFailed(_, e) = wait_event(&|e| matches!(e, Event::Sent(1) | Event::SendFailed(..))) {
+    engine.send(Command::Send {
+        id: 1,
+        draft,
+        replied_to: None,
+    });
+    if let Event::SendFailed(_, e) =
+        wait_event(&|e| matches!(e, Event::Sent(1) | Event::SendFailed(..)))
+    {
         panic!("send failed: {e}");
     }
 
@@ -81,17 +96,32 @@ fn send_sync_flag_delete_idle() {
     wait_until("message in cache", || {
         engine.send(Command::SyncAll);
         std::thread::sleep(Duration::from_millis(300));
-        store.messages("INBOX", 10).unwrap().iter().any(|m| m.subject == "Hello GreenMail")
+        store
+            .messages("INBOX", 10)
+            .unwrap()
+            .iter()
+            .any(|m| m.subject == "Hello GreenMail")
     });
     let msg = store.messages("INBOX", 10).unwrap().remove(0);
     assert_eq!(msg.from_addr, user);
-    wait_until("body prefetched", || store.raw("INBOX", msg.uid).unwrap().is_some());
+    wait_until("body prefetched", || {
+        store.raw("INBOX", msg.uid).unwrap().is_some()
+    });
     let body = mime::body_from_raw(&store.raw("INBOX", msg.uid).unwrap().unwrap());
     assert!(body.text.contains("first body"), "{}", body.text);
-    assert_eq!(body.attachments.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+    assert_eq!(
+        body.attachments
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>(),
+        ["notes.txt"]
+    );
 
     // Direct server view, to check what the engine pushed.
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let server_flags = |uid: u32| {
         rt.block_on(async {
             let mut imap = Imap::connect(&account, "any").await.unwrap();
@@ -103,10 +133,18 @@ fn send_sync_flag_delete_idle() {
     };
 
     // Flag locally, flush, and check the server.
-    store.apply_local("INBOX", msg.uid, &PendingOp::SetFlagged(true)).unwrap();
+    store
+        .apply_local("INBOX", msg.uid, &PendingOp::SetFlagged(true))
+        .unwrap();
     engine.send(Command::Flush);
     wait_until("flag pushed", || store.pending_ops().unwrap().is_empty());
-    assert!(server_flags(msg.uid).1.iter().any(|f| f.0 == msg.uid && f.2), "flag not on server");
+    assert!(
+        server_flags(msg.uid)
+            .1
+            .iter()
+            .any(|f| f.0 == msg.uid && f.2),
+        "flag not on server"
+    );
 
     // Delete (no Trash folder on GreenMail, so this expunges).
     let op = engine::delete_op(&store, "INBOX").unwrap();
@@ -117,10 +155,23 @@ fn send_sync_flag_delete_idle() {
     assert_eq!(server_flags(msg.uid).0, 0, "message still on server");
 
     // New mail must show up through IDLE alone, without asking for a sync.
-    let draft = Draft { to: user.clone(), subject: "Via IDLE".into(), body: "second".into(), ..Default::default() };
-    engine.send(Command::Send { id: 2, draft, replied_to: None });
+    let draft = Draft {
+        to: user.clone(),
+        subject: "Via IDLE".into(),
+        body: "second".into(),
+        ..Default::default()
+    };
+    engine.send(Command::Send {
+        id: 2,
+        draft,
+        replied_to: None,
+    });
     wait_event(&|e| matches!(e, Event::Sent(2)));
     wait_until("IDLE-triggered sync", || {
-        store.messages("INBOX", 10).unwrap().iter().any(|m| m.subject == "Via IDLE")
+        store
+            .messages("INBOX", 10)
+            .unwrap()
+            .iter()
+            .any(|m| m.subject == "Via IDLE")
     });
 }

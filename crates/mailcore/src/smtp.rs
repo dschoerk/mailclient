@@ -6,10 +6,17 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
 use crate::config::{AccountConfig, Auth, Security};
 
-pub async fn send(account: &AccountConfig, password: &str, raw: &[u8], recipients: &[String]) -> Result<()> {
+pub async fn send(
+    account: &AccountConfig,
+    password: &str,
+    raw: &[u8],
+    recipients: &[String],
+) -> Result<()> {
     let mut builder = match account.smtp_security {
         Security::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(&account.smtp_host)?,
-        Security::StartTls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&account.smtp_host)?,
+        Security::StartTls => {
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&account.smtp_host)?
+        }
     };
     if let Some(pem) = crate::imap::extra_ca_pem()? {
         let params = TlsParameters::builder(account.smtp_host.clone())
@@ -26,15 +33,24 @@ pub async fn send(account: &AccountConfig, password: &str, raw: &[u8], recipient
     }
     let transport = builder
         .port(account.smtp_port)
-        .credentials(Credentials::new(account.username.clone(), password.to_string()))
+        .credentials(Credentials::new(
+            account.username.clone(),
+            password.to_string(),
+        ))
         .build();
 
-    let from = account.email.parse().with_context(|| format!("invalid sender address {}", account.email))?;
+    let from = account
+        .email
+        .parse()
+        .with_context(|| format!("invalid sender address {}", account.email))?;
     let to = recipients
         .iter()
         .map(|r| r.parse().with_context(|| format!("invalid recipient {r}")))
         .collect::<Result<Vec<_>>>()?;
     let envelope = Envelope::new(Some(from), to)?;
-    transport.send_raw(&envelope, raw).await.context("SMTP send failed")?;
+    transport
+        .send_raw(&envelope, raw)
+        .await
+        .context("SMTP send failed")?;
     Ok(())
 }

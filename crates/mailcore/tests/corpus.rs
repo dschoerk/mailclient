@@ -40,7 +40,8 @@ fn corpus() -> Vec<(String, Vec<u8>)> {
     }
     for path in html_files {
         let html = std::fs::read_to_string(&path).unwrap();
-        let text = std::fs::read_to_string(path.with_extension("txt")).unwrap_or_else(|_| mime::html_to_text(&html));
+        let text = std::fs::read_to_string(path.with_extension("txt"))
+            .unwrap_or_else(|_| mime::html_to_text(&html));
         let name = rel(&root, &path);
         let raw = mail_builder::MessageBuilder::new()
             .from(("Template Sender", "templates@example.org"))
@@ -63,14 +64,30 @@ fn rel(root: &Path, path: &Path) -> String {
 /// Returns why sanitized HTML is unsafe, if it is.
 fn unsafe_markup(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();
-    for bad in ["<script", "<iframe", "<object", "<embed", "<form", "<base", "javascript:"] {
+    for bad in [
+        "<script",
+        "<iframe",
+        "<object",
+        "<embed",
+        "<form",
+        "<base",
+        "javascript:",
+    ] {
         if lower.contains(bad) {
             return Some(bad.into());
         }
     }
     // Event handler attributes, looked for inside tags only.
-    for tag in lower.split('<').skip(1).map(|t| t.split('>').next().unwrap_or("")) {
-        if let Some(attr) = tag.split_whitespace().skip(1).find(|a| a.starts_with("on") && a.contains('=')) {
+    for tag in lower
+        .split('<')
+        .skip(1)
+        .map(|t| t.split('>').next().unwrap_or(""))
+    {
+        if let Some(attr) = tag
+            .split_whitespace()
+            .skip(1)
+            .find(|a| a.starts_with("on") && a.contains('='))
+        {
             return Some(format!("handler {}", attr.split('=').next().unwrap()));
         }
     }
@@ -105,7 +122,11 @@ fn corpus_parses_and_sanitizes() {
             failures.push(format!("{name}: no sender"));
         }
     }
-    println!("{} messages, {html_count} with HTML, {} failures", corpus.len(), failures.len());
+    println!(
+        "{} messages, {html_count} with HTML, {} failures",
+        corpus.len(),
+        failures.len()
+    );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -115,7 +136,12 @@ fn corpus_parses_and_sanitizes() {
 #[ignore = "needs scripts/fetch-testdata.sh and scripts/test-mailserver.sh"]
 fn load_into_greenmail() {
     // SAFETY: set before any other thread starts.
-    unsafe { std::env::set_var("MAILCLIENT_EXTRA_CA", testdata().join("../test-mailserver/ca.pem")) };
+    unsafe {
+        std::env::set_var(
+            "MAILCLIENT_EXTRA_CA",
+            testdata().join("../test-mailserver/ca.pem"),
+        )
+    };
     mailcore::init_tls();
     let account = mailcore::AccountConfig {
         imap_host: "localhost".into(),
@@ -124,9 +150,14 @@ fn load_into_greenmail() {
         smtp_port: 3465,
         ..mailcore::AccountConfig::guess("corpus@localhost")
     };
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
-        let mut imap = mailcore::imap::Imap::connect(&account, "any").await.unwrap();
+        let mut imap = mailcore::imap::Imap::connect(&account, "any")
+            .await
+            .unwrap();
         if imap.select("INBOX").await.unwrap().exists > 0 {
             println!("corpus@localhost already has mail; restart the server to reload");
             return;

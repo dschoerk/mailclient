@@ -38,7 +38,11 @@ pub enum Command {
     /// Push locally queued changes to the server.
     Flush,
     /// `id` is echoed back in [`Event::Sent`] / [`Event::SendFailed`].
-    Send { id: u64, draft: Draft, replied_to: Option<(String, u32)> },
+    Send {
+        id: u64,
+        draft: Draft,
+        replied_to: Option<(String, u32)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,7 +95,16 @@ impl Engine {
                     };
                     // The only backend so far; a protocol choice in AccountConfig would branch here.
                     tokio::spawn(idle_loop::<Imap>(account.clone(), creds.clone(), idle_tx));
-                    Worker::<Imap> { account, creds, store, conn: None, active: None, on_event }.run(rx).await;
+                    Worker::<Imap> {
+                        account,
+                        creds,
+                        store,
+                        conn: None,
+                        active: None,
+                        on_event,
+                    }
+                    .run(rx)
+                    .await;
                 });
             })
             .expect("spawning engine thread");
@@ -118,7 +131,9 @@ pub fn delete_op(store: &Store, folder: &str) -> Result<PendingOp> {
 pub fn archive_op(store: &Store, folder: &str) -> Result<PendingOp> {
     let dest = match store.folder_by_role(Role::Archive)? {
         Some(a) => a,
-        None => store.folder_by_role(Role::All)?.ok_or_else(|| anyhow!("no Archive folder on this account"))?,
+        None => store
+            .folder_by_role(Role::All)?
+            .ok_or_else(|| anyhow!("no Archive folder on this account"))?,
     };
     if dest == folder {
         return Err(anyhow!("message is already archived"));
@@ -182,7 +197,10 @@ impl<B: Backend> Worker<B> {
 
     async fn conn(&mut self) -> Result<&mut B> {
         if self.conn.is_none() {
-            self.emit(Event::Status(format!("Connecting to {}…", self.account.imap_host)));
+            self.emit(Event::Status(format!(
+                "Connecting to {}…",
+                self.account.imap_host
+            )));
             let secret = self.creds.secret().await?;
             self.conn = Some(B::connect(&self.account, &secret).await?);
             self.emit(Event::Online(true));
@@ -222,12 +240,18 @@ impl<B: Backend> Worker<B> {
                 self.emit(Event::BodyReady { folder, uid });
             }
             Command::Flush => self.flush().await?,
-            Command::Send { id, draft, replied_to } => {
+            Command::Send {
+                id,
+                draft,
+                replied_to,
+            } => {
                 let sent = std::cell::Cell::new(false);
                 if let Err(e) = self.send(id, &draft, replied_to, &sent).await {
                     if sent.get() {
                         // Delivered, but filing it in Sent failed: not a send failure.
-                        return Err(e.context("message sent, but saving it to the Sent folder failed"));
+                        return Err(
+                            e.context("message sent, but saving it to the Sent folder failed")
+                        );
                     }
                     self.emit(Event::SendFailed(id, format!("{e:#}")));
                     self.emit(Event::Status(String::new()));
@@ -258,9 +282,10 @@ impl<B: Backend> Worker<B> {
         self.emit(Event::Status(format!("Syncing {folder}…")));
         let state = self.conn().await?.select(folder).await?;
         if let Some(v) = state.uid_validity
-            && self.store.check_uidvalidity(folder, v)? {
-                log::info!("UIDVALIDITY of {folder} changed, cache reset");
-            }
+            && self.store.check_uidvalidity(folder, v)?
+        {
+            log::info!("UIDVALIDITY of {folder} changed, cache reset");
+        }
 
         match (self.store.min_uid(folder)?, self.store.max_uid(folder)?) {
             (Some(min), Some(max)) => {
@@ -278,7 +303,11 @@ impl<B: Backend> Worker<B> {
                 self.store.update_flags(folder, &flags)?;
             }
             _ => {
-                let latest = self.conn().await?.fetch_latest(folder, state.exists, INITIAL_WINDOW).await?;
+                let latest = self
+                    .conn()
+                    .await?
+                    .fetch_latest(folder, state.exists, INITIAL_WINDOW)
+                    .await?;
                 self.store.upsert_messages(&latest)?;
             }
         }
@@ -297,7 +326,14 @@ impl<B: Backend> Worker<B> {
         let bodies = self.conn().await?.fetch_bodies(folder, uids).await?;
         for (uid, raw) in bodies {
             let body = mime::body_from_raw(&raw);
-            self.store.set_body(folder, uid, &raw, &body.snippet, &body.text, !body.attachments.is_empty())?;
+            self.store.set_body(
+                folder,
+                uid,
+                &raw,
+                &body.snippet,
+                &body.text,
+                !body.attachments.is_empty(),
+            )?;
         }
         Ok(())
     }
@@ -321,16 +357,18 @@ impl<B: Backend> Worker<B> {
         self.emit(Event::Status("Message sent".into()));
 
         if let Some((folder, uid)) = replied_to {
-            self.store.apply_local(&folder, uid, &PendingOp::SetAnswered)?;
+            self.store
+                .apply_local(&folder, uid, &PendingOp::SetAnswered)?;
             self.emit(Event::MessagesChanged(folder));
         }
         if !B::files_sent(&self.account)
-            && let Some(sent) = self.store.folder_by_role(Role::Sent)? {
-                self.conn().await?.save_sent(&sent, &built.raw).await?;
-                if self.active.as_deref() == Some(sent.as_str()) {
-                    self.sync_folder(&sent).await?;
-                }
+            && let Some(sent) = self.store.folder_by_role(Role::Sent)?
+        {
+            self.conn().await?.save_sent(&sent, &built.raw).await?;
+            if self.active.as_deref() == Some(sent.as_str()) {
+                self.sync_folder(&sent).await?;
             }
+        }
         self.flush().await?;
         Ok(())
     }

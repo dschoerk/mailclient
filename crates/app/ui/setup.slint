@@ -103,7 +103,7 @@ export component SetupView inherits Rectangle {
                 HorizontalLayout {
                     padding-left: 98px;
                     CheckBox {
-                        text: "Sign in with Microsoft (Outlook.com, Microsoft 365)";
+                        text: "Sign in with browser (Gmail, Outlook.com, Microsoft 365)";
                         checked <=> data.oauth;
                     }
                 }
@@ -126,7 +126,7 @@ export component SetupView inherits Rectangle {
                         clicked => root.cancel();
                     }
                     Button {
-                        text: data.oauth ? "Sign in with Microsoft" : "Save and connect";
+                        text: data.oauth ? "Sign in with browser" : "Save and connect";
                         primary: true;
                         enabled: !root.busy;
                         clicked => root.submit();

@@ -19,7 +19,9 @@ pub fn conversations(messages: &[MessageSummary]) -> Vec<usize> {
         i
     }
     for (i, m) in messages.iter().enumerate() {
-        let linked = [&m.message_id, &m.in_reply_to, &m.references].into_iter().flat_map(|s| s.split_whitespace());
+        let linked = [&m.message_id, &m.in_reply_to, &m.references]
+            .into_iter()
+            .flat_map(|s| s.split_whitespace());
         for id in linked {
             let node = *ids.entry(id).or_insert_with(|| {
                 parent.push(parent.len());

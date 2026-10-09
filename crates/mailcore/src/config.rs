@@ -22,6 +22,8 @@ pub enum Auth {
     Password,
     /// OAuth2 via Microsoft identity (Outlook.com, Microsoft 365).
     Microsoft,
+    /// OAuth2 via Google (Gmail).
+    Google,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +61,11 @@ struct ConfigFile {
 
 impl ConfigFile {
     fn upsert(&mut self, account: &AccountConfig) {
-        match self.accounts.iter_mut().find(|a| a.email.eq_ignore_ascii_case(&account.email)) {
+        match self
+            .accounts
+            .iter_mut()
+            .find(|a| a.email.eq_ignore_ascii_case(&account.email))
+        {
             Some(existing) => *existing = account.clone(),
             None => self.accounts.push(account.clone()),
         }
@@ -69,18 +75,46 @@ impl ConfigFile {
 impl AccountConfig {
     /// Best-effort server settings for a mail address, used to prefill the setup form.
     pub fn guess(email: &str) -> AccountConfig {
-        let domain = email.rsplit_once('@').map(|(_, d)| d.to_lowercase()).unwrap_or_default();
-        let microsoft = matches!(domain.split('.').next(), Some("outlook" | "hotmail" | "live" | "msn"));
+        let domain = email
+            .rsplit_once('@')
+            .map(|(_, d)| d.to_lowercase())
+            .unwrap_or_default();
+        let microsoft = matches!(
+            domain.split('.').next(),
+            Some("outlook" | "hotmail" | "live" | "msn")
+        );
+        let google = matches!(domain.as_str(), "gmail.com" | "googlemail.com");
         let (imap, smtp, smtp_port, smtp_security) = match domain.as_str() {
-            "gmail.com" | "googlemail.com" => ("imap.gmail.com", "smtp.gmail.com", 465, Security::Tls),
-            _ if microsoft => ("outlook.office365.com", "smtp.office365.com", 587, Security::StartTls),
-            "fastmail.com" | "fastmail.fm" => ("imap.fastmail.com", "smtp.fastmail.com", 465, Security::Tls),
-            "icloud.com" | "me.com" => ("imap.mail.me.com", "smtp.mail.me.com", 587, Security::StartTls),
-            "gmx.net" | "gmx.at" | "gmx.de" => ("imap.gmx.net", "mail.gmx.net", 587, Security::StartTls),
+            "gmail.com" | "googlemail.com" => {
+                ("imap.gmail.com", "smtp.gmail.com", 465, Security::Tls)
+            }
+            _ if microsoft => (
+                "outlook.office365.com",
+                "smtp.office365.com",
+                587,
+                Security::StartTls,
+            ),
+            "fastmail.com" | "fastmail.fm" => {
+                ("imap.fastmail.com", "smtp.fastmail.com", 465, Security::Tls)
+            }
+            "icloud.com" | "me.com" => (
+                "imap.mail.me.com",
+                "smtp.mail.me.com",
+                587,
+                Security::StartTls,
+            ),
+            "gmx.net" | "gmx.at" | "gmx.de" => {
+                ("imap.gmx.net", "mail.gmx.net", 587, Security::StartTls)
+            }
             _ => ("", "", 465, Security::Tls),
         };
-        let or_prefixed =
-            |host: &str, prefix: &str| if host.is_empty() { format!("{prefix}.{domain}") } else { host.to_string() };
+        let or_prefixed = |host: &str, prefix: &str| {
+            if host.is_empty() {
+                format!("{prefix}.{domain}")
+            } else {
+                host.to_string()
+            }
+        };
         AccountConfig {
             name: email.split('@').next().unwrap_or_default().to_string(),
             email: email.to_string(),
@@ -91,14 +125,23 @@ impl AccountConfig {
             smtp_host: or_prefixed(smtp, "smtp"),
             smtp_port,
             smtp_security,
-            auth: if microsoft { Auth::Microsoft } else { Auth::Password },
+            auth: if microsoft {
+                Auth::Microsoft
+            } else if google {
+                Auth::Google
+            } else {
+                Auth::Password
+            },
         }
     }
 
     #[cfg(not(target_os = "android"))]
     fn keyring_entry(&self) -> Result<keyring::Entry> {
-        keyring::Entry::new(KEYRING_SERVICE, &format!("{}@{}", self.username, self.imap_host))
-            .context("opening system keyring")
+        keyring::Entry::new(
+            KEYRING_SERVICE,
+            &format!("{}@{}", self.username, self.imap_host),
+        )
+        .context("opening system keyring")
     }
 
     /// Android: Keystore-backed store; `keyring`'s v1 mode has none for Android.
@@ -109,8 +152,11 @@ impl AccountConfig {
             Ok(store) => keyring_core::set_default_store(store),
             Err(e) => log::error!("Android keystore unavailable: {e}"),
         });
-        keyring_core::Entry::new(KEYRING_SERVICE, &format!("{}@{}", self.username, self.imap_host))
-            .context("opening Android keystore")
+        keyring_core::Entry::new(
+            KEYRING_SERVICE,
+            &format!("{}@{}", self.username, self.imap_host),
+        )
+        .context("opening Android keystore")
     }
 
     /// Password or OAuth refresh token, from `MAILCLIENT_PASSWORD` (for development) or the system keyring.
@@ -127,7 +173,9 @@ impl AccountConfig {
         if std::env::var_os("MAILCLIENT_PASSWORD").is_some() {
             return Ok(()); // the override replaces the keyring for writes too (tests, development)
         }
-        self.keyring_entry()?.set_password(password).context("saving password to keyring")
+        self.keyring_entry()?
+            .set_password(password)
+            .context("saving password to keyring")
     }
 }
 
@@ -175,7 +223,8 @@ fn read_config() -> Result<ConfigFile> {
     if !path.exists() {
         return Ok(ConfigFile::default());
     }
-    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
@@ -184,7 +233,8 @@ fn write_config(file: &ConfigFile) -> Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&path, toml::to_string_pretty(file)?).with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, toml::to_string_pretty(file)?)
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -220,9 +270,12 @@ mod tests {
         let gmail = AccountConfig::guess("someone@gmail.com");
         assert_eq!(gmail.imap_host, "imap.gmail.com");
         assert_eq!(gmail.smtp_port, 465);
-        assert_eq!(gmail.auth, Auth::Password);
+        assert_eq!(gmail.auth, Auth::Google);
         let hotmail = AccountConfig::guess("someone@hotmail.co.uk");
-        assert_eq!((hotmail.imap_host.as_str(), hotmail.auth), ("outlook.office365.com", Auth::Microsoft));
+        assert_eq!(
+            (hotmail.imap_host.as_str(), hotmail.auth),
+            ("outlook.office365.com", Auth::Microsoft)
+        );
 
         let other = AccountConfig::guess("me@example.org");
         assert_eq!(other.imap_host, "imap.example.org");
@@ -233,14 +286,27 @@ mod tests {
     #[test]
     fn config_roundtrips_through_toml() {
         let account = AccountConfig::guess("me@example.org");
-        let settings = Settings { left_handed: true, floating_buttons: true };
-        let text = toml::to_string_pretty(&ConfigFile { accounts: vec![account.clone()], settings }).unwrap();
+        let settings = Settings {
+            left_handed: true,
+            floating_buttons: true,
+        };
+        let text = toml::to_string_pretty(&ConfigFile {
+            accounts: vec![account.clone()],
+            settings,
+        })
+        .unwrap();
         let parsed: ConfigFile = toml::from_str(&text).unwrap();
         assert_eq!(parsed.accounts, vec![account]);
         assert_eq!(parsed.settings, settings);
         // Files written before a setting existed still load.
         let old: ConfigFile = toml::from_str("left_handed = true").unwrap();
-        assert_eq!(old.settings, Settings { left_handed: true, floating_buttons: false });
+        assert_eq!(
+            old.settings,
+            Settings {
+                left_handed: true,
+                floating_buttons: false
+            }
+        );
     }
 
     #[test]

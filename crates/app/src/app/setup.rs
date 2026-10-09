@@ -16,7 +16,8 @@ impl Controller {
         data.smtp_host = guess.smtp_host.into();
         data.smtp_port = guess.smtp_port.to_string().into();
         data.smtp_starttls = guess.smtp_security == Security::StartTls;
-        data.oauth = guess.auth != Auth::Password;
+        // Builds without the provider's client ID fall back to a (app) password.
+        data.oauth = mailcore::auth::available(guess.auth);
         // Follow the address while the name still looks auto-filled (typing arrives per character).
         let name = data.name.to_string();
         if name.is_empty() || guess.name.starts_with(&name) || name.starts_with(&guess.name) {
@@ -38,7 +39,12 @@ impl Controller {
             smtp_host: data.smtp_host.trim().to_string(),
             smtp_port: port(&data.smtp_port, "SMTP")?,
             smtp_security: security(data.smtp_starttls),
-            auth: if data.oauth { Auth::Microsoft } else { Auth::Password },
+            // shortcut: a ticked box on an unknown domain means Microsoft 365; Google Workspace custom domains need their own choice.
+            auth: match AccountConfig::guess(&data.email).auth {
+                _ if !data.oauth => Auth::Password,
+                Auth::Password => Auth::Microsoft,
+                auth => auth,
+            },
         };
         if !account.email.contains('@') {
             return Err(anyhow!("enter a valid email address"));
@@ -76,13 +82,13 @@ impl Controller {
                         // (secret to log in with now, secret to keep in the keyring)
                         let (login, keep) = match account.auth {
                             Auth::Password => (password.clone(), password),
-                            Auth::Microsoft => {
-                                let sign_in = mailcore::auth::SignIn::start(&account.email).await?;
+                            Auth::Microsoft | Auth::Google => {
+                                let sign_in = mailcore::auth::SignIn::start(account.auth, &account.email).await?;
                                 crate::platform::open_url(&sign_in.url)?;
                                 let tokens = tokio::time::timeout(std::time::Duration::from_secs(300), sign_in.finish())
                                     .await
                                     .map_err(|_| anyhow!("sign-in timed out; try again"))??;
-                                let refresh = tokens.refresh.ok_or_else(|| anyhow!("Microsoft returned no refresh token"))?;
+                                let refresh = tokens.refresh.ok_or_else(|| anyhow!("the sign-in returned no refresh token"))?;
                                 (tokens.access, refresh)
                             }
                         };

@@ -73,21 +73,57 @@ pub struct Folder {
     pub total: i64,
 }
 
+/// IMAP's modified UTF-7 mailbox names (RFC 3501 5.1.3), e.g. "Entw&APw-rfe" -> "Entwürfe".
+/// Malformed runs are kept as sent.
+fn decode_mutf7(name: &str) -> String {
+    use base64::Engine;
+    let mut out = String::new();
+    let mut rest = name;
+    while let Some((plain, tail)) = rest.split_once('&') {
+        out.push_str(plain);
+        let Some((run, after)) = tail.split_once('-') else {
+            out.push('&');
+            rest = tail;
+            continue;
+        };
+        rest = after;
+        if run.is_empty() {
+            out.push('&');
+            continue;
+        }
+        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(run.replace(',', "/"));
+        let units: Option<Vec<u16>> = bytes.ok().filter(|b| b.len() % 2 == 0).map(|b| {
+            b.chunks(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect()
+        });
+        match units.and_then(|u| String::from_utf16(&u).ok()) {
+            Some(text) => out.push_str(&text),
+            None => out.push_str(&format!("&{run}-")),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 impl Folder {
     /// Last path segment, e.g. "Work" for "INBOX/Work".
     pub fn display_name(&self) -> String {
         if self.role == Role::Inbox {
             return "Inbox".into();
         }
-        match &self.delimiter {
-            Some(d) if !d.is_empty() => self.name.rsplit(d.as_str()).next().unwrap_or(&self.name).to_string(),
-            _ => self.name.clone(),
-        }
+        let last = match &self.delimiter {
+            Some(d) if !d.is_empty() => self.name.rsplit(d.as_str()).next().unwrap_or(&self.name),
+            _ => &self.name,
+        };
+        decode_mutf7(last)
     }
 
     pub fn depth(&self) -> usize {
         match &self.delimiter {
-            Some(d) if !d.is_empty() && self.role == Role::Other => self.name.matches(d.as_str()).count(),
+            Some(d) if !d.is_empty() && self.role == Role::Other => {
+                self.name.matches(d.as_str()).count()
+            }
             _ => 0,
         }
     }
@@ -241,7 +277,9 @@ impl Store {
         let tx = self.conn.transaction()?;
         {
             let mut existing = tx.prepare("SELECT name FROM folders")?;
-            let names: Vec<String> = existing.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+            let names: Vec<String> = existing
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
             for name in names {
                 if !folders.iter().any(|(n, _, _)| *n == name) {
                     tx.execute("DELETE FROM messages WHERE folder = ?1", [&name])?;
@@ -280,15 +318,27 @@ impl Store {
             .collect::<Result<_, _>>()?;
         // Subfolders follow their parent: a special folder's role places it, a plain one
         // goes where its top-level ancestor goes (so "INBOX/Work" sits under Inbox).
-        let ranks: std::collections::HashMap<String, i64> =
-            folders.iter().map(|f| (f.name.clone(), f.role.rank())).collect();
+        let ranks: std::collections::HashMap<String, i64> = folders
+            .iter()
+            .map(|f| (f.name.clone(), f.role.rank()))
+            .collect();
         folders.sort_by_cached_key(|f| {
             let path: Vec<String> = match &f.delimiter {
-                Some(d) if !d.is_empty() => f.name.split(d.as_str()).map(str::to_lowercase).collect(),
+                Some(d) if !d.is_empty() => {
+                    f.name.split(d.as_str()).map(str::to_lowercase).collect()
+                }
                 _ => vec![f.name.to_lowercase()],
             };
-            let root = f.delimiter.as_deref().filter(|d| !d.is_empty()).map_or(&*f.name, |d| f.name.split(d).next().unwrap());
-            let rank = if f.role == Role::Other { ranks.get(root).copied().unwrap_or(f.role.rank()) } else { f.role.rank() };
+            let root = f
+                .delimiter
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .map_or(&*f.name, |d| f.name.split(d).next().unwrap());
+            let rank = if f.role == Role::Other {
+                ranks.get(root).copied().unwrap_or(f.role.rank())
+            } else {
+                f.role.rank()
+            };
             (rank, path)
         });
         Ok(folders)
@@ -297,15 +347,21 @@ impl Store {
     pub fn folder_by_role(&self, role: Role) -> Result<Option<String>> {
         Ok(self
             .conn
-            .query_row("SELECT name FROM folders WHERE role = ?1 ORDER BY name LIMIT 1", [role.as_str()], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT name FROM folders WHERE role = ?1 ORDER BY name LIMIT 1",
+                [role.as_str()],
+                |r| r.get(0),
+            )
             .optional()?)
     }
 
     pub fn folder_role(&self, folder: &str) -> Result<Role> {
-        let role: Option<String> =
-            self.conn.query_row("SELECT role FROM folders WHERE name = ?1", [folder], |r| r.get(0)).optional()?;
+        let role: Option<String> = self
+            .conn
+            .query_row("SELECT role FROM folders WHERE name = ?1", [folder], |r| {
+                r.get(0)
+            })
+            .optional()?;
         Ok(role.map(|r| Role::parse(&r)).unwrap_or(Role::Other))
     }
 
@@ -314,30 +370,51 @@ impl Store {
     pub fn check_uidvalidity(&mut self, folder: &str, uidvalidity: u32) -> Result<bool> {
         let current: Option<Option<i64>> = self
             .conn
-            .query_row("SELECT uidvalidity FROM folders WHERE name = ?1", [folder], |r| r.get(0))
+            .query_row(
+                "SELECT uidvalidity FROM folders WHERE name = ?1",
+                [folder],
+                |r| r.get(0),
+            )
             .optional()?;
         let changed = matches!(current, Some(Some(v)) if v != uidvalidity as i64);
         if changed {
-            self.conn.execute("DELETE FROM messages WHERE folder = ?1", [folder])?;
-            self.conn.execute("DELETE FROM pending_ops WHERE folder = ?1", [folder])?;
+            self.conn
+                .execute("DELETE FROM messages WHERE folder = ?1", [folder])?;
+            self.conn
+                .execute("DELETE FROM pending_ops WHERE folder = ?1", [folder])?;
         }
-        self.conn.execute("UPDATE folders SET uidvalidity = ?2 WHERE name = ?1", params![folder, uidvalidity])?;
+        self.conn.execute(
+            "UPDATE folders SET uidvalidity = ?2 WHERE name = ?1",
+            params![folder, uidvalidity],
+        )?;
         Ok(changed)
     }
 
     // ---- messages ----
 
     pub fn max_uid(&self, folder: &str) -> Result<Option<u32>> {
-        Ok(self.conn.query_row("SELECT MAX(uid) FROM messages WHERE folder = ?1", [folder], |r| r.get(0))?)
+        Ok(self.conn.query_row(
+            "SELECT MAX(uid) FROM messages WHERE folder = ?1",
+            [folder],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn min_uid(&self, folder: &str) -> Result<Option<u32>> {
-        Ok(self.conn.query_row("SELECT MIN(uid) FROM messages WHERE folder = ?1", [folder], |r| r.get(0))?)
+        Ok(self.conn.query_row(
+            "SELECT MIN(uid) FROM messages WHERE folder = ?1",
+            [folder],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn uids(&self, folder: &str) -> Result<Vec<u32>> {
-        let mut stmt = self.conn.prepare("SELECT uid FROM messages WHERE folder = ?1")?;
-        let uids = stmt.query_map([folder], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT uid FROM messages WHERE folder = ?1")?;
+        let uids = stmt
+            .query_map([folder], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
         Ok(uids)
     }
 
@@ -353,8 +430,9 @@ impl Store {
                  RETURNING rowid"
             ))?;
             let mut fts_exists = tx.prepare("SELECT 1 FROM messages_fts WHERE rowid = ?1")?;
-            let mut fts_insert =
-                tx.prepare("INSERT INTO messages_fts (rowid, subject, sender, body) VALUES (?1, ?2, ?3, '')")?;
+            let mut fts_insert = tx.prepare(
+                "INSERT INTO messages_fts (rowid, subject, sender, body) VALUES (?1, ?2, ?3, '')",
+            )?;
             for m in messages {
                 let rowid: i64 = upsert.query_row(
                     params![
@@ -378,7 +456,11 @@ impl Store {
                     |r| r.get(0),
                 )?;
                 if !fts_exists.exists([rowid])? {
-                    fts_insert.execute(params![rowid, m.subject, format!("{} {}", m.from_name, m.from_addr)])?;
+                    fts_insert.execute(params![
+                        rowid,
+                        m.subject,
+                        format!("{} {}", m.from_name, m.from_addr)
+                    ])?;
                 }
             }
         }
@@ -390,8 +472,11 @@ impl Store {
     /// pushed (the server state is stale for those).
     pub fn update_flags(&mut self, folder: &str, flags: &[(u32, bool, bool, bool)]) -> Result<()> {
         let pending: std::collections::HashSet<u32> = {
-            let mut stmt = self.conn.prepare("SELECT uid FROM pending_ops WHERE folder = ?1")?;
-            stmt.query_map([folder], |r| r.get(0))?.collect::<Result<_, _>>()?
+            let mut stmt = self
+                .conn
+                .prepare("SELECT uid FROM pending_ops WHERE folder = ?1")?;
+            stmt.query_map([folder], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
         };
         let tx = self.conn.transaction()?;
         {
@@ -424,21 +509,30 @@ impl Store {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {SUMMARY_COLUMNS} FROM messages WHERE folder = ?1 ORDER BY date DESC, uid DESC LIMIT ?2"
         ))?;
-        let rows = stmt.query_map(params![folder, limit as i64], summary_from_row)?.collect::<Result<_, _>>()?;
+        let rows = stmt
+            .query_map(params![folder, limit as i64], summary_from_row)?
+            .collect::<Result<_, _>>()?;
         Ok(rows)
     }
 
     /// Every cached message, for grouping into conversations.
     pub fn all_messages(&self) -> Result<Vec<MessageSummary>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM messages"))?;
-        let rows = stmt.query_map([], summary_from_row)?.collect::<Result<_, _>>()?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM messages"))?;
+        let rows = stmt
+            .query_map([], summary_from_row)?
+            .collect::<Result<_, _>>()?;
         Ok(rows)
     }
 
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<MessageSummary>> {
-        let mut stmt =
-            self.conn.prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM messages WHERE folder = ?1 AND uid = ?2"))?;
-        Ok(stmt.query_row(params![folder, uid], summary_from_row).optional()?)
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SUMMARY_COLUMNS} FROM messages WHERE folder = ?1 AND uid = ?2"
+        ))?;
+        Ok(stmt
+            .query_row(params![folder, uid], summary_from_row)
+            .optional()?)
     }
 
     /// Full-text search over subject, sender and downloaded bodies across all folders.
@@ -447,19 +541,29 @@ impl Store {
         if fts_query.is_empty() {
             return Ok(Vec::new());
         }
-        let columns = SUMMARY_COLUMNS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ");
+        let columns = SUMMARY_COLUMNS
+            .split(", ")
+            .map(|c| format!("m.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {columns} FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
              WHERE messages_fts MATCH ?1 ORDER BY m.date DESC LIMIT ?2"
         ))?;
-        let rows = stmt.query_map(params![fts_query, limit as i64], summary_from_row)?.collect::<Result<_, _>>()?;
+        let rows = stmt
+            .query_map(params![fts_query, limit as i64], summary_from_row)?
+            .collect::<Result<_, _>>()?;
         Ok(rows)
     }
 
     pub fn raw(&self, folder: &str, uid: u32) -> Result<Option<Vec<u8>>> {
         Ok(self
             .conn
-            .query_row("SELECT raw FROM messages WHERE folder = ?1 AND uid = ?2", params![folder, uid], |r| r.get(0))
+            .query_row(
+                "SELECT raw FROM messages WHERE folder = ?1 AND uid = ?2",
+                params![folder, uid],
+                |r| r.get(0),
+            )
             .optional()?
             .flatten())
     }
@@ -469,7 +573,9 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT uid FROM messages WHERE folder = ?1 AND raw IS NULL ORDER BY date DESC LIMIT ?2",
         )?;
-        let uids = stmt.query_map(params![folder, limit as i64], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        let uids = stmt
+            .query_map(params![folder, limit as i64], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
         Ok(uids)
     }
 
@@ -492,7 +598,10 @@ impl Store {
             )
             .optional()?;
         if let Some(rowid) = rowid {
-            tx.execute("UPDATE messages_fts SET body = ?2 WHERE rowid = ?1", params![rowid, body_text])?;
+            tx.execute(
+                "UPDATE messages_fts SET body = ?2 WHERE rowid = ?1",
+                params![rowid, body_text],
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -504,18 +613,29 @@ impl Store {
     pub fn apply_local(&mut self, folder: &str, uid: u32, op: &PendingOp) -> Result<()> {
         match op {
             PendingOp::SetSeen(v) => {
-                self.conn.execute("UPDATE messages SET seen = ?3 WHERE folder = ?1 AND uid = ?2", params![folder, uid, v])?;
+                self.conn.execute(
+                    "UPDATE messages SET seen = ?3 WHERE folder = ?1 AND uid = ?2",
+                    params![folder, uid, v],
+                )?;
             }
             PendingOp::SetFlagged(v) => {
-                self.conn
-                    .execute("UPDATE messages SET flagged = ?3 WHERE folder = ?1 AND uid = ?2", params![folder, uid, v])?;
+                self.conn.execute(
+                    "UPDATE messages SET flagged = ?3 WHERE folder = ?1 AND uid = ?2",
+                    params![folder, uid, v],
+                )?;
             }
             PendingOp::SetAnswered => {
-                self.conn.execute("UPDATE messages SET answered = 1 WHERE folder = ?1 AND uid = ?2", params![folder, uid])?;
+                self.conn.execute(
+                    "UPDATE messages SET answered = 1 WHERE folder = ?1 AND uid = ?2",
+                    params![folder, uid],
+                )?;
             }
             // The destination copy shows up with its new UID on the next sync.
             PendingOp::Move(_) | PendingOp::Expunge => {
-                self.conn.execute("DELETE FROM messages WHERE folder = ?1 AND uid = ?2", params![folder, uid])?;
+                self.conn.execute(
+                    "DELETE FROM messages WHERE folder = ?1 AND uid = ?2",
+                    params![folder, uid],
+                )?;
             }
         }
         let (kind, arg) = op.encode();
@@ -527,18 +647,31 @@ impl Store {
     }
 
     pub fn pending_ops(&self) -> Result<Vec<(i64, String, u32, PendingOp)>> {
-        let mut stmt = self.conn.prepare("SELECT id, folder, uid, kind, arg FROM pending_ops ORDER BY id")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, folder, uid, kind, arg FROM pending_ops ORDER BY id")?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get(4)?,
+                ))
+            })?
             .collect::<Result<Vec<(i64, String, u32, String, String)>, _>>()?;
         Ok(rows
             .into_iter()
-            .filter_map(|(id, folder, uid, kind, arg)| PendingOp::decode(&kind, arg).map(|op| (id, folder, uid, op)))
+            .filter_map(|(id, folder, uid, kind, arg)| {
+                PendingOp::decode(&kind, arg).map(|op| (id, folder, uid, op))
+            })
             .collect())
     }
 
     pub fn remove_pending_op(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM pending_ops WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM pending_ops WHERE id = ?1", [id])?;
         Ok(())
     }
 }
@@ -547,7 +680,11 @@ impl Store {
 fn fts_query(input: &str) -> String {
     input
         .split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_alphanumeric() || *c == '@' || *c == '.').collect::<String>())
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '@' || *c == '.')
+                .collect::<String>()
+        })
         .filter(|w| !w.is_empty())
         .map(|w| format!("\"{w}\"*"))
         .collect::<Vec<_>>()
@@ -573,7 +710,10 @@ mod tests {
     fn store_with_inbox() -> Store {
         let mut store = Store::open_in_memory().unwrap();
         store
-            .sync_folders(&[("INBOX".into(), Some("/".into()), Role::Inbox), ("Trash".into(), None, Role::Trash)])
+            .sync_folders(&[
+                ("INBOX".into(), Some("/".into()), Role::Inbox),
+                ("Trash".into(), None, Role::Trash),
+            ])
             .unwrap();
         store
     }
@@ -581,8 +721,12 @@ mod tests {
     #[test]
     fn upsert_keeps_body_and_updates_flags() {
         let mut store = store_with_inbox();
-        store.upsert_messages(&[msg(1, "Hello"), msg(2, "World")]).unwrap();
-        store.set_body("INBOX", 1, b"raw", "snip", "the body text", false).unwrap();
+        store
+            .upsert_messages(&[msg(1, "Hello"), msg(2, "World")])
+            .unwrap();
+        store
+            .set_body("INBOX", 1, b"raw", "snip", "the body text", false)
+            .unwrap();
 
         let mut seen = msg(1, "Hello");
         seen.seen = true;
@@ -592,15 +736,27 @@ mod tests {
         assert!(m.seen);
         assert_eq!(m.snippet, "snip");
         assert_eq!(store.raw("INBOX", 1).unwrap().as_deref(), Some(&b"raw"[..]));
-        assert_eq!(store.messages("INBOX", 10).unwrap().iter().map(|m| m.uid).collect::<Vec<_>>(), vec![2, 1]);
+        assert_eq!(
+            store
+                .messages("INBOX", 10)
+                .unwrap()
+                .iter()
+                .map(|m| m.uid)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
         assert_eq!(store.folders().unwrap()[0].unread, 1);
     }
 
     #[test]
     fn search_matches_subject_sender_and_body() {
         let mut store = store_with_inbox();
-        store.upsert_messages(&[msg(1, "Quarterly report"), msg(2, "Lunch")]).unwrap();
-        store.set_body("INBOX", 2, b"raw", "", "let's meet at the pizzeria", false).unwrap();
+        store
+            .upsert_messages(&[msg(1, "Quarterly report"), msg(2, "Lunch")])
+            .unwrap();
+        store
+            .set_body("INBOX", 2, b"raw", "", "let's meet at the pizzeria", false)
+            .unwrap();
 
         assert_eq!(store.search("quart", 10).unwrap()[0].uid, 1);
         assert_eq!(store.search("pizzeria", 10).unwrap()[0].uid, 2);
@@ -625,8 +781,12 @@ mod tests {
     fn pending_ops_protect_local_flags() {
         let mut store = store_with_inbox();
         store.upsert_messages(&[msg(1, "a")]).unwrap();
-        store.apply_local("INBOX", 1, &PendingOp::SetSeen(true)).unwrap();
-        store.update_flags("INBOX", &[(1, false, false, false)]).unwrap();
+        store
+            .apply_local("INBOX", 1, &PendingOp::SetSeen(true))
+            .unwrap();
+        store
+            .update_flags("INBOX", &[(1, false, false, false)])
+            .unwrap();
         assert!(store.message("INBOX", 1).unwrap().unwrap().seen);
 
         let ops = store.pending_ops().unwrap();
@@ -634,14 +794,30 @@ mod tests {
         assert_eq!(ops[0].3, PendingOp::SetSeen(true));
         store.remove_pending_op(ops[0].0).unwrap();
 
-        store.apply_local("INBOX", 1, &PendingOp::Move("Trash".into())).unwrap();
+        store
+            .apply_local("INBOX", 1, &PendingOp::Move("Trash".into()))
+            .unwrap();
         assert!(store.message("INBOX", 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn decodes_modified_utf7_names() {
+        assert_eq!(decode_mutf7("Entw&APw-rfe"), "Entwürfe");
+        assert_eq!(decode_mutf7("Gel&APY-scht"), "Gelöscht");
+        assert_eq!(decode_mutf7("&ZeVnLIqe-"), "日本語");
+        assert_eq!(decode_mutf7("Tom &- Jerry"), "Tom & Jerry");
+        assert_eq!(decode_mutf7("bad&!!-x&open"), "bad&!!-x&open");
     }
 
     #[test]
     fn folders_sort_by_role() {
         let store = store_with_inbox();
-        let names: Vec<_> = store.folders().unwrap().into_iter().map(|f| f.name).collect();
+        let names: Vec<_> = store
+            .folders()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
         assert_eq!(names, vec!["INBOX", "Trash"]);
     }
 
@@ -661,7 +837,10 @@ mod tests {
             ])
             .unwrap();
         let folders = store.folders().unwrap();
-        let rows: Vec<_> = folders.iter().map(|f| (f.display_name(), f.depth())).collect();
+        let rows: Vec<_> = folders
+            .iter()
+            .map(|f| (f.display_name(), f.depth()))
+            .collect();
         let row = |name: &str, depth| (name.to_string(), depth);
         assert_eq!(
             rows,
