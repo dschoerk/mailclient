@@ -57,6 +57,15 @@ struct ConfigFile {
     accounts: Vec<AccountConfig>,
 }
 
+impl ConfigFile {
+    fn upsert(&mut self, account: &AccountConfig) {
+        match self.accounts.iter_mut().find(|a| a.email.eq_ignore_ascii_case(&account.email)) {
+            Some(existing) => *existing = account.clone(),
+            None => self.accounts.push(account.clone()),
+        }
+    }
+}
+
 impl AccountConfig {
     /// Best-effort server settings for a mail address, used to prefill the setup form.
     pub fn guess(email: &str) -> AccountConfig {
@@ -123,6 +132,19 @@ impl AccountConfig {
 }
 
 static BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static CONFIG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Uses `path` instead of `config.toml` in the config directory (`mailclient --config <file>`).
+pub fn set_config_file(path: PathBuf) {
+    let _ = CONFIG_FILE.set(path);
+}
+
+fn config_file() -> Result<PathBuf> {
+    match CONFIG_FILE.get() {
+        Some(path) => Ok(path.clone()),
+        None => Ok(config_dir()?.join("config.toml")),
+    }
+}
 
 /// Overrides where config and data live; for platforms without a home directory
 /// (Android passes the app's internal storage).
@@ -149,7 +171,7 @@ pub fn data_dir() -> Result<PathBuf> {
 }
 
 fn read_config() -> Result<ConfigFile> {
-    let path = config_dir()?.join("config.toml");
+    let path = config_file()?;
     if !path.exists() {
         return Ok(ConfigFile::default());
     }
@@ -158,21 +180,24 @@ fn read_config() -> Result<ConfigFile> {
 }
 
 fn write_config(file: &ConfigFile) -> Result<()> {
-    let dir = config_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("config.toml"), toml::to_string_pretty(file)?)?;
+    let path = config_file()?;
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, toml::to_string_pretty(file)?).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
-/// v0.1 supports a single account: the first one in `config.toml`.
-pub fn load_account() -> Result<Option<AccountConfig>> {
-    Ok(read_config()?.accounts.into_iter().next())
+/// All accounts, in the order they were added.
+pub fn load_accounts() -> Result<Vec<AccountConfig>> {
+    Ok(read_config()?.accounts)
 }
 
+/// Adds `account`, or replaces the one with the same address.
 pub fn save_account(account: &AccountConfig) -> Result<()> {
     // An unreadable file must not block setup; it gets replaced as before.
     let mut file = read_config().unwrap_or_default();
-    file.accounts = vec![account.clone()];
+    file.upsert(account);
     write_config(&file)
 }
 
@@ -216,5 +241,18 @@ mod tests {
         // Files written before a setting existed still load.
         let old: ConfigFile = toml::from_str("left_handed = true").unwrap();
         assert_eq!(old.settings, Settings { left_handed: true, floating_buttons: false });
+    }
+
+    #[test]
+    fn saving_adds_accounts_and_replaces_by_address() {
+        let mut file = ConfigFile::default();
+        file.upsert(&AccountConfig::guess("a@example.org"));
+        file.upsert(&AccountConfig::guess("b@gmail.com"));
+        let mut changed = AccountConfig::guess("A@example.org");
+        changed.name = "Changed".into();
+        file.upsert(&changed);
+        let emails: Vec<&str> = file.accounts.iter().map(|a| a.email.as_str()).collect();
+        assert_eq!(emails, ["A@example.org", "b@gmail.com"]);
+        assert_eq!(file.accounts[0].name, "Changed");
     }
 }

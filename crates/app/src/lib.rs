@@ -52,8 +52,12 @@ pub fn run() -> anyhow::Result<()> {
         .select()
         .map_err(|e| anyhow::anyhow!("no wgpu-capable graphics backend: {e}"))?;
 
+    let (config, eml) = parse_args(std::env::args_os().skip(1))?;
+    if let Some(path) = config {
+        mailcore::config::set_config_file(path);
+    }
     let window = AppWindow::new()?;
-    app::Controller::install(&window, std::env::args_os().nth(1).map(Into::into))?;
+    app::Controller::install(&window, eml)?;
     #[cfg(feature = "servo")]
     if let Some(path) = std::env::var_os("MAILCLIENT_SNAPSHOT") {
         schedule_snapshot(&window, path.into());
@@ -61,6 +65,32 @@ pub fn run() -> anyhow::Result<()> {
     window.run()?;
     app::Controller::shutdown();
     Ok(())
+}
+
+/// `mailclient [--config <file.toml>] [message.eml]` → (config file, message file).
+fn parse_args(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> anyhow::Result<(Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
+    let (mut config, mut eml) = (None, None);
+    while let Some(arg) = args.next() {
+        if arg == "--config" {
+            config = Some(args.next().ok_or_else(|| anyhow::anyhow!("--config needs a file"))?.into());
+        } else {
+            eml = Some(arg.into());
+        }
+    }
+    Ok((config, eml))
+}
+
+#[cfg(test)]
+#[test]
+fn parses_args() {
+    let parse = |args: &[&str]| parse_args(args.iter().map(Into::into));
+    let some = |p: &str| Some(std::path::PathBuf::from(p));
+    assert_eq!(parse(&[]).unwrap(), (None, None));
+    assert_eq!(parse(&["m.eml"]).unwrap(), (None, some("m.eml")));
+    assert_eq!(parse(&["--config", "c.toml", "m.eml"]).unwrap(), (some("c.toml"), some("m.eml")));
+    assert!(parse(&["--config"]).is_err());
 }
 
 /// Debugging aid: saves a picture of the window a few seconds after start and exits.

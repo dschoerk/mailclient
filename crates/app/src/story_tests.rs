@@ -102,6 +102,48 @@ fn deliver(account: &AccountConfig, from: (&str, &str), subject: &str, body: &st
     .unwrap();
 }
 
+fn create_folders(account: &AccountConfig) {
+    let account = account.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut imap = Imap::connect(&account, "x").await.unwrap();
+            for f in ["Sent", "Trash", "Archive"] {
+                imap.create(f).await.unwrap();
+            }
+            imap.logout().await;
+        })
+    })
+    .join()
+    .unwrap();
+}
+
+fn test_account(email: &str) -> AccountConfig {
+    AccountConfig {
+        name: "Story".into(),
+        email: email.into(),
+        username: email.into(),
+        imap_host: "localhost".into(),
+        imap_port: 3993,
+        imap_security: Security::Tls,
+        smtp_host: "localhost".into(),
+        smtp_port: 3465,
+        smtp_security: Security::Tls,
+        auth: mailcore::Auth::Password,
+    }
+}
+
+/// Fills the setup form for a GreenMail account and submits it.
+fn submit_setup(w: &AppWindow, email: &str) -> Outcome {
+    type_in(w, "Email", email)?;
+    type_in(w, "Password", "x")?;
+    type_in(w, "IMAP server", "localhost")?;
+    type_in(w, "IMAP port", "3993")?;
+    type_in(w, "SMTP server", "localhost")?;
+    type_in(w, "SMTP port", "3465")?;
+    click(w, "Save and connect")
+}
+
 #[test]
 #[ignore = "needs scripts/test-mailserver.sh"]
 fn user_stories() {
@@ -118,34 +160,9 @@ fn user_stories() {
     mailcore::init_tls();
 
     let user = format!("story{}@localhost", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-    let account = AccountConfig {
-        name: "Story".into(),
-        email: user.clone(),
-        username: user.clone(),
-        imap_host: "localhost".into(),
-        imap_port: 3993,
-        imap_security: Security::Tls,
-        smtp_host: "localhost".into(),
-        smtp_port: 3465,
-        smtp_security: Security::Tls,
-        auth: mailcore::Auth::Password,
-    };
+    let account = test_account(&user);
     // A realistic mailbox: special folders and two received messages.
-    {
-        let account = account.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            rt.block_on(async {
-                let mut imap = Imap::connect(&account, "x").await.unwrap();
-                for f in ["Sent", "Trash", "Archive"] {
-                    imap.create(f).await.unwrap();
-                }
-                imap.logout().await;
-            })
-        })
-        .join()
-        .unwrap();
-    }
+    create_folders(&account);
     deliver(&account, ("Bob", "bob@example.org"), "Quarterly invoice", "Please find the invoice details below.");
     std::thread::sleep(Duration::from_millis(1100)); // distinct Date headers, so the order is stable
     deliver(&account, ("Alice", "alice@example.org"), "Lunch on Friday?", "Pizza place at noon?");
@@ -184,11 +201,12 @@ fn user_stories() {
             click(&w, "Save and connect")?;
             wait_for("login error", || !w.get_setup_error().is_empty()).await?;
             ensure(w.get_needs_setup(), "setup closed despite failed login")?;
-            ensure(mailcore::config::load_account().unwrap().is_none(), "config saved despite failed login")?;
+            ensure(config::load_accounts().unwrap().is_empty(), "config saved despite failed login")?;
             type_in(&w, "IMAP port", "3993")?;
             click(&w, "Save and connect")?;
             wait_for("setup to finish", || !w.get_needs_setup()).await?;
-            ensure(mailcore::config::load_account().unwrap().is_some(), "config not saved")
+            ensure(config::load_accounts().unwrap().len() == 1, "config not saved")?;
+            ensure(w.get_messages().iter().all(|m| m.color.alpha() == 0), "account bar shown with a single account")
         }
         .await;
         record("US1 set up account", r);
@@ -263,7 +281,7 @@ fn user_stories() {
             checkbox.invoke_accessible_default_action();
             ensure(w.get_left_handed(), "setting not toggled")?;
             ensure(config::load_settings().is_ok_and(|s| s.left_handed), "setting not saved")?;
-            ensure(config::load_account().ok().flatten().is_some(), "account lost when saving the setting")?;
+            ensure(config::load_accounts().is_ok_and(|a| a.len() == 1), "account lost when saving the setting")?;
             // The floating variant has its own Next.
             element(&w, "Floating buttons", &[AccessibleRole::Checkbox])?.invoke_accessible_default_action();
             ensure(config::load_settings().is_ok_and(|s| s.floating_buttons), "floating setting not saved")?;
@@ -359,6 +377,59 @@ fn user_stories() {
         }
         .await;
         record("US11 survive a dropped connection", r);
+
+        // US15: a second account; one inbox for both, each message marked with its account's color.
+        let r = async {
+            let user2 = format!("second-{user}");
+            let second = test_account(&user2);
+            create_folders(&second);
+            deliver(&second, ("Dave", "dave@example.org"), "Second account hello", "Hi there.");
+            click(&w, "Add account")?;
+            ensure(w.get_needs_setup(), "setup not shown")?;
+            submit_setup(&w, &user2)?;
+            wait_for("second account set up", || !w.get_needs_setup()).await?;
+            ensure(config::load_accounts().is_ok_and(|a| a.len() == 2), "second account not saved")?;
+            wait_for("unified inbox with both accounts", || {
+                w.get_list_title() == "All inboxes"
+                    && subjects(&w).iter().any(|s| s == "Second account hello")
+                    && subjects(&w).iter().any(|s| s == "Quarterly invoice")
+            })
+            .await?;
+            let folders: Vec<String> = w.get_folders().iter().map(|f| f.label.to_string()).collect();
+            ensure(folders.first().map(String::as_str) == Some("All inboxes"), format!("folders: {folders:?}"))?;
+            ensure(folders.contains(&user) && folders.contains(&user2), format!("account headings: {folders:?}"))?;
+            let color = |subject: &str| w.get_messages().iter().find(|m| m.subject == subject).map(|m| m.color);
+            let (first, other) = (color("Quarterly invoice").unwrap(), color("Second account hello").unwrap());
+            ensure(first.alpha() == 255 && other.alpha() == 255, "account bar missing")?;
+            ensure(first != other, "both accounts have the same color")?;
+            let order = subjects(&w);
+            ensure(order.first().map(String::as_str) == Some("Second account hello"), format!("not newest first: {order:?}"))?;
+
+            // A reply from the unified inbox goes out through the message's own account.
+            click(&w, "Dave: Second account hello")?;
+            wait_for("message open", || w.get_msg_text().contains("Hi there")).await?;
+            click(&w, "Reply")?;
+            type_in(&w, "To", &user2)?;
+            click(&w, "Send")?;
+            wait_for("compose form to close", || Controller::current().composer().is_none()).await?;
+            wait_for("reply in second Sent", || on_server(&second, "Sent", "Re: Second account hello").is_some()).await?;
+            ensure(on_server(&account, "Sent", "Re: Second account hello").is_none(), "sent through the first account")?;
+
+            // Opening one account's folder shows only that account.
+            click(&w, "Folder Archive")?;
+            ensure(w.get_list_title() == "Archive", format!("title: {}", w.get_list_title()))?;
+            ensure(!subjects(&w).iter().any(|s| s == "Second account hello"), "other account's mail in folder")?;
+
+            // The same address cannot be added twice; Cancel returns to the mail.
+            click(&w, "Add account")?;
+            submit_setup(&w, &user2)?;
+            ensure(w.get_setup_error().contains("already"), format!("error: {}", w.get_setup_error()))?;
+            click(&w, "Cancel")?;
+            ensure(!w.get_needs_setup(), "Cancel did not close setup")?;
+            ensure(config::load_accounts().is_ok_and(|a| a.len() == 2), "accounts changed")
+        }
+        .await;
+        record("US15 multiple accounts, unified inbox", r);
 
         let _ = slint::quit_event_loop();
     })

@@ -18,6 +18,17 @@ use crate::{AppWindow, AttachmentItem, FolderItem, MessageItem, SetupData};
 /// Most messages shown in one folder list.
 const LIST_LIMIT: usize = 5000;
 
+/// Account colors (RGB) for the bar in the message list, by the order accounts were added.
+const ACCOUNT_COLORS: [u32; 8] = [0x2f6fde, 0xe8730c, 0x2e9e5b, 0x8e44ad, 0xd64545, 0x1a9ba1, 0xd6457f, 0x9a6b3f];
+
+/// Color of account `index` out of `count`; none with a single account, where there is nothing to tell apart.
+fn account_color(index: usize, count: usize) -> slint::Color {
+    if count < 2 {
+        return slint::Color::from_argb_encoded(0);
+    }
+    slint::Color::from_argb_encoded(0xff00_0000 | ACCOUNT_COLORS[index % ACCOUNT_COLORS.len()])
+}
+
 thread_local! {
     static CONTROLLER: RefCell<Option<Rc<Controller>>> = const { RefCell::new(None) };
 }
@@ -31,21 +42,50 @@ fn with_controller(f: impl FnOnce(&Rc<Controller>) + Send + 'static) {
     });
 }
 
+struct Account {
+    config: AccountConfig,
+    engine: Engine,
+    store: Store,
+    folders: Vec<Folder>,
+    online: bool,
+}
+
+/// A row of the folder sidebar. Accounts are only ever appended, so their index is stable.
+#[derive(Clone, PartialEq)]
+enum Row {
+    /// The inboxes of all accounts in one list.
+    Unified,
+    /// Heading above an account's folders.
+    Account(usize),
+    Folder(usize, String),
+}
+
+/// A message: (account index, folder, uid).
+type Key = (usize, String, u32);
+
 #[derive(Default)]
 struct State {
-    account: Option<AccountConfig>,
-    engine: Option<Engine>,
-    store: Option<Store>,
-    folders: Vec<Folder>,
-    current_folder: Option<String>,
-    messages: Vec<MessageSummary>,
-    selected: Option<(String, u32)>,
+    accounts: Vec<Account>,
+    rows: Vec<Row>,
+    current: Option<Row>,
+    messages: Vec<(usize, MessageSummary)>,
+    selected: Option<Key>,
     body: Option<Body>,
     search: String,
-    remote_allowed: HashSet<(String, u32)>,
+    remote_allowed: HashSet<Key>,
     engine_status: String,
     /// A message opened from a file (`mailclient message.eml`), shown without an account.
     standalone: Option<(MessageSummary, Vec<u8>)>,
+}
+
+impl State {
+    fn folder(&self, account: usize, name: &str) -> Option<&Folder> {
+        self.accounts.get(account)?.folders.iter().find(|f| f.name == name)
+    }
+
+    fn is_inbox(&self, account: usize, name: &str) -> bool {
+        self.folder(account, name).is_some_and(|f| f.role == Role::Inbox)
+    }
 }
 
 pub struct Controller {
@@ -90,10 +130,15 @@ impl Controller {
         #[cfg(feature = "servo")]
         controller.init_webview(window);
 
-        match (config::load_account()?, eml) {
-            (_, Some(path)) => controller.open_file(&path)?,
-            (Some(account), None) => controller.start(account)?,
-            (None, None) => window.set_needs_setup(true),
+        let accounts = config::load_accounts()?;
+        match eml {
+            Some(path) => controller.open_file(&path)?,
+            None if accounts.is_empty() => window.set_needs_setup(true),
+            None => {
+                for account in accounts {
+                    controller.start(account)?;
+                }
+            }
         }
         Ok(())
     }
@@ -135,11 +180,22 @@ impl Controller {
         }
         on!(on_setup_email_edited, |c, email| c.setup_email_edited(&email));
         on!(on_setup_submit, |c| c.setup_submit());
+        on!(on_setup_cancel, |c| c.window().set_needs_setup(false));
+        on!(on_add_account, |c| {
+            let w = c.window();
+            w.set_setup(SetupData::default());
+            w.set_setup_error("".into());
+            w.set_needs_setup(true);
+        });
         on!(on_folder_selected, |c, index| c.select_folder(index as usize));
         on!(on_message_selected, |c, index| c.select_message(index as usize));
         on!(on_search, |c, text| c.search(&text));
-        on!(on_refresh, |c| c.send(Command::SyncAll));
-        on!(on_compose, |c| c.open_composer(Draft::default(), None));
+        on!(on_refresh, |c| {
+            for account in &c.state.borrow().accounts {
+                account.engine.send(Command::SyncAll);
+            }
+        });
+        on!(on_compose, |c| c.open_composer(c.compose_account(), Draft::default(), None));
         on!(on_reply, |c| c.reply(ReplyKind::Reply));
         on!(on_reply_all, |c| c.reply(ReplyKind::ReplyAll));
         on!(on_forward, |c| c.reply(ReplyKind::Forward));
@@ -201,9 +257,9 @@ impl Controller {
         }
     }
 
-    fn send(&self, command: Command) {
-        if let Some(engine) = &self.state.borrow().engine {
-            engine.send(command);
+    fn send(&self, account: usize, command: Command) {
+        if let Some(a) = self.state.borrow().accounts.get(account) {
+            a.engine.send(command);
         }
     }
 
@@ -274,6 +330,9 @@ impl Controller {
             Ok(a) => a,
             Err(e) => return window.set_setup_error(e.to_string().into()),
         };
+        if self.state.borrow().accounts.iter().any(|a| a.config.email.eq_ignore_ascii_case(&account.email)) {
+            return window.set_setup_error("This account is already set up".into());
+        }
         window.set_setup_error("".into());
         window.set_setup_busy(true);
         let password = data.password.to_string();
@@ -322,15 +381,20 @@ impl Controller {
     fn start(&self, account: AccountConfig) -> Result<()> {
         let db = config::data_dir()?.join(format!("{}.sqlite", account.email));
         let store = Store::open(&db).with_context(|| format!("opening {}", db.display()))?;
-        self.window().set_account_label(format::person(&account.name, &account.email).into());
-        self.window().set_has_account(true);
-        let engine = Engine::start(account.clone(), db, |event| with_controller(move |c| c.on_event(event)));
-        {
+        let index = self.state.borrow().accounts.len();
+        let engine = Engine::start(account.clone(), db, move |event| with_controller(move |c| c.on_event(index, event)));
+        let label = {
             let mut state = self.state.borrow_mut();
-            state.account = Some(account);
-            state.store = Some(store);
-            state.engine = Some(engine);
-        }
+            state.accounts.push(Account { config: account, engine, store, folders: Vec::new(), online: true });
+            // Back to the default view: the unified inbox once there are several accounts.
+            state.current = None;
+            match state.accounts.as_slice() {
+                [only] => format::person(&only.config.name, &only.config.email),
+                all => format!("{} accounts", all.len()),
+            }
+        };
+        self.window().set_account_label(label.into());
+        self.window().set_has_account(true);
         // Show the cache immediately; the engine syncs in the background.
         self.reload_folders();
         Ok(())
@@ -338,22 +402,36 @@ impl Controller {
 
     // ---- engine events ----
 
-    fn on_event(&self, event: Event) {
+    fn on_event(&self, account: usize, event: Event) {
         match event {
             Event::Status(s) => self.set_status(s),
             Event::Error(e) => self.set_status(format!("⚠ {e}")),
-            Event::Online(online) => self.window().set_online(online),
+            Event::Online(online) => {
+                let all_online = {
+                    let mut state = self.state.borrow_mut();
+                    if let Some(a) = state.accounts.get_mut(account) {
+                        a.online = online;
+                    }
+                    state.accounts.iter().all(|a| a.online)
+                };
+                self.window().set_online(all_online);
+            }
             Event::FoldersChanged => self.reload_folders(),
             Event::MessagesChanged(folder) => {
                 let state = self.state.borrow();
-                let relevant = !state.search.is_empty() || state.current_folder.as_deref() == Some(folder.as_str());
+                let relevant = !state.search.is_empty()
+                    || match &state.current {
+                        Some(Row::Folder(a, f)) => *a == account && *f == folder,
+                        Some(Row::Unified) => state.is_inbox(account, &folder),
+                        _ => false,
+                    };
                 drop(state);
                 if relevant {
                     self.reload_messages();
                 }
             }
             Event::BodyReady { folder, uid } => {
-                if self.state.borrow().selected == Some((folder, uid)) {
+                if self.state.borrow().selected == Some((account, folder, uid)) {
                     self.render_selected();
                 }
             }
@@ -374,36 +452,75 @@ impl Controller {
     // ---- folders and lists ----
 
     fn reload_folders(&self) {
-        let folders = match self.state.borrow().store.as_ref().map(|s| s.folders()) {
-            Some(Ok(f)) => f,
-            Some(Err(e)) => return self.show_error(&e),
-            None => return,
+        let loaded: Result<Vec<Vec<Folder>>> = self.state.borrow().accounts.iter().map(|a| a.store.folders()).collect();
+        let loaded = match loaded {
+            Ok(f) => f,
+            Err(e) => return self.show_error(&e),
         };
-        let items: Vec<FolderItem> = folders
-            .iter()
-            .map(|f| FolderItem {
-                name: f.name.clone().into(),
-                role: f.role.as_str().into(),
-                label: f.display_name().into(),
-                unread: if matches!(f.role, Role::Sent | Role::Drafts | Role::Trash | Role::Junk) { 0 } else { f.unread as i32 },
-                depth: f.depth() as i32,
-            })
-            .collect();
+        let count = loaded.len();
+        let mut rows = Vec::new();
+        let mut items = Vec::new();
+        if count > 1 {
+            rows.push(Row::Unified);
+            items.push(FolderItem {
+                role: "unified".into(),
+                label: "All inboxes".into(),
+                unread: loaded.iter().flatten().filter(|f| f.role == Role::Inbox).map(|f| f.unread as i32).sum(),
+                ..Default::default()
+            });
+        }
         let needs_initial_folder = {
             let mut state = self.state.borrow_mut();
-            state.folders = folders;
-            if state.current_folder.as_ref().is_some_and(|c| !state.folders.iter().any(|f| &f.name == c)) {
-                state.current_folder = None;
+            for (i, (account, folders)) in state.accounts.iter_mut().zip(loaded).enumerate() {
+                if count > 1 {
+                    rows.push(Row::Account(i));
+                    items.push(FolderItem {
+                        role: "account".into(),
+                        label: account.config.email.clone().into(),
+                        color: account_color(i, count),
+                        ..Default::default()
+                    });
+                }
+                for f in &folders {
+                    rows.push(Row::Folder(i, f.name.clone()));
+                    items.push(FolderItem {
+                        name: f.name.clone().into(),
+                        role: f.role.as_str().into(),
+                        label: f.display_name().into(),
+                        unread: if matches!(f.role, Role::Sent | Role::Drafts | Role::Trash | Role::Junk) {
+                            0
+                        } else {
+                            f.unread as i32
+                        },
+                        depth: f.depth() as i32,
+                        color: account_color(i, count),
+                    });
+                }
+                account.folders = folders;
             }
-            state.current_folder.is_none() && !state.folders.is_empty()
+            state.rows = rows;
+            if state.current.as_ref().is_some_and(|c| !state.rows.contains(c)) {
+                state.current = None;
+            }
+            state.current.is_none() && state.rows.iter().any(|r| matches!(r, Row::Unified | Row::Folder(..)))
         };
         self.folder_model.set_vec(items);
         if needs_initial_folder {
-            let inbox = {
+            let start = {
                 let state = self.state.borrow();
-                state.folders.iter().position(|f| f.role == Role::Inbox).unwrap_or(0)
+                let inbox = |r: &Row| match r {
+                    Row::Unified => true,
+                    Row::Folder(a, f) => state.is_inbox(*a, f),
+                    Row::Account(_) => false,
+                };
+                state
+                    .rows
+                    .iter()
+                    .position(inbox)
+                    .or_else(|| state.rows.iter().position(|r| matches!(r, Row::Folder(..))))
+                    .unwrap_or(0)
             };
-            self.select_folder(inbox);
+            self.select_folder(start);
         } else {
             self.update_folder_selection();
         }
@@ -411,26 +528,44 @@ impl Controller {
 
     fn update_folder_selection(&self) {
         let state = self.state.borrow();
-        let index = state.folders.iter().position(|f| Some(&f.name) == state.current_folder.as_ref());
+        let index = state.current.as_ref().and_then(|c| state.rows.iter().position(|r| r == c));
         let window = self.window();
         window.set_current_folder(index.map(|i| i as i32).unwrap_or(-1));
         if state.search.is_empty() {
-            let title = index.map(|i| state.folders[i].display_name()).unwrap_or_default();
+            let title = match &state.current {
+                Some(Row::Unified) => "All inboxes".to_string(),
+                Some(Row::Folder(a, f)) => state.folder(*a, f).map(|f| f.display_name()).unwrap_or_default(),
+                _ => String::new(),
+            };
             window.set_list_title(title.into());
         }
     }
 
     fn select_folder(&self, index: usize) {
-        let Some(name) = self.state.borrow().folders.get(index).map(|f| f.name.clone()) else { return };
+        let Some(row) = self.state.borrow().rows.get(index).cloned() else { return };
+        if matches!(row, Row::Account(_)) {
+            return;
+        }
         {
             let mut state = self.state.borrow_mut();
-            state.current_folder = Some(name.clone());
+            state.current = Some(row.clone());
             state.search.clear();
         }
         self.window().set_searching(false);
         self.update_folder_selection();
         self.reload_messages();
-        self.send(Command::OpenFolder(name));
+        // Inboxes, all the unified view shows, are synced by every engine anyway.
+        if let Row::Folder(account, name) = row {
+            self.send(account, Command::OpenFolder(name));
+        }
+    }
+
+    /// Account that new messages are sent from: the one being browsed, else the first.
+    fn compose_account(&self) -> usize {
+        match &self.state.borrow().current {
+            Some(Row::Folder(a, _)) => *a,
+            _ => 0,
+        }
     }
 
     fn search(&self, text: &str) {
@@ -449,30 +584,45 @@ impl Controller {
     fn reload_messages(&self) {
         let result = {
             let state = self.state.borrow();
-            let Some(store) = state.store.as_ref() else { return };
-            if !state.search.is_empty() {
-                store.search(&state.search, 500)
-            } else if let Some(folder) = &state.current_folder {
-                store.messages(folder, LIST_LIMIT)
-            } else {
-                Ok(Vec::new())
+            let limit = if state.search.is_empty() { LIST_LIMIT } else { 500 };
+            let mut all = Vec::new();
+            for (i, account) in state.accounts.iter().enumerate() {
+                let store = &account.store;
+                let found = if !state.search.is_empty() {
+                    store.search(&state.search, limit)
+                } else {
+                    match &state.current {
+                        Some(Row::Folder(a, folder)) if *a == i => store.messages(folder, limit),
+                        Some(Row::Unified) => match store.folder_by_role(Role::Inbox) {
+                            Ok(Some(inbox)) => store.messages(&inbox, limit),
+                            other => other.map(|_| Vec::new()),
+                        },
+                        _ => Ok(Vec::new()),
+                    }
+                };
+                match found {
+                    Ok(m) => all.extend(m.into_iter().map(|m| (i, m))),
+                    Err(e) => return self.show_error(&e),
+                }
             }
+            // Each store lists newest first; a stable sort merges accounts and keeps that order.
+            all.sort_by_key(|(_, m)| std::cmp::Reverse(m.date));
+            all.truncate(limit);
+            all
         };
-        let messages = match result {
-            Ok(m) => m,
-            Err(e) => return self.show_error(&e),
-        };
+        let messages = result;
         let items: Vec<MessageItem> = {
             let state = self.state.borrow();
-            let show_recipients = |folder: &str| {
-                state.folders.iter().any(|f| f.name == folder && matches!(f.role, Role::Sent | Role::Drafts))
+            let count = state.accounts.len();
+            let show_recipients = |account: usize, folder: &str| {
+                state.folder(account, folder).is_some_and(|f| matches!(f.role, Role::Sent | Role::Drafts))
             };
             messages
                 .iter()
-                .map(|m| MessageItem {
+                .map(|(a, m)| MessageItem {
                     folder: m.folder.clone().into(),
                     uid: m.uid as i32,
-                    sender: if show_recipients(&m.folder) {
+                    sender: if show_recipients(*a, &m.folder) {
                         format!("To: {}", m.to)
                     } else if m.from_name.is_empty() {
                         m.from_addr.clone()
@@ -487,6 +637,7 @@ impl Controller {
                     flagged: m.flagged,
                     answered: m.answered,
                     attachments: m.has_attachments,
+                    color: account_color(*a, count),
                 })
                 .collect()
         };
@@ -497,7 +648,7 @@ impl Controller {
             let index = state
                 .selected
                 .as_ref()
-                .and_then(|(f, u)| state.messages.iter().position(|m| &m.folder == f && m.uid == *u));
+                .and_then(|(a, f, u)| state.messages.iter().position(|(ma, m)| ma == a && &m.folder == f && m.uid == *u));
             if index.is_none() && state.selected.is_some() {
                 // The selected message is gone (moved elsewhere or deleted on another device).
                 state.selected = None;
@@ -523,7 +674,7 @@ impl Controller {
         let summary = mime::summary_from_headers("", 0, &raw, None);
         {
             let mut state = self.state.borrow_mut();
-            state.selected = Some((String::new(), 0));
+            state.selected = Some((0, String::new(), 0));
             state.standalone = Some((summary, raw));
         }
         let window = self.window();
@@ -533,29 +684,30 @@ impl Controller {
         Ok(())
     }
 
-    fn raw_of(&self, m: &MessageSummary) -> Result<Option<Vec<u8>>> {
+    fn raw_of(&self, account: usize, m: &MessageSummary) -> Result<Option<Vec<u8>>> {
         let state = self.state.borrow();
         if let Some((_, raw)) = &state.standalone {
             return Ok(Some(raw.clone()));
         }
-        match state.store.as_ref() {
-            Some(store) => store.raw(&m.folder, m.uid),
+        match state.accounts.get(account) {
+            Some(a) => a.store.raw(&m.folder, m.uid),
             None => Ok(None),
         }
     }
 
-    fn selected_summary(&self) -> Option<MessageSummary> {
+    /// The selected message and its account.
+    fn selected_summary(&self) -> Option<(usize, MessageSummary)> {
         let state = self.state.borrow();
         if let Some((summary, _)) = &state.standalone {
-            return Some(summary.clone());
+            return Some((0, summary.clone()));
         }
-        let (folder, uid) = state.selected.as_ref()?;
-        state.messages.iter().find(|m| &m.folder == folder && m.uid == *uid).cloned()
+        let (account, folder, uid) = state.selected.as_ref()?;
+        state.messages.iter().find(|(a, m)| a == account && &m.folder == folder && m.uid == *uid).cloned()
     }
 
     fn select_message(&self, index: usize) {
-        let Some(summary) = self.state.borrow().messages.get(index).cloned() else { return };
-        let key = (summary.folder.clone(), summary.uid);
+        let Some((account, summary)) = self.state.borrow().messages.get(index).cloned() else { return };
+        let key = (account, summary.folder.clone(), summary.uid);
         if self.state.borrow().selected.as_ref() == Some(&key) {
             return;
         }
@@ -566,7 +718,7 @@ impl Controller {
         }
         self.window().set_current_message(index as i32);
         if !summary.seen {
-            self.apply(&summary, PendingOp::SetSeen(true));
+            self.apply(account, &summary, PendingOp::SetSeen(true));
         }
         self.render_selected();
     }
@@ -593,7 +745,7 @@ impl Controller {
     }
 
     fn update_reader_header(&self) {
-        let Some(m) = self.selected_summary() else { return };
+        let Some((_, m)) = self.selected_summary() else { return };
         let window = self.window();
         window.set_has_message(true);
         window.set_msg_subject(if m.subject.is_empty() { "(no subject)".into() } else { m.subject.clone().into() });
@@ -607,10 +759,10 @@ impl Controller {
 
     /// Shows the selected message, downloading its body first if needed.
     fn render_selected(&self) {
-        let Some(summary) = self.selected_summary() else { return };
+        let Some((account, summary)) = self.selected_summary() else { return };
         self.update_reader_header();
         let window = self.window();
-        let raw = match self.raw_of(&summary) {
+        let raw = match self.raw_of(account, &summary) {
             Ok(Some(raw)) => raw,
             Ok(None) => {
                 window.set_msg_loading(true);
@@ -621,14 +773,14 @@ impl Controller {
                 if let Some(view) = self.viewer.borrow().as_ref() {
                     view.clear();
                 }
-                self.send(Command::FetchBody { folder: summary.folder.clone(), uid: summary.uid });
+                self.send(account, Command::FetchBody { folder: summary.folder.clone(), uid: summary.uid });
                 return;
             }
             Err(e) => return self.show_error(&e),
         };
         window.set_msg_loading(false);
         let body = mime::body_from_raw(&raw);
-        let allow_remote = self.state.borrow().remote_allowed.contains(&(summary.folder.clone(), summary.uid));
+        let allow_remote = self.state.borrow().remote_allowed.contains(&(account, summary.folder.clone(), summary.uid));
         window.set_msg_remote_blocked(body.has_remote_content && !allow_remote && cfg!(feature = "servo"));
         window.set_msg_text(body.text.clone().into());
         self.attachment_model.set_vec(
@@ -675,7 +827,7 @@ impl Controller {
                     }
                 }
             }
-            self.open_composer(draft, None);
+            self.open_composer(self.compose_account(), draft, None);
         } else if (url.starts_with("https://") || url.starts_with("http://"))
             && let Err(e) = open_url(url)
         {
@@ -696,8 +848,8 @@ impl Controller {
 
     #[cfg(not(target_os = "android"))]
     fn save_attachment_desktop(&self, index: usize) {
-        let Some(summary) = self.selected_summary() else { return };
-        let Ok(Some(raw)) = self.raw_of(&summary) else { return };
+        let Some((account, summary)) = self.selected_summary() else { return };
+        let Ok(Some(raw)) = self.raw_of(account, &summary) else { return };
         let Some(name) = self
             .state
             .borrow()
@@ -726,27 +878,28 @@ impl Controller {
     // ---- changing messages ----
 
     /// Applies a change locally right away and queues it for the server.
-    fn apply(&self, summary: &MessageSummary, op: PendingOp) {
-        let result = self.state.borrow_mut().store.as_mut().map(|s| s.apply_local(&summary.folder, summary.uid, &op));
+    fn apply(&self, account: usize, summary: &MessageSummary, op: PendingOp) {
+        let result =
+            self.state.borrow_mut().accounts.get_mut(account).map(|a| a.store.apply_local(&summary.folder, summary.uid, &op));
         if let Some(Err(e)) = result {
             return self.show_error(&e);
         }
         self.reload_messages();
         self.reload_folders();
-        self.send(Command::Flush);
+        self.send(account, Command::Flush);
     }
 
     fn toggle_selected(&self, flag: bool) {
-        let Some(m) = self.selected_summary() else { return };
+        let Some((account, m)) = self.selected_summary() else { return };
         let op = if flag { PendingOp::SetFlagged(!m.flagged) } else { PendingOp::SetSeen(!m.seen) };
-        self.apply(&m, op);
+        self.apply(account, &m, op);
     }
 
     fn remove_selected(&self, archive: bool) {
-        let Some(m) = self.selected_summary() else { return };
+        let Some((account, m)) = self.selected_summary() else { return };
         let op = {
             let state = self.state.borrow();
-            let Some(store) = state.store.as_ref() else { return };
+            let Some(store) = state.accounts.get(account).map(|a| &a.store) else { return };
             if archive { engine::archive_op(store, &m.folder) } else { engine::delete_op(store, &m.folder) }
         };
         let op = match op {
@@ -755,7 +908,7 @@ impl Controller {
         };
         // Select the message that takes this one's place, like most mail clients.
         let index = self.window().get_current_message().max(0) as usize;
-        self.apply(&m, op);
+        self.apply(account, &m, op);
         let count = self.state.borrow().messages.len();
         if count > 0 {
             self.select_message(index.min(count - 1));
@@ -765,27 +918,27 @@ impl Controller {
     // ---- composing ----
 
     fn reply(&self, kind: ReplyKind) {
-        let Some(m) = self.selected_summary() else { return };
-        let me = self.state.borrow().account.as_ref().map(|a| a.email.clone()).unwrap_or_default();
+        let Some((account, m)) = self.selected_summary() else { return };
+        let me = self.state.borrow().accounts.get(account).map(|a| a.config.email.clone()).unwrap_or_default();
         let text = self.state.borrow().body.as_ref().map(|b| b.text.clone()).unwrap_or_default();
         let replied_to = (!matches!(kind, ReplyKind::Forward)).then(|| (m.folder.clone(), m.uid));
         let forwarding = matches!(kind, ReplyKind::Forward);
         let mut draft = mime::reply_draft(kind, &m, &text, &me);
         if forwarding {
             // Forward attachments too: write them to a temp dir and attach from there.
-            if let Err(e) = self.attach_original_files(&m, &mut draft) {
+            if let Err(e) = self.attach_original_files(account, &m, &mut draft) {
                 self.show_error(&e);
             }
         }
-        self.open_composer(draft, replied_to);
+        self.open_composer(account, draft, replied_to);
     }
 
-    fn attach_original_files(&self, m: &MessageSummary, draft: &mut Draft) -> Result<()> {
+    fn attach_original_files(&self, account: usize, m: &MessageSummary, draft: &mut Draft) -> Result<()> {
         let Some(attachments) = self.state.borrow().body.as_ref().map(|b| b.attachments.clone()) else { return Ok(()) };
         if attachments.is_empty() {
             return Ok(());
         }
-        let raw = self.raw_of(m)?.ok_or_else(|| anyhow!("message not downloaded"))?;
+        let raw = self.raw_of(account, m)?.ok_or_else(|| anyhow!("message not downloaded"))?;
         let dir = std::env::temp_dir().join(format!("mailclient-fwd-{}-{}", std::process::id(), m.uid));
         std::fs::create_dir_all(&dir)?;
         for att in &attachments {
@@ -798,8 +951,9 @@ impl Controller {
         Ok(())
     }
 
-    fn open_composer(&self, draft: Draft, replied_to: Option<(String, u32)>) {
-        if self.state.borrow().engine.is_none() {
+    /// `account`: who the message is sent from (and whose message `replied_to` is).
+    fn open_composer(&self, account: usize, draft: Draft, replied_to: Option<(String, u32)>) {
+        if self.state.borrow().accounts.get(account).is_none() {
             return;
         }
         if self.composer.borrow().is_some() {
@@ -814,7 +968,7 @@ impl Controller {
                 let Some(c) = weak.upgrade() else { return 0 };
                 let id = c.next_send_id.get();
                 c.next_send_id.set(id + 1);
-                c.send(Command::Send { id, draft, replied_to });
+                c.send(account, Command::Send { id, draft, replied_to });
                 id
             })
         };

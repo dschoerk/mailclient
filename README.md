@@ -8,6 +8,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 ## Features
 
 - Account setup with server guesses for common providers; login verified before saving.
+- Multiple accounts ("Add account" in the sidebar), each with its own sync engine and cache,
+  and an "All inboxes" view; a colored bar in the message list marks each account.
   Password stored in the system keyring (Secret Service).
 - Folder list with special-use detection, unread counts.
 - Local SQLite cache: the last 500 messages per synced folder; bodies downloaded on
@@ -97,6 +99,13 @@ cargo test -p mailcore --test greenmail -- --ignored        # send, sync, flag, 
 MAILCLIENT_EXTRA_CA=target/test-mailserver/ca.pem cargo run # GUI: imap/smtp host localhost, ports 3993/3465, any password
 ```
 
+Ready-made configs for GreenMail are in [config/](config/); pick one with `--config`:
+
+```sh
+MAILCLIENT_PASSWORD=x MAILCLIENT_EXTRA_CA=target/test-mailserver/ca.pem \
+  cargo run -- --config config/greenmail-two-accounts.toml
+```
+
 User stories ([docs/user-stories.md](docs/user-stories.md), UML use-case diagram and results)
 driven through the real UI on Slint's headless testing backend, against GreenMail:
 
@@ -142,7 +151,7 @@ Debugging aids:
 - `MAILCLIENT_SNAPSHOT=out.png` saves a picture of the window after 6 s and exits.
 - `RUST_LOG=mailcore=debug,mailclient_app=debug` for sync and request-blocking logs.
 
-Data lives in `~/.config/mailclient/config.toml` and `~/.local/share/mailclient/<email>.sqlite`.
+Data lives in `~/.config/mailclient/config.toml` (or the file given with `--config`) and `~/.local/share/mailclient/<email>.sqlite`.
 
 Icons: [Lucide](https://lucide.dev) 1.47.0 (ISC; some derived from Feather, MIT), embedded
 as SVG from `crates/app/ui/icons/` (license in that folder). SVGs instead of font symbols
@@ -169,7 +178,8 @@ crates/app        Slint UI
 
 - Tested against GreenMail only, not yet against Gmail/Fastmail/Dovecot. The keyring
   path is untested.
-- No OAuth2 (needed for Outlook.com, optional for Gmail), single account only.
+- No OAuth2 (needed for Outlook.com, optional for Gmail). Accounts cannot be removed in the app yet
+  (edit `config.toml`); new messages from "All inboxes" go out from the first account.
 - No drafts saving, threading view, contacts autocomplete, or rich-text compose.
 - Only the inbox and the open folder are synced; other folders sync when opened.
 - No CONDSTORE/QRESYNC yet; flag changes are found by re-fetching flags of cached

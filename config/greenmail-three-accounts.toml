@@ -1,0 +1,35 @@
+# Local GreenMail (scripts/test-mailserver.sh). Run with:
+#   MAILCLIENT_PASSWORD=x MAILCLIENT_EXTRA_CA=target/test-mailserver/ca.pem cargo run -- --config config/greenmail-three-accounts.toml
+
+[[accounts]]
+name = "Work"
+email = "work@localhost"
+username = "work@localhost"
+imap_host = "localhost"
+imap_port = 3993
+imap_security = "tls"
+smtp_host = "localhost"
+smtp_port = 3465
+smtp_security = "tls"
+
+[[accounts]]
+name = "Home"
+email = "home@localhost"
+username = "home@localhost"
+imap_host = "localhost"
+imap_port = 3993
+imap_security = "tls"
+smtp_host = "localhost"
+smtp_port = 3465
+smtp_security = "tls"
+
+[[accounts]]
+name = "Club"
+email = "club@localhost"
+username = "club@localhost"
+imap_host = "localhost"
+imap_port = 3993
+imap_security = "tls"
+smtp_host = "localhost"
+smtp_port = 3465
+smtp_security = "tls"

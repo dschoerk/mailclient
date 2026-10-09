@@ -9,6 +9,8 @@ export struct FolderItem {
     label: string,
     unread: int,
     depth: int,
+    /// Account color; transparent with a single account.
+    color: color,
 }
 
 export struct MessageItem {
@@ -22,6 +24,8 @@ export struct MessageItem {
     flagged: bool,
     answered: bool,
     attachments: bool,
+    /// Account color; transparent with a single account.
+    color: color,
 }
 
 export struct AttachmentItem {
@@ -129,7 +133,7 @@ component FolderRow inherits Rectangle {
     in property <bool> selected;
     callback clicked();
     accessible-role: list-item;
-    accessible-label: "Folder " + folder.label;
+    accessible-label: (folder.role == "account" ? "Account " : "Folder ") + folder.label;
     accessible-action-default => { root.clicked(); }
     height: 30px;
     border-radius: 6px;
@@ -138,10 +142,17 @@ component FolderRow inherits Rectangle {
         padding-left: 10px + folder.depth * 14px;
         padding-right: 10px;
         spacing: 8px;
-        Image {
+        // Account heading: the same bar that marks the account's messages in the list.
+        if folder.role == "account": Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: folder.color;
+        }
+        if folder.role != "account": Image {
             width: 16px;
             colorize: Theme.muted;
             source: folder.role == "inbox" ? @image-url("icons/inbox.svg")
+                : folder.role == "unified" ? @image-url("icons/mails.svg")
                 : folder.role == "sent" ? @image-url("icons/send.svg")
                 : folder.role == "drafts" ? @image-url("icons/file-pen-line.svg")
                 : folder.role == "trash" ? @image-url("icons/trash.svg")
@@ -156,7 +167,8 @@ component FolderRow inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
-            font-weight: folder.unread > 0 ? 600 : 400;
+            font-weight: folder.unread > 0 || folder.role == "account" ? 600 : 400;
+            color: folder.role == "account" ? Theme.muted : Palette.foreground;
         }
         if folder.unread > 0: Text {
             text: folder.unread;
@@ -243,6 +255,14 @@ component MessageRow inherits Rectangle {
             }
         }
     }
+    // Which account the message belongs to.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 4px;
+        height: parent.height;
+        background: msg.color;
+    }
     Divider {
         y: parent.height - 1px;
         height: 1px;
@@ -279,9 +299,14 @@ component SetupView inherits Rectangle {
     in-out property <SetupData> data;
     in property <string> error;
     in property <bool> busy;
+    /// Adding a further account, which can be abandoned.
+    in property <bool> can-cancel;
     callback email-edited(string);
     callback submit();
+    callback cancel();
     background: Palette.background;
+    // Drawn over the mail view: keep clicks from reaching it.
+    TouchArea { }
 
     VerticalLayout {
         x: 0;
@@ -295,7 +320,7 @@ component SetupView inherits Rectangle {
                 width: min(520px, root.width - 32px);
                 spacing: 10px;
                 Text {
-                    text: "Set up your mail account";
+                    text: root.can-cancel ? "Add a mail account" : "Set up your mail account";
                     font-size: 22px;
                     font-weight: 600;
                 }
@@ -385,6 +410,11 @@ component SetupView inherits Rectangle {
                         indeterminate: true;
                         width: 24px;
                         height: 24px;
+                    }
+                    if root.can-cancel: Button {
+                        text: "Cancel";
+                        enabled: !root.busy;
+                        clicked => root.cancel();
                     }
                     Button {
                         text: data.oauth ? "Sign in with Microsoft" : "Save and connect";
@@ -623,6 +653,8 @@ export component AppWindow inherits Window {
     // ---- user actions ----
     callback setup-email-edited(string);
     callback setup-submit();
+    callback setup-cancel();
+    callback add-account();
     callback folder-selected(int);
     callback message-selected(int);
     callback search(string);
@@ -661,17 +693,16 @@ export component AppWindow inherits Window {
     in-out property <bool> show-folders;
     property <int> pane: root.composing || root.has-message ? 2 : 1;
 
-    if root.needs-setup: SetupView {
-        data <=> root.setup;
-        error: root.setup-error;
-        busy: root.setup-busy;
-        email-edited(t) => root.setup-email-edited(t);
-        submit => root.setup-submit();
-    }
-
-    if !root.needs-setup: keys := FocusScope {
+    // Always present, also under the setup screen: the webview must never be destroyed.
+    keys := FocusScope {
         init => {
             self.focus();
+        }
+        property <bool> needs-setup: root.needs-setup;
+        changed needs-setup => {
+            if !self.needs-setup {
+                self.focus();
+            }
         }
         // The compose fields held focus; take it back so keys (and Android Back) still work.
         property <bool> composing: root.composing;
@@ -695,7 +726,7 @@ export component AppWindow inherits Window {
         }
 
         key-pressed(event) => {
-            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+            if root.needs-setup || event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
                 return reject;
             }
             if event.text == "j" || event.text == Key.DownArrow {
@@ -1214,14 +1245,36 @@ export component AppWindow inherits Window {
                         checked <=> root.floating-buttons;
                         toggled => root.settings-changed();
                     }
-                    Text {
-                        text: root.account-label;
-                        color: Theme.muted;
-                        font-size: 12px;
-                        overflow: elide;
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: root.account-label;
+                            color: Theme.muted;
+                            font-size: 12px;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        if root.has-account: ToolButton {
+                            text: "Add account";
+                            clicked => {
+                                root.show-folders = false;
+                                root.add-account();
+                            }
+                        }
                     }
                 }
             }
+    }
+
+    if root.needs-setup: SetupView {
+        data <=> root.setup;
+        error: root.setup-error;
+        busy: root.setup-busy;
+        can-cancel: root.has-account;
+        email-edited(t) => root.setup-email-edited(t);
+        submit => root.setup-submit();
+        cancel => root.setup-cancel();
     }
 }
 

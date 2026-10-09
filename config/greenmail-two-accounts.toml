@@ -1,0 +1,26 @@
+left_handed = false
+floating_buttons = false
+
+[[accounts]]
+name = "Work"
+email = "work@localhost"
+username = "work@localhost"
+imap_host = "localhost"
+imap_port = 3993
+imap_security = "tls"
+smtp_host = "localhost"
+smtp_port = 3465
+smtp_security = "tls"
+auth = "password"
+
+[[accounts]]
+name = "Home"
+email = "home@localhost"
+username = "home@localhost"
+imap_host = "localhost"
+imap_port = 3993
+imap_security = "tls"
+smtp_host = "localhost"
+smtp_port = 3465
+smtp_security = "tls"
+auth = "password"
