@@ -9,6 +9,7 @@ pub mod imap;
 pub mod mime;
 pub mod smtp;
 pub mod store;
+pub mod thread;
 
 pub use backend::Backend;
 pub use config::{AccountConfig, Auth, Security};

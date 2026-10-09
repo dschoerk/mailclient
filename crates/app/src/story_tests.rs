@@ -431,6 +431,58 @@ fn user_stories() {
         .await;
         record("US15 multiple accounts, unified inbox", r);
 
+        // US16: a conversation between the two accounts; the original from Sent joins the reply.
+        let r = async {
+            let user2 = format!("second-{user}");
+            let second = test_account(&user2);
+            let (me, other) = (user.split('@').next().unwrap(), user2.split('@').next().unwrap());
+            click(&w, "Folder All inboxes")?;
+            click(&w, "New message")?; // from the first account
+            type_in(&w, "To", &user2)?;
+            type_in(&w, "Subject", "Project kickoff")?;
+            type_in(&w, "Body", "Shall we start on Monday?")?;
+            click(&w, "Send")?;
+            wait_for("compose form to close", || Controller::current().composer().is_none()).await?;
+            wait_for("arrival in second account", || subjects(&w).iter().any(|s| s == "Project kickoff")).await?;
+            click(&w, &format!("{me}: Project kickoff"))?;
+            wait_for("message open", || w.get_msg_text().contains("Monday")).await?;
+            click(&w, "Reply")?; // from the second account, to the first
+            click(&w, "Send")?;
+            wait_for("compose form to close", || Controller::current().composer().is_none()).await?;
+            wait_for("reply grouped with the original from Sent", || {
+                w.get_messages().iter().any(|m| m.subject == "Re: Project kickoff" && m.count == 2)
+            })
+            .await
+            .map_err(|e| format!("{e}; rows: {:?}", w.get_messages().iter().map(|m| (m.subject.to_string(), m.count)).collect::<Vec<_>>()))?;
+
+            click(&w, &format!("{other}: Re: Project kickoff"))?;
+            wait_for("reply open", || w.get_msg_subject() == "Re: Project kickoff").await?;
+            ensure(w.get_conversation().row_count() == 2, format!("conversation of {}", w.get_conversation().row_count()))?;
+            ensure(w.get_current_in_conversation() == 1, "the newest message should be open")?;
+            // The reader shows both messages, the original fetched from Sent.
+            wait_for("whole conversation in the reader", || {
+                let text = w.get_msg_text();
+                text.matches("────────").count() == 1 && !text.contains("Loading…") && text.contains(&user2)
+            })
+            .await?;
+            let row = w.get_current_message();
+            w.invoke_conversation_selected(0);
+            wait_for("original from Sent shown", || {
+                w.get_msg_subject() == "Project kickoff" && w.get_msg_text().contains("Monday")
+            })
+            .await?;
+            ensure(w.get_current_message() == row, "list selection moved")?;
+
+            // Archiving from the inbox moves the conversation's inbox messages; Sent keeps its copy.
+            click(&w, "Archive")?;
+            ensure(!subjects(&w).iter().any(|s| s == "Re: Project kickoff"), "conversation still listed")?;
+            wait_for("in Archive on server", || on_server(&account, "Archive", "Re: Project kickoff").is_some()).await?;
+            ensure(on_server(&account, "Sent", "Project kickoff").is_some(), "Sent copy moved")?;
+            ensure(on_server(&second, "INBOX", "Project kickoff").is_some(), "other account's copy moved")
+        }
+        .await;
+        record("US16 conversation between accounts", r);
+
         let _ = slint::quit_event_loop();
     })
     .unwrap();

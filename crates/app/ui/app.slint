@@ -26,6 +26,15 @@ export struct MessageItem {
     attachments: bool,
     /// Account color; transparent with a single account.
     color: color,
+    /// Messages in the conversation.
+    count: int,
+}
+
+export struct ConversationItem {
+    sender: string,
+    date: string,
+    snippet: string,
+    seen: bool,
 }
 
 export struct AttachmentItem {
@@ -182,16 +191,88 @@ component FolderRow inherits Rectangle {
     }
 }
 
+/// One message on the timeline of an open conversation in the list.
+component TimelineItem inherits Rectangle {
+    in property <ConversationItem> item;
+    in property <bool> current;
+    in property <bool> first;
+    in property <bool> last;
+    in property <color> line-color;
+    callback clicked();
+    accessible-role: list-item;
+    accessible-label: "Conversation: " + item.sender + ", " + item.date;
+    accessible-action-default => { root.clicked(); }
+    height: 30px;
+    border-radius: 4px;
+    background: current ? Theme.selection : touch.has-hover ? Palette.foreground.with-alpha(0.05) : transparent;
+    // The line runs through all items; it starts at the first dot and ends at the last.
+    Rectangle {
+        x: 11px;
+        y: root.first ? root.height / 2 : 0;
+        width: 2px;
+        height: (root.first || root.last) ? root.height / 2 : root.height;
+        background: root.line-color;
+    }
+    Rectangle {
+        x: 12px - self.width / 2;
+        width: root.current ? 10px : 8px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: item.seen ? Palette.background : root.line-color;
+        border-width: 2px;
+        border-color: root.line-color;
+    }
+    HorizontalLayout {
+        padding-left: 26px;
+        padding-right: 6px;
+        spacing: 8px;
+        Text {
+            text: item.sender;
+            font-weight: item.seen ? 400 : 700;
+            vertical-alignment: center;
+            width: 90px;
+            overflow: elide;
+        }
+        Text {
+            text: item.snippet;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: item.date;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => root.clicked();
+    }
+}
+
 component MessageRow inherits Rectangle {
     in property <MessageItem> msg;
     in property <bool> selected;
+    /// Messages of the open conversation, oldest first; shown under the selected row.
+    in property <[ConversationItem]> thread;
+    in property <int> thread-current: -1;
     callback clicked();
+    callback thread-clicked(int);
+    property <bool> expanded: root.selected && root.thread.length > 1;
     accessible-role: list-item;
     accessible-label: msg.sender + ": " + msg.subject;
     accessible-action-default => { root.clicked(); }
-    height: 74px;
-    background: selected ? Theme.selection : touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
+    height: 74px + (root.expanded ? root.thread.length * 30px + 8px : 0px);
+    // Expanded, the open message is marked on the timeline instead.
+    background: root.expanded ? Palette.foreground.with-alpha(0.03)
+        : root.selected ? Theme.selection
+        : touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
     HorizontalLayout {
+        height: 74px;
+        y: 0;
         padding: 10px;
         padding-left: 6px;
         spacing: 6px;
@@ -214,6 +295,12 @@ component MessageRow inherits Rectangle {
                     font-weight: msg.seen ? 400 : 700;
                     overflow: elide;
                     horizontal-stretch: 1;
+                }
+                if msg.count > 1: Text {
+                    text: msg.count;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    accessible-label: msg.count + " messages";
                 }
                 if msg.answered: Image {
                     source: @image-url("icons/reply.svg");
@@ -268,7 +355,24 @@ component MessageRow inherits Rectangle {
         height: 1px;
     }
     touch := TouchArea {
+        y: 0;
+        height: 74px;
         clicked => root.clicked();
+    }
+    if root.expanded: VerticalLayout {
+        y: 74px;
+        height: root.height - 74px;
+        padding-left: 12px;
+        padding-right: 8px;
+        padding-bottom: 8px;
+        for item[i] in root.thread: TimelineItem {
+            item: item;
+            current: i == root.thread-current;
+            first: i == 0;
+            last: i == root.thread.length - 1;
+            line-color: root.msg.color.alpha > 0 ? root.msg.color : Theme.accent;
+            clicked => root.thread-clicked(i);
+        }
     }
 }
 
@@ -646,6 +750,9 @@ export component AppWindow inherits Window {
     in property <bool> msg-remote-blocked;
     in property <string> msg-text;
     in property <[AttachmentItem]> msg-attachments;
+    // Every message of the open conversation, oldest first; empty for a lone message.
+    in property <[ConversationItem]> conversation;
+    in property <int> current-in-conversation: -1;
     // Phones: the reader's thumb actions sit on this side.
     in-out property <bool> left-handed;
     in-out property <bool> floating-buttons;
@@ -657,6 +764,7 @@ export component AppWindow inherits Window {
     callback add-account();
     callback folder-selected(int);
     callback message-selected(int);
+    callback conversation-selected(int);
     callback search(string);
     callback refresh();
     callback compose();
@@ -860,8 +968,14 @@ export component AppWindow inherits Window {
                             for msg[i] in root.messages: MessageRow {
                                 msg: msg;
                                 selected: i == root.current-message;
+                                thread: root.conversation;
+                                thread-current: root.current-in-conversation;
                                 clicked => {
                                     root.message-selected(i);
+                                    keys.focus();
+                                }
+                                thread-clicked(j) => {
+                                    root.conversation-selected(j);
                                     keys.focus();
                                 }
                             }

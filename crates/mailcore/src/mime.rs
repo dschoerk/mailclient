@@ -316,12 +316,37 @@ pub fn text_to_html(text: &str) -> String {
     format!("<pre class=\"plain\">{out}</pre>")
 }
 
-/// Wraps a sanitized fragment into the document shown in the message view.
-pub fn render_document(body: &Body) -> String {
-    let content = match &body.html {
+fn body_html(body: &Body) -> String {
+    match &body.html {
         Some(html) => html.clone(),
         None => text_to_html(&body.text),
-    };
+    }
+}
+
+/// Wraps a sanitized fragment into the document shown in the message view.
+pub fn render_document(body: &Body) -> String {
+    document(&body_html(body))
+}
+
+/// A conversation in one document, each message under its `heading` and anchored `#m<index>`;
+/// `current` is marked. A `None` body is still downloading.
+///
+/// shortcut: messages share one document, so a message's own `<style>` can restyle the others;
+/// give each its own frame if that shows up in real mail.
+pub fn render_conversation(messages: &[(String, Option<&Body>)], current: usize) -> String {
+    let mut content = String::new();
+    for (i, (heading, body)) in messages.iter().enumerate() {
+        let class = if i == current { "message current" } else { "message" };
+        let inner = body.map(body_html).unwrap_or_else(|| "<p class=\"loading\">Loading…</p>".into());
+        content.push_str(&format!(
+            "<section id=\"m{i}\" class=\"{class}\"><h2>{}</h2>{inner}</section>",
+            html_escape::encode_text(heading)
+        ));
+    }
+    document(&content)
+}
+
+fn document(content: &str) -> String {
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>\
          :root {{ color-scheme: light; }}\
@@ -329,6 +354,11 @@ pub fn render_document(body: &Body) -> String {
          img {{ max-width: 100%; height: auto; }}\
          pre.plain {{ white-space: pre-wrap; font-family: monospace; font-size: 13px; }}\
          .quote {{ color: #6e6e73; }}\
+         section.message {{ border-top: 1px solid #e0e0e3; padding: 12px 0 12px 15px; }}\
+         section.message:first-child {{ border-top: none; }}\
+         section.current {{ border-left: 3px solid #2f6fde; padding-left: 12px; }}\
+         section h2 {{ font-size: 13px; font-weight: 600; color: #6e6e73; margin: 0 0 10px; }}\
+         .loading {{ color: #6e6e73; }}\
          </style></head><body>{content}</body></html>"
     )
 }
@@ -672,5 +702,14 @@ iVBORw0KGgo=\r\n\
     #[test]
     fn percent_roundtrip() {
         assert_eq!(percent_decode(&percent_encode("a b/c@d")), "a b/c@d");
+    }
+
+    #[test]
+    fn renders_conversation_with_anchors() {
+        let body = body_from_raw(b"Subject: x\r\n\r\nHello <there>\r\n");
+        let doc = render_conversation(&[("Bob <b@x>".into(), Some(&body)), ("Me".into(), None)], 1);
+        assert!(doc.contains("<section id=\"m0\" class=\"message\"><h2>Bob &lt;b@x&gt;</h2>"), "{doc}");
+        assert!(doc.contains("Hello &lt;there&gt;"));
+        assert!(doc.contains("<section id=\"m1\" class=\"message current\"><h2>Me</h2><p class=\"loading\">"));
     }
 }

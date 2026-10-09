@@ -1,7 +1,8 @@
 //! Glue between the Slint UI, the local store and the sync engine.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow};
@@ -13,7 +14,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::compose::Composer;
 use crate::format;
-use crate::{AppWindow, AttachmentItem, FolderItem, MessageItem, SetupData};
+use crate::{AppWindow, AttachmentItem, ConversationItem, FolderItem, MessageItem, SetupData};
 
 /// Most messages shown in one folder list.
 const LIST_LIMIT: usize = 5000;
@@ -68,11 +69,16 @@ struct State {
     accounts: Vec<Account>,
     rows: Vec<Row>,
     current: Option<Row>,
+    /// One per list row: its account and newest listed message.
     messages: Vec<(usize, MessageSummary)>,
+    /// The conversation of each row, oldest first.
+    conversations: Vec<Vec<MessageSummary>>,
     selected: Option<Key>,
     body: Option<Body>,
     search: String,
     remote_allowed: HashSet<Key>,
+    /// Bodies requested from the engine and not there yet.
+    fetching: HashSet<Key>,
     engine_status: String,
     /// A message opened from a file (`mailclient message.eml`), shown without an account.
     standalone: Option<(MessageSummary, Vec<u8>)>,
@@ -86,6 +92,14 @@ impl State {
     fn is_inbox(&self, account: usize, name: &str) -> bool {
         self.folder(account, name).is_some_and(|f| f.role == Role::Inbox)
     }
+
+    /// The list row whose conversation holds the selected message.
+    fn selected_row(&self) -> Option<usize> {
+        let (account, folder, uid) = self.selected.as_ref()?;
+        self.messages.iter().zip(&self.conversations).position(|((a, _), conversation)| {
+            a == account && conversation.iter().any(|m| &m.folder == folder && m.uid == *uid)
+        })
+    }
 }
 
 pub struct Controller {
@@ -94,6 +108,7 @@ pub struct Controller {
     folder_model: Rc<VecModel<FolderItem>>,
     message_model: Rc<VecModel<MessageItem>>,
     attachment_model: Rc<VecModel<AttachmentItem>>,
+    conversation_model: Rc<VecModel<ConversationItem>>,
     composer: RefCell<Option<Rc<Composer>>>,
     next_send_id: std::cell::Cell<u64>,
     #[cfg(feature = "servo")]
@@ -109,6 +124,7 @@ impl Controller {
             folder_model: Rc::new(VecModel::default()),
             message_model: Rc::new(VecModel::default()),
             attachment_model: Rc::new(VecModel::default()),
+            conversation_model: Rc::new(VecModel::default()),
             composer: RefCell::new(None),
             next_send_id: std::cell::Cell::new(1),
             #[cfg(feature = "servo")]
@@ -119,6 +135,7 @@ impl Controller {
         window.set_folders(ModelRc::from(controller.folder_model.clone()));
         window.set_messages(ModelRc::from(controller.message_model.clone()));
         window.set_msg_attachments(ModelRc::from(controller.attachment_model.clone()));
+        window.set_conversation(ModelRc::from(controller.conversation_model.clone()));
         window.set_use_webview(cfg!(feature = "servo"));
         let settings = config::load_settings().unwrap_or_else(|e| {
             log::warn!("cannot read settings: {e:#}");
@@ -189,6 +206,7 @@ impl Controller {
         });
         on!(on_folder_selected, |c, index| c.select_folder(index as usize));
         on!(on_message_selected, |c, index| c.select_message(index as usize));
+        on!(on_conversation_selected, |c, index| c.select_in_conversation(index as usize));
         on!(on_search, |c, text| c.search(&text));
         on!(on_refresh, |c| {
             for account in &c.state.borrow().accounts {
@@ -417,12 +435,13 @@ impl Controller {
                 self.window().set_online(all_online);
             }
             Event::FoldersChanged => self.reload_folders(),
-            Event::MessagesChanged(folder) => {
+            Event::MessagesChanged(_) => {
                 let state = self.state.borrow();
+                // Any folder can add to the listed conversations (replies sit in Sent).
                 let relevant = !state.search.is_empty()
                     || match &state.current {
-                        Some(Row::Folder(a, f)) => *a == account && *f == folder,
-                        Some(Row::Unified) => state.is_inbox(account, &folder),
+                        Some(Row::Folder(a, _)) => *a == account,
+                        Some(Row::Unified) => true,
                         _ => false,
                     };
                 drop(state);
@@ -431,7 +450,15 @@ impl Controller {
                 }
             }
             Event::BodyReady { folder, uid } => {
-                if self.state.borrow().selected == Some((account, folder, uid)) {
+                let shown = {
+                    let mut state = self.state.borrow_mut();
+                    state.fetching.remove(&(account, folder.clone(), uid));
+                    state.selected_row().is_some_and(|row| {
+                        state.messages[row].0 == account
+                            && state.conversations[row].iter().any(|m| m.folder == folder && m.uid == uid)
+                    })
+                };
+                if shown {
                     self.render_selected();
                 }
             }
@@ -582,10 +609,10 @@ impl Controller {
     }
 
     fn reload_messages(&self) {
-        let result = {
+        let rows = {
             let state = self.state.borrow();
             let limit = if state.search.is_empty() { LIST_LIMIT } else { 500 };
-            let mut all = Vec::new();
+            let mut rows = Vec::new();
             for (i, account) in state.accounts.iter().enumerate() {
                 let store = &account.store;
                 let found = if !state.search.is_empty() {
@@ -600,26 +627,33 @@ impl Controller {
                         _ => Ok(Vec::new()),
                     }
                 };
-                match found {
-                    Ok(m) => all.extend(m.into_iter().map(|m| (i, m))),
+                // shortcut: threads the whole cache on every reload; fine for a few thousand
+                // cached messages, store conversation ids at sync time when caches grow larger.
+                let all = match found {
+                    Ok(listed) if listed.is_empty() => continue,
+                    Ok(listed) => store.all_messages().map(|all| (listed, all)),
+                    Err(e) => Err(e),
+                };
+                let (listed, all) = match all {
+                    Ok(found) => found,
                     Err(e) => return self.show_error(&e),
-                }
+                };
+                let role = |folder: &str| state.folder(i, folder).map(|f| f.role).unwrap_or(Role::Other);
+                rows.extend(conversation_rows(listed, &all, role).into_iter().map(|(m, c)| (i, m, c)));
             }
-            // Each store lists newest first; a stable sort merges accounts and keeps that order.
-            all.sort_by_key(|(_, m)| std::cmp::Reverse(m.date));
-            all.truncate(limit);
-            all
+            // Each account lists newest first; a stable sort merges them and keeps that order.
+            rows.sort_by_key(|(_, m, _)| Reverse(m.date));
+            rows.truncate(limit);
+            rows
         };
-        let messages = result;
         let items: Vec<MessageItem> = {
             let state = self.state.borrow();
             let count = state.accounts.len();
             let show_recipients = |account: usize, folder: &str| {
                 state.folder(account, folder).is_some_and(|f| matches!(f.role, Role::Sent | Role::Drafts))
             };
-            messages
-                .iter()
-                .map(|(a, m)| MessageItem {
+            rows.iter()
+                .map(|(a, m, conversation)| MessageItem {
                     folder: m.folder.clone().into(),
                     uid: m.uid as i32,
                     sender: if show_recipients(*a, &m.folder) {
@@ -633,22 +667,20 @@ impl Controller {
                     subject: if m.subject.is_empty() { "(no subject)".into() } else { m.subject.clone().into() },
                     snippet: m.snippet.clone().into(),
                     date: format::list_date(m.date).into(),
-                    seen: m.seen,
-                    flagged: m.flagged,
+                    seen: conversation.iter().all(|c| c.seen),
+                    flagged: conversation.iter().any(|c| c.flagged),
                     answered: m.answered,
-                    attachments: m.has_attachments,
+                    attachments: conversation.iter().any(|c| c.has_attachments),
                     color: account_color(*a, count),
+                    count: conversation.len() as i32,
                 })
                 .collect()
         };
         self.message_model.set_vec(items);
         let selected_index = {
             let mut state = self.state.borrow_mut();
-            state.messages = messages;
-            let index = state
-                .selected
-                .as_ref()
-                .and_then(|(a, f, u)| state.messages.iter().position(|(ma, m)| ma == a && &m.folder == f && m.uid == *u));
+            (state.messages, state.conversations) = rows.into_iter().map(|(a, m, c)| ((a, m), c)).unzip();
+            let index = state.selected_row();
             if index.is_none() && state.selected.is_some() {
                 // The selected message is gone (moved elsewhere or deleted on another device).
                 state.selected = None;
@@ -702,7 +734,9 @@ impl Controller {
             return Some((0, summary.clone()));
         }
         let (account, folder, uid) = state.selected.as_ref()?;
-        state.messages.iter().find(|(a, m)| a == account && &m.folder == folder && m.uid == *uid).cloned()
+        let row = state.selected_row()?;
+        let m = state.conversations[row].iter().find(|m| &m.folder == folder && m.uid == *uid)?;
+        Some((*account, m.clone()))
     }
 
     fn select_message(&self, index: usize) {
@@ -717,8 +751,29 @@ impl Controller {
             state.body = None;
         }
         self.window().set_current_message(index as i32);
-        if !summary.seen {
-            self.apply(account, &summary, PendingOp::SetSeen(true));
+        // Opening a conversation reads all of it.
+        let unread: Vec<MessageSummary> =
+            self.state.borrow().conversations[index].iter().filter(|m| !m.seen).cloned().collect();
+        if !unread.is_empty() {
+            self.apply(account, &unread, PendingOp::SetSeen(true));
+        }
+        self.render_selected();
+    }
+
+    /// Shows another message of the open conversation.
+    fn select_in_conversation(&self, index: usize) {
+        let found = {
+            let state = self.state.borrow();
+            state.selected_row().and_then(|row| Some((state.messages[row].0, state.conversations[row].get(index)?.clone())))
+        };
+        let Some((account, m)) = found else { return };
+        {
+            let mut state = self.state.borrow_mut();
+            state.selected = Some((account, m.folder.clone(), m.uid));
+            state.body = None;
+        }
+        if !m.seen {
+            self.apply(account, std::slice::from_ref(&m), PendingOp::SetSeen(true));
         }
         self.render_selected();
     }
@@ -738,6 +793,7 @@ impl Controller {
         window.set_has_message(false);
         window.set_msg_loading(false);
         self.attachment_model.set_vec(Vec::new());
+        self.conversation_model.set_vec(Vec::new());
         #[cfg(feature = "servo")]
         if let Some(view) = self.viewer.borrow().as_ref() {
             view.clear();
@@ -755,34 +811,90 @@ impl Controller {
         window.set_msg_date(format::full_date(m.date).into());
         window.set_msg_seen(m.seen);
         window.set_msg_flagged(m.flagged);
+        let state = self.state.borrow();
+        let conversation = state.selected_row().map(|row| state.conversations[row].as_slice()).unwrap_or_default();
+        // A single message needs no conversation strip.
+        let items: Vec<ConversationItem> = if conversation.len() < 2 {
+            Vec::new()
+        } else {
+            conversation
+                .iter()
+                .map(|c| ConversationItem {
+                    sender: if c.from_name.is_empty() { c.from_addr.clone() } else { c.from_name.clone() }.into(),
+                    date: format::list_date(c.date).into(),
+                    snippet: c.snippet.clone().into(),
+                    seen: c.seen,
+                })
+                .collect()
+        };
+        let position = conversation.iter().position(|c| c.folder == m.folder && c.uid == m.uid);
+        window.set_current_in_conversation(position.map(|i| i as i32).unwrap_or(-1));
+        self.conversation_model.set_vec(items);
     }
 
-    /// Shows the selected message, downloading its body first if needed.
+    /// Shows the selected message with the rest of its conversation, downloading missing bodies.
     fn render_selected(&self) {
         let Some((account, summary)) = self.selected_summary() else { return };
         self.update_reader_header();
         let window = self.window();
-        let raw = match self.raw_of(account, &summary) {
-            Ok(Some(raw)) => raw,
-            Ok(None) => {
-                window.set_msg_loading(true);
-                window.set_msg_text("".into());
-                window.set_msg_remote_blocked(false);
-                self.attachment_model.set_vec(Vec::new());
-                #[cfg(feature = "servo")]
-                if let Some(view) = self.viewer.borrow().as_ref() {
-                    view.clear();
-                }
-                self.send(account, Command::FetchBody { folder: summary.folder.clone(), uid: summary.uid });
-                return;
+        let conversation = {
+            let state = self.state.borrow();
+            match state.selected_row() {
+                Some(row) if state.standalone.is_none() => state.conversations[row].clone(),
+                _ => vec![summary.clone()],
             }
-            Err(e) => return self.show_error(&e),
         };
+        let current = conversation.iter().position(|m| m.folder == summary.folder && m.uid == summary.uid).unwrap_or(0);
+        let mut raws = Vec::new();
+        for m in &conversation {
+            match self.raw_of(account, m) {
+                Ok(raw) => raws.push(raw),
+                Err(e) => return self.show_error(&e),
+            }
+        }
+        // Each arrives with BodyReady, which renders again.
+        for (m, _) in conversation.iter().zip(&raws).filter(|(_, raw)| raw.is_none()) {
+            if self.state.borrow_mut().fetching.insert((account, m.folder.clone(), m.uid)) {
+                self.send(account, Command::FetchBody { folder: m.folder.clone(), uid: m.uid });
+            }
+        }
+        if raws[current].is_none() {
+            window.set_msg_loading(true);
+            window.set_msg_text("".into());
+            window.set_msg_remote_blocked(false);
+            self.attachment_model.set_vec(Vec::new());
+            #[cfg(feature = "servo")]
+            if let Some(view) = self.viewer.borrow().as_ref() {
+                view.clear();
+            }
+            return;
+        }
         window.set_msg_loading(false);
-        let body = mime::body_from_raw(&raw);
-        let allow_remote = self.state.borrow().remote_allowed.contains(&(account, summary.folder.clone(), summary.uid));
-        window.set_msg_remote_blocked(body.has_remote_content && !allow_remote && cfg!(feature = "servo"));
-        window.set_msg_text(body.text.clone().into());
+        let bodies: Vec<Option<Body>> = raws.iter().map(|raw| raw.as_deref().map(mime::body_from_raw)).collect();
+        let body = bodies[current].clone().expect("checked above");
+        let allow_remote = {
+            let state = self.state.borrow();
+            conversation.iter().all(|m| state.remote_allowed.contains(&(account, m.folder.clone(), m.uid)))
+        };
+        let has_remote = bodies.iter().flatten().any(|b| b.has_remote_content);
+        window.set_msg_remote_blocked(has_remote && !allow_remote && cfg!(feature = "servo"));
+        let headings: Vec<String> = conversation
+            .iter()
+            .map(|m| format!("{} — {}", format::person(&m.from_name, &m.from_addr), format::full_date(m.date)))
+            .collect();
+        window.set_msg_text(
+            if conversation.len() == 1 {
+                body.text.clone()
+            } else {
+                headings
+                    .iter()
+                    .zip(&bodies)
+                    .map(|(h, b)| format!("{h}\n\n{}", b.as_ref().map_or("Loading…", |b| b.text.as_str())))
+                    .collect::<Vec<_>>()
+                    .join("\n\n────────\n\n")
+            }
+            .into(),
+        );
         self.attachment_model.set_vec(
             body.attachments
                 .iter()
@@ -795,19 +907,35 @@ impl Controller {
         );
         #[cfg(feature = "servo")]
         if let Some(view) = self.viewer.borrow().as_ref() {
+            let (document, anchor) = if conversation.len() == 1 {
+                (mime::render_document(&body), String::new())
+            } else {
+                let parts: Vec<(String, Option<&Body>)> = headings.into_iter().zip(bodies.iter().map(Option::as_ref)).collect();
+                (mime::render_conversation(&parts, current), format!("m{current}"))
+            };
             view.show(crate::webview::delegate::MessageContent {
-                document: mime::render_document(&body),
+                document,
                 csp: mime::content_security_policy(allow_remote),
-                inline_parts: body.inline_parts.clone(),
+                // shortcut: one map for all messages; Content-IDs are meant to be globally unique.
+                inline_parts: bodies.iter().flatten().flat_map(|b| b.inline_parts.clone()).collect(),
                 allow_remote,
+                anchor,
             });
         }
         self.state.borrow_mut().body = Some(body);
     }
 
+    /// Allows remote images for the open conversation.
     fn load_remote_images(&self) {
         let Some(key) = self.state.borrow().selected.clone() else { return };
-        self.state.borrow_mut().remote_allowed.insert(key);
+        let keys: Vec<Key> = {
+            let state = self.state.borrow();
+            match state.selected_row() {
+                Some(row) => state.conversations[row].iter().map(|m| (key.0, m.folder.clone(), m.uid)).collect(),
+                None => vec![key],
+            }
+        };
+        self.state.borrow_mut().remote_allowed.extend(keys);
         self.render_selected();
     }
 
@@ -878,10 +1006,12 @@ impl Controller {
     // ---- changing messages ----
 
     /// Applies a change locally right away and queues it for the server.
-    fn apply(&self, account: usize, summary: &MessageSummary, op: PendingOp) {
-        let result =
-            self.state.borrow_mut().accounts.get_mut(account).map(|a| a.store.apply_local(&summary.folder, summary.uid, &op));
-        if let Some(Err(e)) = result {
+    fn apply(&self, account: usize, messages: &[MessageSummary], op: PendingOp) {
+        let result = match self.state.borrow_mut().accounts.get_mut(account) {
+            Some(a) => messages.iter().try_for_each(|m| a.store.apply_local(&m.folder, m.uid, &op)),
+            None => return,
+        };
+        if let Err(e) = result {
             return self.show_error(&e);
         }
         self.reload_messages();
@@ -892,23 +1022,33 @@ impl Controller {
     fn toggle_selected(&self, flag: bool) {
         let Some((account, m)) = self.selected_summary() else { return };
         let op = if flag { PendingOp::SetFlagged(!m.flagged) } else { PendingOp::SetSeen(!m.seen) };
-        self.apply(account, &m, op);
+        self.apply(account, &[m], op);
     }
 
+    /// Archives or deletes the open conversation: its messages in the folder of its list row.
     fn remove_selected(&self, archive: bool) {
         let Some((account, m)) = self.selected_summary() else { return };
+        let index = self.window().get_current_message().max(0) as usize;
+        let (folder, targets) = {
+            let state = self.state.borrow();
+            match (state.messages.get(index), state.conversations.get(index)) {
+                (Some((_, row)), Some(conversation)) => {
+                    (row.folder.clone(), conversation.iter().filter(|c| c.folder == row.folder).cloned().collect())
+                }
+                _ => (m.folder.clone(), vec![m]),
+            }
+        };
         let op = {
             let state = self.state.borrow();
             let Some(store) = state.accounts.get(account).map(|a| &a.store) else { return };
-            if archive { engine::archive_op(store, &m.folder) } else { engine::delete_op(store, &m.folder) }
+            if archive { engine::archive_op(store, &folder) } else { engine::delete_op(store, &folder) }
         };
         let op = match op {
             Ok(op) => op,
             Err(e) => return self.show_error(&e),
         };
         // Select the message that takes this one's place, like most mail clients.
-        let index = self.window().get_current_message().max(0) as usize;
-        self.apply(account, &m, op);
+        self.apply(account, &targets, op);
         let count = self.state.borrow().messages.len();
         if count > 0 {
             self.select_message(index.min(count - 1));
@@ -980,6 +1120,87 @@ impl Controller {
         let composer = Composer::open(&self.window(), draft, replied_to, on_send, on_close);
         *self.composer.borrow_mut() = Some(composer);
     }
+}
+
+/// Groups `listed` (newest first) into list rows, one per conversation: its newest listed
+/// message and the whole conversation from `all`, oldest first. Copies of a message (one sent to
+/// oneself is also in Sent) appear once, and Trash/Junk only when the row is there itself.
+fn conversation_rows(
+    listed: Vec<MessageSummary>,
+    all: &[MessageSummary],
+    role: impl Fn(&str) -> Role,
+) -> Vec<(MessageSummary, Vec<MessageSummary>)> {
+    let numbers = mailcore::thread::conversations(all);
+    let number: HashMap<(&str, u32), usize> =
+        all.iter().zip(&numbers).map(|(m, n)| ((m.folder.as_str(), m.uid), *n)).collect();
+    let mut members: HashMap<usize, Vec<&MessageSummary>> = HashMap::new();
+    for (m, n) in all.iter().zip(&numbers) {
+        members.entry(*n).or_default().push(m);
+    }
+    let mut done = HashSet::new();
+    let mut rows = Vec::new();
+    for m in listed {
+        let n = number.get(&(m.folder.as_str(), m.uid)).copied();
+        if n.is_some_and(|n| !done.insert(n)) {
+            continue;
+        }
+        let mut conversation: Vec<MessageSummary> = match n.and_then(|n| members.get(&n)) {
+            Some(members) => members
+                .iter()
+                .filter(|c| c.folder == m.folder || !matches!(role(&c.folder), Role::Trash | Role::Junk))
+                .map(|c| (*c).clone())
+                .collect(),
+            None => vec![m.clone()],
+        };
+        // Keep the copy in the row's folder, where changes to it show.
+        conversation.sort_by_key(|c| c.folder != m.folder);
+        let mut ids = HashSet::new();
+        conversation.retain(|c| c.message_id.is_empty() || ids.insert(c.message_id.clone()));
+        conversation.sort_by_key(|c| c.date);
+        rows.push((m, conversation));
+    }
+    rows
+}
+
+#[cfg(test)]
+#[test]
+fn groups_list_into_conversations() {
+    let msg = |folder: &str, uid, id: &str, reply_to: &str, date| MessageSummary {
+        folder: folder.into(),
+        uid,
+        message_id: id.into(),
+        in_reply_to: reply_to.into(),
+        date,
+        ..Default::default()
+    };
+    let all = [
+        msg("INBOX", 1, "<a>", "", 1),
+        msg("Sent", 1, "<b>", "<a>", 2),
+        msg("INBOX", 2, "<c>", "<b>", 3),
+        msg("INBOX", 3, "<other>", "", 4),
+        msg("Trash", 1, "<d>", "<c>", 5),
+        // A message to oneself: in Sent and in the inbox.
+        msg("Sent", 2, "<self>", "", 6),
+        msg("INBOX", 4, "<self>", "", 6),
+    ];
+    let role = |f: &str| match f {
+        "Trash" => Role::Trash,
+        "Sent" => Role::Sent,
+        _ => Role::Inbox,
+    };
+    let mut listed: Vec<MessageSummary> = all.iter().filter(|m| m.folder == "INBOX").cloned().collect();
+    listed.sort_by_key(|m| Reverse(m.date));
+    let rows = conversation_rows(listed, &all, role);
+    let shape: Vec<(u32, Vec<(&str, u32)>)> =
+        rows.iter().map(|(m, c)| (m.uid, c.iter().map(|c| (c.folder.as_str(), c.uid)).collect())).collect();
+    assert_eq!(
+        shape,
+        [
+            (4, vec![("INBOX", 4)]),
+            (3, vec![("INBOX", 3)]),
+            (2, vec![("INBOX", 1), ("Sent", 1), ("INBOX", 2)]),
+        ]
+    );
 }
 
 /// Opens `url` in the system browser.

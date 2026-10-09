@@ -8,9 +8,12 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 ## Features
 
 - Account setup with server guesses for common providers; login verified before saving.
+  Password stored in the system keyring (Secret Service).
 - Multiple accounts ("Add account" in the sidebar), each with its own sync engine and cache,
   and an "All inboxes" view; a colored bar in the message list marks each account.
-  Password stored in the system keyring (Secret Service).
+- Conversations: the list shows one row per conversation (by `References`/`In-Reply-To`),
+  the open one unfolds into a timeline of its messages, and the reader shows them all
+  one below the other, including your replies from Sent.
 - Folder list with special-use detection, unread counts.
 - Local SQLite cache: the last 500 messages per synced folder; bodies downloaded on
   open plus the 40 newest per sync. Works offline from the cache.
@@ -99,9 +102,12 @@ cargo test -p mailcore --test greenmail -- --ignored        # send, sync, flag, 
 MAILCLIENT_EXTRA_CA=target/test-mailserver/ca.pem cargo run # GUI: imap/smtp host localhost, ports 3993/3465, any password
 ```
 
-Ready-made configs for GreenMail are in [config/](config/); pick one with `--config`:
+Ready-made configs for GreenMail are in [config/](config/); fill their mailboxes with
+`scripts/seed-greenmail.sh` (a few messages and a conversation between work and home) and
+pick one with `--config`:
 
 ```sh
+scripts/seed-greenmail.sh
 MAILCLIENT_PASSWORD=x MAILCLIENT_EXTRA_CA=target/test-mailserver/ca.pem \
   cargo run -- --config config/greenmail-two-accounts.toml
 ```
@@ -180,8 +186,9 @@ crates/app        Slint UI
   path is untested.
 - No OAuth2 (needed for Outlook.com, optional for Gmail). Accounts cannot be removed in the app yet
   (edit `config.toml`); new messages from "All inboxes" go out from the first account.
-- No drafts saving, threading view, contacts autocomplete, or rich-text compose.
-- Only the inbox and the open folder are synced; other folders sync when opened.
+- No drafts saving, contacts autocomplete, or rich-text compose.
+- Only the inbox, Sent and the open folder are synced; other folders sync when opened.
+- Conversations are grouped by headers only, not by subject, and per account.
 - No CONDSTORE/QRESYNC yet; flag changes are found by re-fetching flags of cached
   messages (fine for the 500-message window).
 - Windows/macOS: the Servo rendering path from the Slint example is kept but untested,

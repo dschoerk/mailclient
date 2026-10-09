@@ -26,6 +26,8 @@ pub struct MessageContent {
     /// Content-ID -> (mime type, bytes).
     pub inline_parts: HashMap<String, (String, Vec<u8>)>,
     pub allow_remote: bool,
+    /// Element id to scroll to (a conversation's selected message).
+    pub anchor: String,
 }
 
 /// Holds back loads until Servo has finished creating the browsing context;

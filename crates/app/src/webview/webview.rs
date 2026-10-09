@@ -54,11 +54,14 @@ impl MailView {
     }
 
     pub fn show(&self, content: MessageContent) {
-        *self.content.borrow_mut() = content;
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         // A fresh URL per message so Servo never serves a cached document.
-        let url = Url::parse(&format!("{CONTENT_ORIGIN}/msg/{generation}")).expect("valid content URL");
+        let mut url = Url::parse(&format!("{CONTENT_ORIGIN}/msg/{generation}")).expect("valid content URL");
+        if !content.anchor.is_empty() {
+            url.set_fragment(Some(&content.anchor));
+        }
+        *self.content.borrow_mut() = content;
         if self.gate.ready.get() {
             self.adapter.webview().load(url);
         } else {

@@ -29,7 +29,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
 
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Refresh the folder list, the inbox and the active folder.
+    /// Refresh the folder list, the inbox, Sent and the active folder.
     SyncAll,
     /// Make `folder` the active folder and sync it.
     OpenFolder(String),
@@ -198,8 +198,11 @@ impl<B: Backend> Worker<B> {
                 let folders = self.conn().await?.list_folders().await?;
                 self.store.sync_folders(&folders)?;
                 self.emit(Event::FoldersChanged);
-                let inbox = self.store.folder_by_role(Role::Inbox)?;
-                let mut targets: Vec<String> = inbox.into_iter().collect();
+                let mut targets = Vec::new();
+                // Sent too: the user's replies belong in the inbox's conversations.
+                for role in [Role::Inbox, Role::Sent] {
+                    targets.extend(self.store.folder_by_role(role)?);
+                }
                 if let Some(active) = self.active.clone().filter(|a| !targets.contains(a)) {
                     targets.push(active);
                 }

@@ -416,6 +416,13 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every cached message, for grouping into conversations.
+    pub fn all_messages(&self) -> Result<Vec<MessageSummary>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM messages"))?;
+        let rows = stmt.query_map([], summary_from_row)?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<MessageSummary>> {
         let mut stmt =
             self.conn.prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM messages WHERE folder = ?1 AND uid = ?2"))?;
