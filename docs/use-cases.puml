@@ -1,0 +1,52 @@
+@startuml use-cases
+!pragma layout smetana
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+actor "User" as user
+actor "Mail server\n(IMAP/SMTP)" as server <<system>>
+
+rectangle "mailclient" {
+  usecase "US1 Set up account" as US1
+  usecase "US2 Browse folders\nand messages" as US2
+  usecase "US3 Read a message" as US3
+  usecase "US4 Load remote images" as US4
+  usecase "US5 Mark read/unread,\nflag" as US5
+  usecase "US6 Archive or delete" as US6
+  usecase "US7 Search mail" as US7
+  usecase "US8 Write and send\na message" as US8
+  usecase "US9 Reply, reply all,\nforward" as US9
+  usecase "US10 Receive new mail\nautomatically" as US10
+  usecase "US11 Keep working offline" as US11
+  usecase "US12 Attach and save files" as US12
+  usecase "US13 Open a message file" as US13
+  usecase "US14 Follow a link" as US14
+  usecase "Sync with server" as SYNC
+}
+
+user --> US1
+user --> US2
+user --> US3
+user --> US5
+user --> US6
+user --> US7
+user --> US8
+user --> US10
+user --> US11
+user --> US13
+
+US4 .> US3 : <<extend>>
+US14 .> US3 : <<extend>>
+US9 .> US8 : <<extend>>
+US12 .> US8 : <<extend>>
+
+US1 ..> SYNC : <<include>>
+US2 ..> SYNC : <<include>>
+US5 ..> SYNC : <<include>>
+US6 ..> SYNC : <<include>>
+US8 ..> SYNC : <<include>>
+US10 ..> SYNC : <<include>>
+
+SYNC --> server
+@enduml

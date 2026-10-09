@@ -1,0 +1,33 @@
+[package]
+name = "mailcore"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+tokio.workspace = true
+async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
+futures = "0.3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "hostname", "pool"] }
+mail-parser = "0.11.9"
+mail-builder = "1.0"
+ammonia = "4.2"
+html2text = "0.17"
+rusqlite = { version = "0.38", default-features = false, features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+directories = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+html-escape = "0.2"
+keyring = "4.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+keyring-core = "1"
+android-native-keyring-store = "1"
