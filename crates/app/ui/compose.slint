@@ -1,4 +1,4 @@
-import { Button, LineEdit, TextEdit, Spinner } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, TextEdit, Spinner } from "std-widgets.slint";
 import { AttachmentItem } from "types.slint";
 import { Theme, ToolButton } from "widgets.slint";
 
@@ -13,6 +13,9 @@ export component ComposeView {
     in property <[AttachmentItem]> attachments;
     in property <bool> sending;
     in property <string> error;
+    /// Accounts to send from; the picker shows only with more than one.
+    in property <[string]> from-options;
+    in-out property <int> from-index;
 
     callback send();
     callback attach();
@@ -76,6 +79,21 @@ export component ComposeView {
                     primary: true;
                     enabled: !root.sending;
                     clicked => root.send();
+                }
+            }
+            if root.from-options.length > 1: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "From";
+                    width: 60px;
+                    vertical-alignment: center;
+                    color: Theme.muted;
+                }
+                ComboBox {
+                    accessible-label: "From";
+                    model: root.from-options;
+                    current-index <=> root.from-index;
+                    enabled: !root.sending;
                 }
             }
             HorizontalLayout {

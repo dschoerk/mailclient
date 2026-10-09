@@ -88,6 +88,8 @@ export component AppWindow inherits Window {
     in property <[AttachmentItem]> compose-attachments;
     in property <bool> compose-sending;
     in property <string> compose-error;
+    in property <[string]> compose-from-options;
+    in-out property <int> compose-from-index;
     callback compose-send();
     callback compose-attach();
     callback compose-remove-attachment(int);
@@ -306,6 +308,8 @@ export component AppWindow inherits Window {
                             attachments: root.compose-attachments;
                             sending: root.compose-sending;
                             error: root.compose-error;
+                            from-options: root.compose-from-options;
+                            from-index <=> root.compose-from-index;
                             send => root.compose-send();
                             attach => root.compose-attach();
                             remove-attachment(i) => root.compose-remove-attachment(i);

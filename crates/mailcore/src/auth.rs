@@ -215,15 +215,25 @@ impl SignIn {
                 Err(e) => log::info!("sign-in listener: {e:#}"),
             }
         };
-        self.provider
-            .token_request(&[
-                ("grant_type", "authorization_code"),
-                ("code", &code),
-                ("redirect_uri", &self.redirect_uri),
-                ("code_verifier", &self.verifier),
-                ("scope", self.provider.scopes),
-            ])
-            .await
+        let grant = [
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", &self.redirect_uri),
+            ("code_verifier", &self.verifier),
+            ("scope", self.provider.scopes),
+        ];
+        // Android cuts a background app's network while the browser is in front; retry until
+        // the user switches back (the code stays valid for minutes).
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            match self.provider.token_request(&grant).await {
+                Err(e) if Instant::now() < deadline && e.chain().any(|c| c.is::<std::io::Error>()) => {
+                    log::info!("sign-in: {e:#}; retrying");
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+                result => return result,
+            }
+        }
     }
 }
 

@@ -108,7 +108,10 @@ impl Controller {
                 let Some(c) = weak.upgrade() else { return 0 };
                 let id = c.next_send_id.get();
                 c.next_send_id.set(id + 1);
-                c.send(account, Command::Send { id, draft, replied_to });
+                let from = usize::try_from(c.window().get_compose_from_index()).unwrap_or(account);
+                // The replied-to message lives in `account`; another sender cannot flag it as answered.
+                let replied_to = replied_to.filter(|_| from == account);
+                c.send(from, Command::Send { id, draft, replied_to });
                 id
             })
         };
@@ -117,6 +120,15 @@ impl Controller {
                 c.composer.borrow_mut().take();
             }
         });
+        let senders: Vec<SharedString> = self
+            .state
+            .borrow()
+            .accounts
+            .iter()
+            .map(|a| format::person(&a.config.name, &a.config.email).into())
+            .collect();
+        self.window().set_compose_from_options(ModelRc::from(senders.as_slice()));
+        self.window().set_compose_from_index(account as i32);
         let composer = Composer::open(&self.window(), draft, replied_to, on_send, on_close);
         *self.composer.borrow_mut() = Some(composer);
     }

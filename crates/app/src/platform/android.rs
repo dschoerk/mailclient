@@ -36,6 +36,9 @@ pub fn open_url(url: &str) -> Result<()> {
     android_view(url).map_err(|e| anyhow!("opening {url}: {e}"))
 }
 
+/// Android's FLAG_ACTIVITY_NEW_TASK: needed when starting an activity from a context that is not one.
+const FLAG_ACTIVITY_NEW_TASK: i32 = 0x1000_0000;
+
 fn android_view(url: &str) -> jni::errors::Result<()> {
     let ctx = ndk_context::android_context();
     // SAFETY: android-activity fills ndk_context with the process's JavaVM and the running activity.
@@ -43,6 +46,16 @@ fn android_view(url: &str) -> jni::errors::Result<()> {
         (jni::JavaVM::from_raw(ctx.vm().cast())?, jni::objects::JObject::from_raw(ctx.context().cast()))
     };
     let mut env = vm.attach_current_thread()?;
+    let result = start_view(&mut env, &activity, url);
+    // A Java exception left pending kills the process when the thread detaches; report it as an error instead.
+    if env.exception_check()? {
+        env.exception_describe()?;
+        env.exception_clear()?;
+    }
+    result
+}
+
+fn start_view(env: &mut jni::JNIEnv, activity: &jni::objects::JObject, url: &str) -> jni::errors::Result<()> {
     let url = env.new_string(url)?;
     let uri = env
         .call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[(&url).into()])?
@@ -50,7 +63,8 @@ fn android_view(url: &str) -> jni::errors::Result<()> {
     let action = env.new_string("android.intent.action.VIEW")?;
     let intent =
         env.new_object("android/content/Intent", "(Ljava/lang/String;Landroid/net/Uri;)V", &[(&action).into(), (&uri).into()])?;
-    env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[(&intent).into()])?;
+    env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[FLAG_ACTIVITY_NEW_TASK.into()])?;
+    env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[(&intent).into()])?;
     Ok(())
 }
 
