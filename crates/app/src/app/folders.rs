@@ -4,6 +4,8 @@ use super::*;
 
 /// Most messages shown in one folder list.
 const LIST_LIMIT: usize = 5000;
+/// Messages shown in a list row's mini timeline; longer conversations show "+N" before them.
+const MAX_DOTS: usize = 12;
 
 /// Account colors (RGB) for the bar in the message list, by the order accounts were added.
 const ACCOUNT_COLORS: [u32; 8] = [0x2f6fde, 0xe8730c, 0x2e9e5b, 0x8e44ad, 0xd64545, 0x1a9ba1, 0xd6457f, 0x9a6b3f];
@@ -214,6 +216,12 @@ impl Controller {
                     attachments: conversation.iter().any(|c| c.has_attachments),
                     color: account_color(*a, count),
                     count: conversation.len() as i32,
+                    dots: if conversation.len() > 1 {
+                        let newest = &conversation[conversation.len().saturating_sub(MAX_DOTS)..];
+                        ModelRc::new(VecModel::from(newest.iter().map(|c| c.seen).collect::<Vec<_>>()))
+                    } else {
+                        ModelRc::default()
+                    },
                 })
                 .collect()
         };

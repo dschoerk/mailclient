@@ -206,6 +206,7 @@ impl Controller {
         if raws[current].is_none() {
             window.set_msg_loading(true);
             window.set_msg_text("".into());
+            window.set_msg_parts(ModelRc::default());
             window.set_msg_remote_blocked(false);
             self.attachment_model.set_vec(Vec::new());
             #[cfg(feature = "servo")]
@@ -223,23 +224,21 @@ impl Controller {
         };
         let has_remote = bodies.iter().flatten().any(|b| b.has_remote_content);
         window.set_msg_remote_blocked(has_remote && !allow_remote && cfg!(feature = "servo"));
+        window.set_msg_text(body.text.clone().into());
         let headings: Vec<String> = conversation
             .iter()
             .map(|m| format!("{} — {}", format::person(&m.from_name, &m.from_addr), format::full_date(m.date)))
             .collect();
-        window.set_msg_text(
-            if conversation.len() == 1 {
-                body.text.clone()
-            } else {
-                headings
-                    .iter()
-                    .zip(&bodies)
-                    .map(|(h, b)| format!("{h}\n\n{}", b.as_ref().map_or("Loading…", |b| b.text.as_str())))
-                    .collect::<Vec<_>>()
-                    .join("\n\n────────\n\n")
-            }
-            .into(),
-        );
+        // The text reader (builds without Servo) lists the whole conversation and scrolls to the open message.
+        let parts: Vec<ReaderPart> = headings
+            .iter()
+            .zip(&bodies)
+            .map(|(heading, b)| ReaderPart {
+                heading: if conversation.len() > 1 { heading.into() } else { "".into() },
+                text: b.as_ref().map_or("Loading…", |b| b.text.as_str()).into(),
+            })
+            .collect();
+        window.set_msg_parts(ModelRc::new(VecModel::from(parts)));
         self.attachment_model.set_vec(
             body.attachments
                 .iter()
@@ -255,7 +254,8 @@ impl Controller {
             let (document, anchor) = if conversation.len() == 1 {
                 (mime::render_document(&body), String::new())
             } else {
-                let parts: Vec<(String, Option<&Body>)> = headings.into_iter().zip(bodies.iter().map(Option::as_ref)).collect();
+                let parts: Vec<(String, Option<&Body>)> = headings
+                    .into_iter().zip(bodies.iter().map(Option::as_ref)).collect();
                 (mime::render_conversation(&parts, current), format!("m{current}"))
             };
             view.show(crate::webview::delegate::MessageContent {

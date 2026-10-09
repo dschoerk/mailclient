@@ -1,13 +1,13 @@
 import { Button, LineEdit, ListView, ScrollView, CheckBox, Palette, Spinner } from "std-widgets.slint";
 import { Webview } from "../src/webview/webview.slint";
-import { FolderItem, MessageItem, ConversationItem, AttachmentItem, SetupData } from "types.slint";
+import { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData } from "types.slint";
 import { Theme, Divider, ToolButton, FloatButton } from "widgets.slint";
-import { FolderRow, MessageRow } from "lists.slint";
+import { FolderRow, MessageRow, TimelineItem } from "lists.slint";
 import { SetupView } from "setup.slint";
 import { ComposeView } from "compose.slint";
 
 export { WebviewLogic } from "../src/webview/webview.slint";
-export { FolderItem, MessageItem, ConversationItem, AttachmentItem, SetupData } from "types.slint";
+export { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData } from "types.slint";
 
 export component AppWindow inherits Window {
     title: "Mail";
@@ -50,6 +50,8 @@ export component AppWindow inherits Window {
     // Every message of the open conversation, oldest first; empty for a lone message.
     in property <[ConversationItem]> conversation;
     in property <int> current-in-conversation: -1;
+    // The text reader's messages, oldest first; the open one is current-in-conversation.
+    in property <[ReaderPart]> msg-parts;
     // Phones: the reader's thumb actions sit on this side.
     in-out property <bool> left-handed;
     in-out property <bool> floating-buttons;
@@ -408,6 +410,26 @@ export component AppWindow inherits Window {
                                 font-size: 12px;
                                 overflow: elide;
                             }
+                            // Phones hide the list, so the conversation's timeline moves into the reader.
+                            if root.narrow && root.conversation.length > 1: ListView {
+                                height: min(root.conversation.length, 4) * 30px;
+                                vertical-stretch: 0;
+                                // Keeps the open entry in view, with the one before it for context.
+                                property <int> current: root.current-in-conversation;
+                                function reveal() {
+                                    self.viewport-y = -max(0, min(self.current - 1, root.conversation.length - 4)) * 30px;
+                                }
+                                init => { self.reveal(); }
+                                changed current => { self.reveal(); }
+                                for item[i] in root.conversation: TimelineItem {
+                                    item: item;
+                                    current: i == root.current-in-conversation;
+                                    first: i == 0;
+                                    last: i == root.conversation.length - 1;
+                                    line-color: Theme.accent;
+                                    clicked => root.conversation-selected(i);
+                                }
+                            }
                             if root.msg-attachments.length > 0: HorizontalLayout {
                                 spacing: 6px;
                                 for att in root.msg-attachments: Rectangle {
@@ -482,13 +504,43 @@ export component AppWindow inherits Window {
                                 height: 100%;
                                 visible: root.has-message && !root.composing;
                             }
-                            if !root.use-webview && root.has-message && !root.composing: ScrollView {
-                                Text {
-                                    x: 14px;
-                                    y: 12px;
-                                    width: parent.width - 28px;
-                                    text: root.msg-text;
-                                    wrap: word-wrap;
+                            if !root.use-webview && root.has-message && !root.composing: reader-scroll := ScrollView {
+                                VerticalLayout {
+                                    width: reader-scroll.visible-width;
+                                    padding: 14px;
+                                    padding-top: 12px;
+                                    spacing: 18px;
+                                    for part[i] in root.msg-parts: part-row := HorizontalLayout {
+                                        spacing: 8px;
+                                        // Scrolls to the open message once laid out; Rust sets a new model on every
+                                        // render, so this runs again for each opened message.
+                                        Timer {
+                                            interval: 1ms;
+                                            running: i == root.current-in-conversation;
+                                            triggered => {
+                                                reader-scroll.viewport-y = -part-row.y;
+                                                self.running = false;
+                                            }
+                                        }
+                                        // Marks the open message, like the Servo reader.
+                                        if root.msg-parts.length > 1: Rectangle {
+                                            width: 3px;
+                                            background: i == root.current-in-conversation ? Theme.accent : Theme.divider;
+                                        }
+                                        VerticalLayout {
+                                            spacing: 8px;
+                                            if part.heading != "": Text {
+                                                text: part.heading;
+                                                color: Theme.muted;
+                                                font-size: 12px;
+                                                wrap: word-wrap;
+                                            }
+                                            Text {
+                                                text: part.text;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             if root.msg-loading: Spinner {

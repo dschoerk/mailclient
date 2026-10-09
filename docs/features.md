@@ -65,9 +65,13 @@ What the mail client can do today. For ideas that are not built yet see
 - **One row per conversation**: messages are grouped by their `References` and
   `In-Reply-To` headers. Each row shows the sender, subject, a preview of the text, the
   date, and icons for unread, flagged, answered and attachments.
+- **Mini timeline**: conversation rows show one dot per message (the newest 12), filled
+  while unread.
 - **Open a conversation** to see all its messages in a timeline. Your own replies from
   the Sent folder are included.
 - **The reader** shows the whole conversation, one message below the other.
+- **On phones** the timeline sits at the top of the reader; tap an entry to jump to that
+  message. The reader scrolls to the open message and marks it.
 - **Opening a message** marks it as read.
 
 ## Reading mail

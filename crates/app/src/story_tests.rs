@@ -15,7 +15,7 @@ use mailcore::mime::{self, Draft};
 use mailcore::{AccountConfig, Security, MessageSummary};
 use slint::{ComponentHandle, Model};
 
-use crate::AppWindow;
+use crate::{AppWindow, ReaderPart};
 use crate::app::Controller;
 
 type Outcome = Result<(), String>;
@@ -507,10 +507,10 @@ fn user_stories() {
             wait_for("reply open", || w.get_msg_subject() == "Re: Project kickoff").await?;
             ensure(w.get_conversation().row_count() == 2, format!("conversation of {}", w.get_conversation().row_count()))?;
             ensure(w.get_current_in_conversation() == 1, "the newest message should be open")?;
-            // The reader shows both messages, the original fetched from Sent.
+            // The text reader lists both messages, the original fetched from Sent.
             wait_for("whole conversation in the reader", || {
-                let text = w.get_msg_text();
-                text.matches("────────").count() == 1 && !text.contains("Loading…") && text.contains(&user2)
+                let parts: Vec<ReaderPart> = w.get_msg_parts().iter().collect();
+                parts.len() == 2 && parts.iter().all(|p| p.text != "Loading…") && parts[0].heading.contains(&user)
             })
             .await?;
             let row = w.get_current_message();

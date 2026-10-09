@@ -19,7 +19,7 @@ mod folders;
 mod reader;
 mod setup;
 
-use crate::{AppWindow, AttachmentItem, ConversationItem, FolderItem, MessageItem, SetupData};
+use crate::{AppWindow, AttachmentItem, ConversationItem, FolderItem, MessageItem, ReaderPart, SetupData};
 
 thread_local! {
     static CONTROLLER: RefCell<Option<Rc<Controller>>> = const { RefCell::new(None) };

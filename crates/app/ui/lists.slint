@@ -129,16 +129,20 @@ export component MessageRow inherits Rectangle {
     callback clicked();
     callback thread-clicked(int);
     property <bool> expanded: root.selected && root.thread.length > 1;
+    // The mini timeline; the unfolded one replaces it.
+    property <bool> strip: root.msg.dots.length > 1 && !root.expanded;
+    property <length> head: root.strip ? 90px : 74px;
+    property <color> line-color: root.msg.color.alpha > 0 ? root.msg.color : Theme.accent;
     accessible-role: list-item;
     accessible-label: msg.sender + ": " + msg.subject;
     accessible-action-default => { root.clicked(); }
-    height: 74px + (root.expanded ? root.thread.length * 30px + 8px : 0px);
+    height: root.head + (root.expanded ? root.thread.length * 30px + 8px : 0px);
     // Expanded, the open message is marked on the timeline instead.
     background: root.expanded ? Palette.foreground.with-alpha(0.03)
         : root.selected ? Theme.selection
         : touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
     HorizontalLayout {
-        height: 74px;
+        height: root.head;
         y: 0;
         padding: 10px;
         padding-left: 6px;
@@ -207,6 +211,40 @@ export component MessageRow inherits Rectangle {
                 font-size: 12px;
                 overflow: elide;
             }
+            if root.strip: HorizontalLayout {
+                height: 12px;
+                alignment: start;
+                spacing: 4px;
+                if msg.count > msg.dots.length: Text {
+                    text: "+" + (msg.count - msg.dots.length);
+                    color: Theme.muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    // Hollow dots are read, filled ones unread, like the unfolded timeline.
+                    for seen[k] in msg.dots: Rectangle {
+                        width: k == 0 ? 8px : 22px;
+                        if k > 0: Rectangle {
+                            x: 0;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width - 8px;
+                            height: 2px;
+                            background: root.line-color;
+                        }
+                        Rectangle {
+                            x: parent.width - 8px;
+                            y: (parent.height - self.height) / 2;
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            border-width: 2px;
+                            border-color: root.line-color;
+                            background: seen ? Palette.background : root.line-color;
+                        }
+                    }
+                }
+            }
         }
     }
     // Which account the message belongs to.
@@ -223,12 +261,12 @@ export component MessageRow inherits Rectangle {
     }
     touch := TouchArea {
         y: 0;
-        height: 74px;
+        height: root.head;
         clicked => root.clicked();
     }
     if root.expanded: VerticalLayout {
-        y: 74px;
-        height: root.height - 74px;
+        y: root.head;
+        height: root.height - root.head;
         padding-left: 12px;
         padding-right: 8px;
         padding-bottom: 8px;
@@ -237,7 +275,7 @@ export component MessageRow inherits Rectangle {
             current: i == root.thread-current;
             first: i == 0;
             last: i == root.thread.length - 1;
-            line-color: root.msg.color.alpha > 0 ? root.msg.color : Theme.accent;
+            line-color: root.line-color;
             clicked => root.thread-clicked(i);
         }
     }

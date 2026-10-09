@@ -25,6 +25,8 @@ export struct MessageItem {
     color: color,
     /// Messages in the conversation.
     count: int,
+    /// Read state of the conversation's newest messages, oldest first; drawn as a mini timeline.
+    dots: [bool],
 }
 
 export struct ConversationItem {
@@ -32,6 +34,13 @@ export struct ConversationItem {
     date: string,
     snippet: string,
     seen: bool,
+}
+
+/// One message of the conversation in the text reader (builds without Servo).
+export struct ReaderPart {
+    /// Sender and date; empty for a lone message.
+    heading: string,
+    text: string,
 }
 
 export struct AttachmentItem {
