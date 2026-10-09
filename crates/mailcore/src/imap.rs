@@ -242,6 +242,11 @@ impl Imap {
         Ok(())
     }
 
+    pub async fn delete(&mut self, folder: &str) -> Result<()> {
+        self.session.delete(folder).await?;
+        Ok(())
+    }
+
     /// async-imap 0.12 ends a response stream silently when the server has closed the
     /// connection, so a FETCH/STORE on a dead connection returns `Ok` with partial or no
     /// data. NOOP does check for the tagged reply; running it afterwards turns a lost

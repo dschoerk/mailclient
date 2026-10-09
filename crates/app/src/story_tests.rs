@@ -103,19 +103,34 @@ fn deliver(account: &AccountConfig, from: (&str, &str), subject: &str, body: &st
 }
 
 fn create_folders(account: &AccountConfig) {
+    edit_folders(account, &["Sent", "Trash", "Archive"], &[]);
+}
+
+/// Creates, then deletes folders on the server, as another client would.
+fn edit_folders(account: &AccountConfig, create: &[&str], delete: &[&str]) {
     let account = account.clone();
+    let (create, delete): (Vec<String>, Vec<String>) =
+        (create.iter().map(|f| f.to_string()).collect(), delete.iter().map(|f| f.to_string()).collect());
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let mut imap = Imap::connect(&account, "x").await.unwrap();
-            for f in ["Sent", "Trash", "Archive"] {
+            for f in &create {
                 imap.create(f).await.unwrap();
+            }
+            for f in &delete {
+                imap.delete(f).await.unwrap();
             }
             imap.logout().await;
         })
     })
     .join()
     .unwrap();
+}
+
+/// The folder pane as (label, depth) rows.
+fn folder_rows(w: &AppWindow) -> Vec<(String, i32)> {
+    w.get_folders().iter().map(|f| (f.label.to_string(), f.depth)).collect()
 }
 
 fn test_account(email: &str) -> AccountConfig {
@@ -361,6 +376,39 @@ fn user_stories() {
         }
         .await;
         record("US6 archive and delete", r);
+
+        // US17: folders created and removed elsewhere show up after a sync, subfolders under their parent.
+        let r = async {
+            // GreenMail's hierarchy delimiter is ".".
+            edit_folders(&account, &["Projects", "Projects.Website", "INBOX.Receipts", "INBOX.Receipts.2026"], &[]);
+            click(&w, "Sync")?;
+            let row = |label: &str, depth| (label.to_string(), depth);
+            let all = vec![
+                row("Inbox", 0),
+                row("Receipts", 1),
+                row("2026", 2),
+                row("Sent", 0),
+                row("Archive", 0),
+                row("Trash", 0),
+                row("Projects", 0),
+                row("Website", 1),
+            ];
+            wait_for("new folders listed", || folder_rows(&w) == all)
+                .await
+                .map_err(|e| format!("{e}; folders: {:?}", folder_rows(&w)))?;
+            click(&w, "Folder Receipts")?;
+            wait_for("subfolder opened", || w.get_list_title() == "Receipts").await?;
+            click(&w, "Folder Inbox")?;
+
+            edit_folders(&account, &[], &["Projects.Website", "INBOX.Receipts.2026"]);
+            click(&w, "Sync")?;
+            let rest: Vec<_> = all.into_iter().filter(|(l, _)| l != "Website" && l != "2026").collect();
+            wait_for("removed folders gone", || folder_rows(&w) == rest)
+                .await
+                .map_err(|e| format!("{e}; folders: {:?}", folder_rows(&w)))
+        }
+        .await;
+        record("US17 folders created and removed on the server", r);
 
         // US11 (part): the server drops the idle connection (GreenMail after ~30 s, phones
         // and NAT routers at random); the next action must reconnect, not empty the cache.

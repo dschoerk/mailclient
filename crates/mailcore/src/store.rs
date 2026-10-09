@@ -278,7 +278,19 @@ impl Store {
                 })
             })?
             .collect::<Result<_, _>>()?;
-        folders.sort_by(|a, b| a.role.rank().cmp(&b.role.rank()).then_with(|| a.name.cmp(&b.name)));
+        // Subfolders follow their parent: a special folder's role places it, a plain one
+        // goes where its top-level ancestor goes (so "INBOX/Work" sits under Inbox).
+        let ranks: std::collections::HashMap<String, i64> =
+            folders.iter().map(|f| (f.name.clone(), f.role.rank())).collect();
+        folders.sort_by_cached_key(|f| {
+            let path: Vec<String> = match &f.delimiter {
+                Some(d) if !d.is_empty() => f.name.split(d.as_str()).map(str::to_lowercase).collect(),
+                _ => vec![f.name.to_lowercase()],
+            };
+            let root = f.delimiter.as_deref().filter(|d| !d.is_empty()).map_or(&*f.name, |d| f.name.split(d).next().unwrap());
+            let rank = if f.role == Role::Other { ranks.get(root).copied().unwrap_or(f.role.rank()) } else { f.role.rank() };
+            (rank, path)
+        });
         Ok(folders)
     }
 
@@ -631,5 +643,37 @@ mod tests {
         let store = store_with_inbox();
         let names: Vec<_> = store.folders().unwrap().into_iter().map(|f| f.name).collect();
         assert_eq!(names, vec!["INBOX", "Trash"]);
+    }
+
+    #[test]
+    fn subfolders_follow_their_parent() {
+        let mut store = Store::open_in_memory().unwrap();
+        let f = |name: &str, role| (name.to_string(), Some("/".to_string()), role);
+        store
+            .sync_folders(&[
+                f("projects-old", Role::Other),
+                f("Projects/Web", Role::Other),
+                f("Trash", Role::Trash),
+                f("INBOX/Receipts/2026", Role::Other),
+                f("Projects", Role::Other),
+                f("INBOX", Role::Inbox),
+                f("INBOX/Receipts", Role::Other),
+            ])
+            .unwrap();
+        let folders = store.folders().unwrap();
+        let rows: Vec<_> = folders.iter().map(|f| (f.display_name(), f.depth())).collect();
+        let row = |name: &str, depth| (name.to_string(), depth);
+        assert_eq!(
+            rows,
+            vec![
+                row("Inbox", 0),
+                row("Receipts", 1),
+                row("2026", 2),
+                row("Trash", 0),
+                row("Projects", 0),
+                row("Web", 1),
+                row("projects-old", 0),
+            ]
+        );
     }
 }

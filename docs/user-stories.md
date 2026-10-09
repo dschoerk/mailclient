@@ -26,6 +26,7 @@ GreenMail server; the rest are checked by hand. Results: [Test results](#test-re
 | US14 | As a user I follow links safely. | Clicking a link opens the system browser; `mailto:` opens the composer; nothing navigates inside the message view (desktop). |
 | US15 | As a user I read the mail of several accounts in one place. | Further accounts are added from the sidebar; the same address is refused and Cancel returns to the mail (**auto**). "All inboxes" lists every account's inbox newest first, each message with its account's color bar (**auto**). Replies go out through the message's account (**auto**); a folder shows only its account's mail (**auto**). |
 | US16 | As a user I read a conversation as a whole. | Replies and the messages they answer share one list row with a message count, also when one side is in Sent (**auto**). The open conversation unfolds in the list as a timeline; the reader shows all its messages oldest first, marks the open one and starts with the newest; any of them can be opened from the timeline (**auto**). Opening reads the whole conversation; archive and delete act on its messages in the listed folder (**auto**). |
+| US17 | As a user I see my folder tree as it is on the server. | Folders created or removed by another client appear or disappear after a sync (**auto**). Subfolders are indented under their parent, also under Inbox and the special folders, and can be opened (**auto**). |
 
 ## Test results
 
@@ -52,6 +53,7 @@ state checked over IMAP after each step.
 | US14 Follow links | not tested | not supported | Needs a real click in the Servo view; Android cannot open links yet. |
 | US15 Multiple accounts | pass (auto) | not tested | Two GreenMail accounts. |
 | US16 Conversations | pass (auto) | not tested | Conversation between the two GreenMail accounts. |
+| US17 Folder tree | pass (auto) | not tested | Nested folders created and deleted over IMAP during the run. |
 
 Bugs found by this run and fixed:
 
