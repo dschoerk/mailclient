@@ -36,5 +36,12 @@ unaligned="$work/unaligned.apk"
 (cd "$apk" && "$tools/aapt" add "$unaligned" lib/*/*.so >/dev/null)
 (cd "$work/dex" && "$tools/aapt" add "$unaligned" classes.dex >/dev/null)
 "$tools/zipalign" -f -p 4 "$unaligned" "$apk/mailclient_app.apk"
-"$tools/apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android "$apk/mailclient_app.apk"
+# ANDROID_KEYSTORE/ANDROID_KEYSTORE_PASS sign releases; otherwise the debug key, created like Gradle does.
+ks="${ANDROID_KEYSTORE:-$HOME/.android/debug.keystore}"
+if [[ -z "${ANDROID_KEYSTORE:-}" && ! -f "$ks" ]]; then
+  mkdir -p "$(dirname "$ks")"
+  keytool -genkeypair -keystore "$ks" -storepass android -keypass android -alias androiddebugkey \
+    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+fi
+"$tools/apksigner" sign --ks "$ks" --ks-pass "pass:${ANDROID_KEYSTORE_PASS:-android}" "$apk/mailclient_app.apk"
 echo "Built $apk/mailclient_app.apk"

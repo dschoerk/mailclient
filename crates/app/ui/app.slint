@@ -511,6 +511,7 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                     horizontal-stretch: 1;
                                     color: sender-touch.has-hover ? Theme.accent : Palette.foreground;
+                                    animate color { duration: 120ms; }
                                     sender-touch := TouchArea {
                                         mouse-cursor: pointer;
                                         accessible-role: button;
@@ -589,11 +590,13 @@ export component AppWindow inherits Window {
                                 }
                             }
                             if root.msg-remote-blocked: Rectangle {
-                                height: 32px;
                                 border-radius: 6px;
                                 background: Palette.foreground.with-alpha(0.06);
+                                // The text wraps so the button stays on narrow screens.
                                 HorizontalLayout {
                                     padding-left: 10px;
+                                    padding-top: 2px;
+                                    padding-bottom: 2px;
                                     spacing: 10px;
                                     Image {
                                         source: @image-url("icons/image.svg");
@@ -604,13 +607,12 @@ export component AppWindow inherits Window {
                                         text: "Remote images are blocked to protect your privacy.";
                                         vertical-alignment: center;
                                         font-size: 12px;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
                                     }
                                     ToolButton {
                                         text: "Load images";
                                         clicked => root.load-remote-images();
-                                    }
-                                    Rectangle {
-                                        horizontal-stretch: 1;
                                     }
                                 }
                             }

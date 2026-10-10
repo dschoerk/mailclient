@@ -1,5 +1,7 @@
 # mailclient
 
+[![CI](https://github.com/dschoerk/mailclient/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dschoerk/mailclient/actions/workflows/ci.yml)
+
 A desktop email client in Rust with a [Slint](https://slint.dev) UI. HTML mail is
 rendered by an embedded [Servo](https://servo.org) engine with scripting disabled.
 
@@ -106,6 +108,20 @@ the main screen only sends it to the background.
 Outlook.com and Microsoft 365 need OAuth sign-in, which requires a one-time Microsoft app
 registration: see [docs/oauth-microsoft.md](docs/oauth-microsoft.md).
 Gmail signs in the same way with a Google OAuth client: see [docs/oauth-google.md](docs/oauth-google.md).
+
+### CI and releases
+
+`.github/workflows/ci.yml` runs `cargo test --workspace` and builds a debug APK on every push to
+`main` and every pull request. Pushing a tag `vX.Y.Z` that matches the version in `Cargo.toml`
+also publishes a GitHub release with a Linux x86_64 tarball and a signed arm64 APK. The release
+key is created once and kept as repository secrets; the same key must sign every release, or
+Android refuses the update:
+
+```sh
+keytool -genkeypair -keystore release.jks -alias mailclient -keyalg RSA -keysize 4096 -validity 10000
+gh secret set ANDROID_KEYSTORE_BASE64 < <(base64 -w0 release.jks)
+gh secret set ANDROID_KEYSTORE_PASS     # the password given to keytool
+```
 
 Slint is pinned to a git revision: Slint 1.18 on crates.io conflicts with Servo 0.7's
 ICU dependency, and 1.17 lacks the wgpu 30 integration. `rusqlite` is pinned to 0.38
