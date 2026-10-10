@@ -59,7 +59,12 @@ public final class MainActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        SyncJob.schedule(this);
+        try {
+            SyncJob.schedule(this);
+        } catch (RuntimeException e) {
+            // The app works without background checks; the error lands in logcat.
+            android.util.Log.w("mailclient", "cannot schedule the mail check", e);
+        }
     }
 
     /** In the background Android freezes the app and its IMAP IDLE: catch up on what arrived. */
