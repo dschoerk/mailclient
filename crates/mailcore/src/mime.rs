@@ -420,7 +420,8 @@ pub fn render_conversation(messages: &[(String, Option<&Body>)], current: usize)
 
 fn document(content: &str) -> String {
     format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>\
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>\
          :root {{ color-scheme: light; }}\
          body {{ margin: 16px; font-family: sans-serif; font-size: 14px; color: #1d1d1f; background: #fff; overflow-wrap: anywhere; }}\
          img {{ max-width: 100%; height: auto; }}\

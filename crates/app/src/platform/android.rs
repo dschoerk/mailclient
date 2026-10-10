@@ -25,7 +25,15 @@ fn android_main(android_app: slint::android::AndroidApp) {
     let activity = android_app.activity_as_ptr();
     slint::android::init(android_app).expect("Slint Android backend");
     // SAFETY: the activity outlives android_main, which returns when it is destroyed.
-    let request = |env: &mut Env, _: &Obj| request_notification_permission(env, &unsafe { Obj::from_raw(activity.cast()) });
+    let keep = |env: &mut Env, _: &Obj| env.new_global_ref(unsafe { Obj::from_raw(activity.cast()) });
+    match with_context(keep) {
+        Ok(activity) => drop(ACTIVITY.set(activity)),
+        Err(e) => log::warn!("cannot reference the activity: {e}"),
+    }
+    let request = |env: &mut Env, _: &Obj| match self::activity() {
+        Some(activity) => request_notification_permission(env, activity.as_obj()),
+        None => Ok(()),
+    };
     if let Err(e) = with_context(request) {
         log::warn!("cannot ask for the notification permission: {e}");
     }
@@ -57,11 +65,18 @@ const NOTIFICATION_IMPORTANCE_DEFAULT: i32 = 3;
 const PERMISSION_GRANTED: i32 = 0;
 const POST_NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
 
-type Env<'a> = jni::JNIEnv<'a>;
-type Obj<'a> = jni::objects::JObject<'a>;
+pub(super) type Env<'a> = jni::JNIEnv<'a>;
+pub(super) type Obj<'a> = jni::objects::JObject<'a>;
+
+static ACTIVITY: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+
+/// The running Activity; ndk_context only has the Application, which cannot show views.
+pub(super) fn activity() -> Option<&'static jni::objects::GlobalRef> {
+    ACTIVITY.get()
+}
 
 /// Runs `f` with the JNI environment and the application context.
-fn with_context<T>(f: impl FnOnce(&mut Env, &Obj) -> jni::errors::Result<T>) -> jni::errors::Result<T> {
+pub(super) fn with_context<T>(f: impl FnOnce(&mut Env, &Obj) -> jni::errors::Result<T>) -> jni::errors::Result<T> {
     let ctx = ndk_context::android_context();
     // SAFETY: android-activity fills ndk_context with the process's JavaVM and the application context.
     let (vm, context) = unsafe {

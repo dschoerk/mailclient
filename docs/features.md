@@ -7,8 +7,8 @@ What the mail client can do today. For ideas that are not built yet see
 ## Platforms
 
 - **Linux desktop**: the main target, with HTML mail rendered by Servo.
-- **Android**: works, but HTML mail is shown as plain text and attachments cannot be
-  added or saved yet. New mail is not pushed while the app is in the background.
+- **Android**: works. HTML mail is shown in the system WebView (in a window of its own over
+  the reader, with the security rules below); attachments cannot be added or saved yet. New mail is not pushed while the app is in the background.
 - **Windows/macOS**: not supported yet. The Servo rendering code is there but untested.
 - `--no-default-features` builds without Servo. HTML is then shown as plain text and the
   build is much faster.
@@ -86,6 +86,8 @@ What the mail client can do today. For ideas that are not built yet see
 - **Remote images** are blocked by default. A banner offers "Load images" for the open
   message.
 - **Links**: `mailto:` links open the composer, and other links open in your web browser.
+- **Copying text**: select text in a message and copy it: drag with the mouse and Ctrl+C on
+  the desktop; long press, then Copy, on Android.
 - **Attachments** are listed with their name and size, and can be saved to disk.
 - **Open a single file**: `mailclient message.eml` opens a message file. No account is
   needed.

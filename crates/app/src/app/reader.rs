@@ -143,6 +143,8 @@ impl Controller {
         if let Some(view) = self.viewer.borrow().as_ref() {
             view.clear();
         }
+        #[cfg(target_os = "android")]
+        crate::platform::html::clear();
     }
 
     pub(super) fn update_reader_header(&self) {
@@ -214,6 +216,8 @@ impl Controller {
             if let Some(view) = self.viewer.borrow().as_ref() {
                 view.clear();
             }
+            #[cfg(target_os = "android")]
+            crate::platform::html::clear();
             return;
         }
         window.set_msg_loading(false);
@@ -224,7 +228,8 @@ impl Controller {
             conversation.iter().all(|m| state.remote_allowed.contains(&(account, m.folder.clone(), m.uid)))
         };
         let has_remote = bodies.iter().flatten().any(|b| b.has_remote_content);
-        window.set_msg_remote_blocked(has_remote && !allow_remote && cfg!(feature = "servo"));
+        let html_view = cfg!(any(feature = "servo", target_os = "android"));
+        window.set_msg_remote_blocked(has_remote && !allow_remote && html_view);
         window.set_msg_text(body.text.clone().into());
         let headings: Vec<String> = conversation
             .iter()
@@ -250,8 +255,8 @@ impl Controller {
                 })
                 .collect::<Vec<_>>(),
         );
-        #[cfg(feature = "servo")]
-        if let Some(view) = self.viewer.borrow().as_ref() {
+        #[cfg(any(feature = "servo", target_os = "android"))]
+        {
             let (document, anchor) = if conversation.len() == 1 {
                 (mime::render_document(&body), String::new())
             } else {
@@ -259,13 +264,21 @@ impl Controller {
                     .into_iter().zip(bodies.iter().map(Option::as_ref)).collect();
                 (mime::render_conversation(&parts, current), format!("m{current}"))
             };
-            view.show(crate::webview::delegate::MessageContent {
-                document,
-                csp: mime::content_security_policy(allow_remote),
-                // shortcut: one map for all messages; Content-IDs are meant to be globally unique.
-                inline_parts: bodies.iter().flatten().flat_map(|b| b.inline_parts.clone()).collect(),
+            let csp = mime::content_security_policy(allow_remote);
+            // shortcut: one map for all messages; Content-IDs are meant to be globally unique.
+            let inline_parts: HashMap<String, (String, Vec<u8>)> =
+                bodies.iter().flatten().flat_map(|b| b.inline_parts.clone()).collect();
+            #[cfg(feature = "servo")]
+            if let Some(view) = self.viewer.borrow().as_ref() {
+                view.show(crate::webview::delegate::MessageContent { document, csp, inline_parts, allow_remote, anchor });
+            }
+            #[cfg(target_os = "android")]
+            crate::platform::html::show(&crate::platform::html::Message {
+                document: &document,
+                csp: &csp,
                 allow_remote,
-                anchor,
+                anchor: &anchor,
+                inline_parts: &inline_parts,
             });
         }
         self.state.borrow_mut().body = Some(body);
@@ -285,7 +298,7 @@ impl Controller {
         self.render_selected();
     }
 
-    #[cfg_attr(not(feature = "servo"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "servo", target_os = "android")), allow(dead_code))]
     pub(super) fn open_link(&self, url: &str) {
         if let Some(mailto) = url.strip_prefix("mailto:") {
             let (to, query) = mailto.split_once('?').unwrap_or((mailto, ""));

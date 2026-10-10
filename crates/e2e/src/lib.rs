@@ -84,6 +84,15 @@ impl App {
     /// Expects the APK to be installed. Wipes its data, so every run starts at setup.
     fn launch_android(port: u16) -> App {
         let p = &port.to_string();
+        // After a copy, Android shows a clipboard preview for a few seconds; it would take the next Back key.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            let out = adb_command().args(["shell", "dumpsys", "window", "windows"]).output().expect("adb not found");
+            if !String::from_utf8_lossy(&out.stdout).contains("ClipboardOverlay") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
         adb(&["shell", "am", "force-stop", PACKAGE]);
         adb(&["shell", "pm", "clear", PACKAGE]);
         // Answers the permission prompt the app shows on first start (US19).
@@ -143,9 +152,10 @@ impl App {
         found.map(|r| r["elementHandles"].as_array().cloned().unwrap_or_default()).unwrap_or_default()
     }
 
-    /// Waits up to 30 s for an element to appear.
+    /// Waits up to 60 s for an element to appear.
     pub fn wait_for(&self, label: &str, role: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // Generous: the desktop suite starts several Servo instances at once.
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Some(e) = self.find(label, role).into_iter().next() {
                 return e;
@@ -210,18 +220,74 @@ impl App {
         adb(&["shell", "input", "swipe", &x, &y, &x, &y, "800"]);
     }
 
+    /// Ctrl+`letter` (a–z) to whatever has key focus.
+    pub fn ctrl(&self, letter: char) {
+        if android() {
+            // KEYCODE_CTRL_LEFT, then KEYCODE_A + offset.
+            let code = 29 + (letter as u8 - b'a') as u32;
+            adb(&["shell", "input", "keycombination", "113", &code.to_string()]);
+            return;
+        }
+        let key = |text: &str, kind: &str| {
+            self.call("dispatch_key_event", json!({"windowHandle": self.window, "text": text, "eventType": kind})).unwrap();
+        };
+        key("\u{11}", "Press"); // Slint's Key.Control
+        key(&letter.to_string(), "PressAndRelease");
+        key("\u{11}", "Release");
+    }
+
+    fn by_id(&self, id: &str) -> Value {
+        let found = self.call("find_elements_by_id", json!({"windowHandle": self.window, "elementsId": id})).unwrap();
+        found["elementHandles"].get(0).cloned().unwrap_or_else(|| panic!("no element {id}: {found}"))
+    }
+
+    /// Double-clicks the element with this qualified id (e.g. "Webview::touch").
+    pub fn double_click_id(&self, id: &str) {
+        self.call("click_element", json!({"elementHandle": self.by_id(id), "action": "DoubleClick"})).unwrap();
+    }
+
+    /// Drags with the left button from the element's center by (dx, dy) logical pixels.
+    pub fn drag_id(&self, id: &str, dx: f64, dy: f64) {
+        let e = self.by_id(id);
+        let props = self.call("get_element_properties", json!({"elementHandle": e})).unwrap();
+        let center = |axis: &str, extent: &str| {
+            props["absolutePosition"][axis].as_f64().unwrap_or(0.0) + props["size"][extent].as_f64().unwrap() / 2.0
+        };
+        let target = json!({"x": center("x", "width") + dx, "y": center("y", "height") + dy});
+        self.call("drag_element", json!({"elementHandle": e, "target": target})).unwrap();
+    }
+
+    /// Back as a user leaves a screen: once more if the first one only closed the soft keyboard.
+    pub fn back_out(&self) {
+        let keyboard = || {
+            let out = adb_command().args(["shell", "dumpsys", "input_method"]).output().expect("adb not found");
+            String::from_utf8_lossy(&out.stdout).contains("mInputShown=true")
+        };
+        if keyboard() {
+            eprintln!("soft keyboard up: Back closes it first");
+            self.back();
+        }
+        self.back();
+    }
+
     /// Android's system Back key.
     pub fn back(&self) {
         assert!(android(), "Back is an Android key");
         adb(&["shell", "input", "keyevent", "KEYCODE_BACK"]);
     }
 
-    /// Waits up to 30 s for `cond`, with a screenshot on timeout.
+    /// Waits up to 60 s for `cond`, with a screenshot on timeout.
     pub fn wait_until(&self, what: &str, mut cond: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // Generous: the desktop suite starts several Servo instances at once.
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !cond() {
             if Instant::now() > deadline {
                 self.screenshot("timeout");
+                if android() {
+                    let out = adb_command().args(["shell", "dumpsys", "window"]).output().expect("adb not found");
+                    let focus = String::from_utf8_lossy(&out.stdout).lines().find(|l| l.contains("mCurrentFocus")).unwrap_or_default().to_string();
+                    eprintln!("key focus: {}", focus.trim());
+                }
                 panic!("timed out waiting for {what}");
             }
             std::thread::sleep(Duration::from_millis(300));
@@ -236,7 +302,7 @@ impl App {
     pub fn screenshot(&self, name: &str) -> Option<PathBuf> {
         let image = self.call("take_screenshot", json!({"windowHandle": self.window})).ok()?;
         let png = base64_decode(image["data"].as_str()?);
-        let path = workspace_dir().join("target/e2e").join(format!("{name}.png"));
+        let path = workspace_dir().join("target/e2e").join(format!("{name}-{}.png", if android() { "android" } else { "desktop" }));
         std::fs::create_dir_all(path.parent()?).ok()?;
         std::fs::write(&path, png).ok()?;
         eprintln!("screenshot: {}", path.display());
@@ -333,7 +399,7 @@ pub fn test_account() -> AccountConfig {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-    let user = format!("e2e{now}-{n}@localhost");
+    let user = format!("e2e{now}-{}-{n}@localhost", std::process::id());
     AccountConfig {
         name: "E2E".into(),
         email: user.clone(),
@@ -381,6 +447,140 @@ pub fn server_messages(account: &AccountConfig, folder: &str) -> Vec<mailcore::M
 
 pub fn server_subjects(account: &AccountConfig, folder: &str) -> Vec<String> {
     server_messages(account, folder).into_iter().map(|m| m.subject).collect()
+}
+
+/// Delivers an HTML message; any HTML, also with long lines (encoded as needed).
+pub fn deliver_html(account: &AccountConfig, from: (&str, &str), subject: &str, html: &str) {
+    let raw = mail_builder::MessageBuilder::new()
+        .from(from)
+        .to(account.email.as_str())
+        .subject(subject)
+        .html_body(html)
+        .write_to_string()
+        .unwrap();
+    deliver_raw(account, &raw);
+}
+
+/// Delivers a ready-made message (e.g. HTML) to the account.
+pub fn deliver_raw(account: &AccountConfig, raw: &str) {
+    block_on(mailcore::smtp::send(account, "x", raw.as_bytes(), std::slice::from_ref(&account.email))).unwrap();
+}
+
+/// Counts HTTP requests on a local port: stands in for a tracking pixel's server.
+/// On Android the device reaches it as localhost through `adb reverse`.
+pub struct PixelServer {
+    pub port: u16,
+    paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl PixelServer {
+    pub fn start() -> PixelServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if android() {
+            adb(&["reverse", &format!("tcp:{port}"), &format!("tcp:{port}")]);
+        }
+        let paths = std::sync::Arc::<std::sync::Mutex<Vec<String>>>::default();
+        let log = paths.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                // "GET /path HTTP/1.1"
+                let request = String::from_utf8_lossy(&buf[..n]);
+                log.lock().unwrap().push(request.split_whitespace().nth(1).unwrap_or_default().to_string());
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        PixelServer { port, paths }
+    }
+
+    /// Paths requested so far.
+    pub fn requests(&self) -> Vec<String> {
+        self.paths.lock().unwrap().clone()
+    }
+}
+
+/// The device screen as RGBA rows (Android only): `adb exec-out screencap` without -p.
+pub struct Screen {
+    pub width: usize,
+    pub height: usize,
+    pixels: Vec<u8>,
+}
+
+impl Screen {
+    pub fn capture() -> Screen {
+        let out = adb_command().args(["exec-out", "screencap"]).output().expect("adb not found").stdout;
+        let word = |i: usize| u32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+        let (width, height) = (word(0), word(1));
+        // The header is 12 bytes, 16 since Android 11 (color space).
+        let header = out.len() - width * height * 4;
+        assert!(header == 12 || header == 16, "unexpected screencap size");
+        Screen { width, height, pixels: out[header..].to_vec() }
+    }
+
+    /// Whether the rectangle [x0, x1) × [y0, y1) looks different in `other`.
+    pub fn differs(&self, other: &Screen, [x0, y0, x1, y1]: [usize; 4]) -> bool {
+        let row = |s: &Screen, y: usize| (y * s.width + x0) * 4..(y * s.width + x1) * 4;
+        (y0..y1).any(|y| self.pixels[row(self, y)] != other.pixels[row(other, y)])
+    }
+}
+
+/// Screen frame [x0, y0, x1, y1] of the HTML view's window, if it is showing (Android only).
+pub fn html_frame() -> Option<[usize; 4]> {
+    let out = adb_command().args(["shell", "dumpsys", "window", "windows"]).output().expect("adb not found").stdout;
+    let text = String::from_utf8_lossy(&out);
+    // The app's own window is BASE_APPLICATION; the HTML view's is an APPLICATION window over it.
+    let section = text
+        .split("Window #")
+        .find(|w| w.contains(PACKAGE) && w.contains(" ty=APPLICATION ") && w.contains("isVisible=true"))?;
+    // "frame=[0,472][1080,2111]"
+    let frame = section.split(" frame=[").nth(1)?;
+    let numbers: Vec<usize> = frame
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|n| !n.is_empty())
+        .take(4)
+        .map(|n| n.parse().unwrap())
+        .collect();
+    numbers.try_into().ok()
+}
+
+/// A finger drag on the device, in screen pixels (Android only).
+pub fn swipe((x0, y0): (usize, usize), (x1, y1): (usize, usize), ms: u32) {
+    let args: Vec<String> = [x0, y0, x1, y1].iter().map(ToString::to_string).chain([ms.to_string()]).collect();
+    let mut all = vec!["shell", "input", "swipe"];
+    all.extend(args.iter().map(String::as_str));
+    adb(&all);
+}
+
+pub fn tap(x: usize, y: usize) {
+    adb(&["shell", "input", "tap", &x.to_string(), &y.to_string()]);
+}
+
+/// Turns the device to landscape until dropped (Android only).
+pub struct Landscape;
+
+impl Landscape {
+    pub fn turn() -> Landscape {
+        adb(&["shell", "settings", "put", "system", "accelerometer_rotation", "0"]);
+        adb(&["shell", "settings", "put", "system", "user_rotation", "1"]);
+        Landscape
+    }
+}
+
+impl Drop for Landscape {
+    fn drop(&mut self) {
+        let _ = adb_command().args(["shell", "settings", "put", "system", "user_rotation", "0"]).status();
+    }
+}
+
+/// A screenshot of the whole device screen, native views included (Android only).
+pub fn device_screenshot(name: &str) {
+    let out = adb_command().args(["exec-out", "screencap", "-p"]).output().expect("adb not found");
+    let path = workspace_dir().join("target/e2e").join(format!("{name}-{}.png", if android() { "android" } else { "desktop" }));
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    std::fs::write(&path, out.stdout).unwrap();
+    eprintln!("screenshot: {}", path.display());
 }
 
 pub fn deliver(account: &AccountConfig, from: (&str, &str), subject: &str, body: &str) {

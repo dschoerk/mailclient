@@ -25,6 +25,23 @@ thread_local! {
     static CONTROLLER: RefCell<Option<Rc<Controller>>> = const { RefCell::new(None) };
 }
 
+/// Opens a link from the HTML view (any thread): browser, or the composer for `mailto:`.
+#[cfg(target_os = "android")]
+pub(crate) fn open_link_later(url: String) {
+    with_controller(move |c| c.open_link(&url));
+}
+
+/// The Back key, pressed while the HTML view had key focus (any thread).
+#[cfg(target_os = "android")]
+pub(crate) fn back_later() {
+    with_controller(|c| {
+        use slint::platform::{Key, WindowEvent};
+        let window = c.window();
+        window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Back.into() });
+        window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Back.into() });
+    });
+}
+
 /// Runs `f` on the UI thread with the controller, from any thread.
 fn with_controller(f: impl FnOnce(&Rc<Controller>) + Send + 'static) {
     let _ = slint::invoke_from_event_loop(move || {
@@ -134,6 +151,7 @@ impl Controller {
         window.set_msg_attachments(ModelRc::from(controller.attachment_model.clone()));
         window.set_conversation(ModelRc::from(controller.conversation_model.clone()));
         window.set_use_webview(cfg!(feature = "servo"));
+        window.set_html_overlay(cfg!(target_os = "android"));
         let settings = config::load_settings().unwrap_or_else(|e| {
             log::warn!("cannot read settings: {e:#}");
             config::Settings::default()
@@ -217,6 +235,14 @@ impl Controller {
         on!(on_edit_draft, |c| c.edit_draft());
         on!(on_toggle_checked, |c, index| c.toggle_checked(index as usize));
         on!(on_bulk_action, |c, action| c.bulk(&action));
+        #[cfg(target_os = "android")]
+        on!(on_html_area_changed, |c| {
+            // Slint lays out in logical pixels; the WebView is placed in physical ones.
+            let w = c.window();
+            let scale = w.window().scale_factor();
+            let px = |v: f32| (v * scale).round() as i32;
+            crate::platform::html::place(px(w.get_html_x()), px(w.get_html_y()), px(w.get_html_width()), px(w.get_html_height()), w.get_html_visible());
+        });
         on!(on_archive, |c| c.remove_selected(true));
         on!(on_delete, |c| c.remove_selected(false));
         on!(on_toggle_seen, |c| c.toggle_selected(false));
