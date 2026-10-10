@@ -272,8 +272,9 @@ impl Store {
     // ---- folders ----
 
     /// Replaces the folder list with what the server reported. Folders that
-    /// disappeared are deleted together with their cached messages.
-    pub fn sync_folders(&mut self, folders: &[(String, Option<String>, Role)]) -> Result<()> {
+    /// disappeared are deleted together with their cached messages. Returns whether anything changed.
+    pub fn sync_folders(&mut self, folders: &[(String, Option<String>, Role)]) -> Result<bool> {
+        let mut changed = 0;
         let tx = self.conn.transaction()?;
         {
             let mut existing = tx.prepare("SELECT name FROM folders")?;
@@ -283,19 +284,20 @@ impl Store {
             for name in names {
                 if !folders.iter().any(|(n, _, _)| *n == name) {
                     tx.execute("DELETE FROM messages WHERE folder = ?1", [&name])?;
-                    tx.execute("DELETE FROM folders WHERE name = ?1", [&name])?;
+                    changed += tx.execute("DELETE FROM folders WHERE name = ?1", [&name])?;
                 }
             }
             let mut upsert = tx.prepare(
                 "INSERT INTO folders (name, delimiter, role) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(name) DO UPDATE SET delimiter = excluded.delimiter, role = excluded.role",
+                 ON CONFLICT(name) DO UPDATE SET delimiter = excluded.delimiter, role = excluded.role
+                 WHERE delimiter IS NOT excluded.delimiter OR role IS NOT excluded.role",
             )?;
             for (name, delim, role) in folders {
-                upsert.execute(params![name, delim, role.as_str()])?;
+                changed += upsert.execute(params![name, delim, role.as_str()])?;
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     pub fn folders(&self) -> Result<Vec<Folder>> {
@@ -469,8 +471,8 @@ impl Store {
     }
 
     /// Updates flags from the server, skipping messages with local changes not yet
-    /// pushed (the server state is stale for those).
-    pub fn update_flags(&mut self, folder: &str, flags: &[(u32, bool, bool, bool)]) -> Result<()> {
+    /// pushed (the server state is stale for those). Returns whether any flag changed.
+    pub fn update_flags(&mut self, folder: &str, flags: &[(u32, bool, bool, bool)]) -> Result<bool> {
         let pending: std::collections::HashSet<u32> = {
             let mut stmt = self
                 .conn
@@ -478,19 +480,21 @@ impl Store {
             stmt.query_map([folder], |r| r.get(0))?
                 .collect::<Result<_, _>>()?
         };
+        let mut changed = 0;
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "UPDATE messages SET seen = ?3, flagged = ?4, answered = ?5 WHERE folder = ?1 AND uid = ?2",
+                "UPDATE messages SET seen = ?3, flagged = ?4, answered = ?5 WHERE folder = ?1 AND uid = ?2
+                 AND (seen, flagged, answered) IS NOT (?3, ?4, ?5)",
             )?;
             for (uid, seen, flagged, answered) in flags {
                 if !pending.contains(uid) {
-                    stmt.execute(params![folder, uid, seen, flagged, answered])?;
+                    changed += stmt.execute(params![folder, uid, seen, flagged, answered])?;
                 }
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     pub fn delete_messages(&mut self, folder: &str, uids: &[u32]) -> Result<()> {
@@ -790,6 +794,18 @@ mod tests {
         assert_eq!(uids("bob@example.org"), [3, 2, 1]);
         assert!(uids("from:nobody@example.org").is_empty());
         assert!(uids("from:'; DROP TABLE messages; --").is_empty());
+    }
+
+    #[test]
+    fn syncs_report_changes() {
+        let mut store = store_with_inbox();
+        let folders = [("INBOX".into(), Some("/".into()), Role::Inbox), ("Trash".into(), None, Role::Trash)];
+        assert!(!store.sync_folders(&folders).unwrap());
+        assert!(store.sync_folders(&folders[..1]).unwrap());
+        store.upsert_messages(&[msg(1, "a")]).unwrap();
+        assert!(!store.update_flags("INBOX", &[(1, false, false, false)]).unwrap());
+        assert!(store.update_flags("INBOX", &[(1, true, false, false)]).unwrap());
+        assert!(!store.update_flags("INBOX", &[(1, true, false, false)]).unwrap());
     }
 
     #[test]

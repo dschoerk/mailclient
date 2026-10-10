@@ -24,6 +24,8 @@ use crate::store::{MessageSummary, PendingOp, Role, Store};
 const INITIAL_WINDOW: u32 = 500;
 /// Bodies downloaded ahead of time per sync, for offline reading and search.
 const PREFETCH_BODIES: usize = 40;
+/// Bodies per FETCH: each batch is held in memory whole, and attachments can be large.
+const BODY_BATCH: usize = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
 
@@ -81,8 +83,8 @@ impl Engine {
         std::thread::Builder::new()
             .name("mail-engine".into())
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
+                // Network-bound with one connection at a time: one thread per account is plenty.
+                let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("tokio runtime");
@@ -230,8 +232,9 @@ impl<B: Backend> Worker<B> {
                 self.flush().await?;
                 self.emit(Event::Status("Syncing folders…".into()));
                 let folders = self.conn().await?.list_folders().await?;
-                self.store.sync_folders(&folders)?;
-                self.emit(Event::FoldersChanged);
+                if self.store.sync_folders(&folders)? {
+                    self.emit(Event::FoldersChanged);
+                }
                 let mut targets = Vec::new();
                 // Sent too: the user's replies belong in the inbox's conversations.
                 for role in [Role::Inbox, Role::Sent] {
@@ -354,16 +357,20 @@ impl<B: Backend> Worker<B> {
     async fn sync_folder(&mut self, folder: &str) -> Result<()> {
         self.emit(Event::Status(format!("Syncing {folder}…")));
         let state = self.conn().await?.select(folder).await?;
+        // The UI reloads on every change event; a sync that found nothing new sends none.
+        let mut changed = false;
         if let Some(v) = state.uid_validity
             && self.store.check_uidvalidity(folder, v)?
         {
             log::info!("UIDVALIDITY of {folder} changed, cache reset");
+            changed = true;
         }
 
         match (self.store.min_uid(folder)?, self.store.max_uid(folder)?) {
             (Some(min), Some(max)) => {
                 let new = self.conn().await?.fetch_new(folder, max).await?;
                 self.store.upsert_messages(&new)?;
+                changed |= !new.is_empty();
                 let unread: Vec<MessageSummary> = new.into_iter().filter(|m| !m.seen).collect();
                 if !unread.is_empty() && self.store.folder_role(folder)? == Role::Inbox {
                     self.emit(Event::NewMail(unread));
@@ -377,7 +384,8 @@ impl<B: Backend> Worker<B> {
                     .filter(|uid| (min..=max).contains(uid) && !on_server.contains(uid))
                     .collect();
                 self.store.delete_messages(folder, &gone)?;
-                self.store.update_flags(folder, &flags)?;
+                changed |= !gone.is_empty();
+                changed |= self.store.update_flags(folder, &flags)?;
             }
             _ => {
                 let latest = self
@@ -386,10 +394,13 @@ impl<B: Backend> Worker<B> {
                     .fetch_latest(folder, state.exists, INITIAL_WINDOW)
                     .await?;
                 self.store.upsert_messages(&latest)?;
+                changed |= !latest.is_empty();
             }
         }
-        self.emit(Event::MessagesChanged(folder.to_string()));
-        self.emit(Event::FoldersChanged);
+        if changed {
+            self.emit(Event::MessagesChanged(folder.to_string()));
+            self.emit(Event::FoldersChanged);
+        }
 
         let missing = self.store.uids_missing_body(folder, PREFETCH_BODIES)?;
         if !missing.is_empty() {
@@ -400,17 +411,19 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn download_bodies(&mut self, folder: &str, uids: &[u32]) -> Result<()> {
-        let bodies = self.conn().await?.fetch_bodies(folder, uids).await?;
-        for (uid, raw) in bodies {
-            let body = mime::body_from_raw(&raw);
-            self.store.set_body(
-                folder,
-                uid,
-                &raw,
-                &body.snippet,
-                &body.text,
-                !body.attachments.is_empty(),
-            )?;
+        for batch in uids.chunks(BODY_BATCH) {
+            let bodies = self.conn().await?.fetch_bodies(folder, batch).await?;
+            for (uid, raw) in bodies {
+                let body = mime::body_from_raw(&raw);
+                self.store.set_body(
+                    folder,
+                    uid,
+                    &raw,
+                    &body.snippet,
+                    &body.text,
+                    !body.attachments.is_empty(),
+                )?;
+            }
         }
         Ok(())
     }
