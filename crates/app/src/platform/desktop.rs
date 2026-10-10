@@ -50,7 +50,9 @@ pub async fn pick_files() -> Result<Vec<PathBuf>> {
     Ok(files.iter().map(|f| f.path().to_path_buf()).collect())
 }
 
-/// Where the user wants to save a file suggested as `name`; `None` when cancelled.
-pub async fn save_file(name: &str) -> Result<Option<PathBuf>> {
-    Ok(rfd::AsyncFileDialog::new().set_file_name(name).save_file().await.map(|f| f.path().to_path_buf()))
+/// Saves `data` where the user chooses, suggested as `name`; the saved file's path, or `None` when cancelled.
+pub async fn save_file(name: &str, _mime_type: &str, data: Vec<u8>) -> Result<Option<String>> {
+    let Some(file) = rfd::AsyncFileDialog::new().set_file_name(name).save_file().await else { return Ok(None) };
+    std::fs::write(file.path(), data).with_context(|| format!("saving {}", file.path().display()))?;
+    Ok(Some(file.path().display().to_string()))
 }

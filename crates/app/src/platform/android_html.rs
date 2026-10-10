@@ -1,6 +1,5 @@
 //! The HTML message view on Android: java/dev/mailclient/MailWebView.java, a WebView over the
-//! reader area with the same request policy as the desktop's Servo view. Its classes.dex is
-//! built by build.rs and loaded from memory here, so the APK needs no code of its own.
+//! reader area with the same request policy as the desktop's Servo view.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -8,9 +7,8 @@ use std::sync::OnceLock;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, NativeMethod};
 
-use super::android::{Env, Obj, activity, with_context};
+use super::android::{Env, Obj, activity, load_class, with_context};
 
-static DEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/classes.dex"));
 static CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
 /// The message to show, as the desktop view gets it (`webview::delegate::MessageContent`).
@@ -87,21 +85,7 @@ fn class(env: &mut Env, activity: &Obj) -> jni::errors::Result<&'static JClass<'
     if let Some(class) = CLASS.get() {
         return Ok(<&JClass>::from(class.as_obj()));
     }
-    let buffer = unsafe {
-        // SAFETY: DEX is static and never written; the class loader only reads it.
-        env.new_direct_byte_buffer(DEX.as_ptr().cast_mut(), DEX.len())?
-    };
-    let parent = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
-    let loader = env.new_object(
-        "dalvik/system/InMemoryDexClassLoader",
-        "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V",
-        &[(&buffer).into(), (&parent).into()],
-    )?;
-    let name = env.new_string("dev.mailclient.MailWebView")?;
-    let class: JClass = env
-        .call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[(&name).into()])?
-        .l()?
-        .into();
+    let class = load_class(env, activity, "dev.mailclient.MailWebView")?;
     let on_link: extern "system" fn(JNIEnv, JClass, JString) = on_link;
     let on_back: extern "system" fn(JNIEnv, JClass) = on_back;
     env.register_native_methods(

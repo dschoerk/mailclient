@@ -12,7 +12,7 @@ Status: **done** · **partial** · **missing**.
 |---|---|---|
 | Fast, reliable search | done | SQLite FTS5 over subject, sender, downloaded bodies (US7). Top request in the Jolla poll. |
 | Offline local store that never needs manual cleanup | done | SQLite cache, offline queue (US11; reconnect after no network not yet tested). |
-| Push for new mail | partial | IMAP IDLE on the inbox while the app runs (US10). Mobile users want real push notifications with the app in the background, with actions (archive, mark read) on the notification. |
+| Push for new mail | partial | IMAP IDLE on the inbox, kept running in the background on Android by a foreground service (US10). Missing: actions (archive, mark read) on the notification; push after the app is swiped away. |
 | Read, flag, archive, delete | done | US5, US6. |
 | Modern sign-in (OAuth) | partial | Microsoft OAuth written, untested ([oauth-microsoft.md](oauth-microsoft.md)). Gmail OAuth missing. |
 | Unified inbox across accounts | missing | Most common item in every 2026 guide. Needs multi-account support first. |
@@ -31,7 +31,7 @@ Status: **done** · **partial** · **missing**.
 | Undo send | missing | Cheap version: hold outgoing mail in the queue for a few seconds. |
 | Snooze | missing | Often cited as missing from Gmail; Mozilla Connect request. Needs a local timer plus a folder or keyword on the server. |
 | Rich (HTML) compose and signatures | missing | Compose is plain text. Signatures missing entirely. |
-| Attachments: save all, shown at the top of long threads | partial | Single attachments can be saved; Android has no file picker (US12). |
+| Attachments: save all, shown at the top of long threads | partial | Single attachments can be added and saved, on Android through the system pickers (US12). |
 | Raw source and full headers | missing | Power-user request (Vivaldi wish list). |
 | Contacts: add sender, autocomplete, vCard import/export, CardDAV | missing | "Add sender to contacts" was #2 in the Jolla poll. |
 | Calendar (CalDAV), invites | missing | Users are split on built-in vs separate app. |
@@ -48,8 +48,8 @@ The biggest gaps among baseline features, roughly in order of user impact per ef
 1. ~~Threaded view~~ (done).
 2. ~~Bulk select and actions~~ (done).
 3. ~~Multiple accounts, then the unified inbox~~ (done).
-4. ~~Notifications for new mail (desktop and Android)~~ (done while the app runs; Android
-   background push still missing).
+4. ~~Notifications for new mail (desktop and Android)~~ (done; on Android also in the
+   background, through a foreground service).
 5. Undo send, then snooze and scheduled send.
 
 ## Caveats

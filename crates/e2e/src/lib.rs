@@ -105,7 +105,7 @@ impl App {
         adb(&["reverse", "tcp:3993", "tcp:3993"]);
         adb(&["reverse", "tcp:3465", "tcp:3465"]);
         adb(&["forward", &format!("tcp:{p}"), &format!("tcp:{p}")]);
-        adb(&["shell", "am", "start", "-n", &format!("{PACKAGE}/android.app.NativeActivity")]);
+        adb(&["shell", "am", "start", "-n", &format!("{PACKAGE}/dev.mailclient.MainActivity")]);
         App { port, child: None, window: Value::Null, _data: None }
     }
 

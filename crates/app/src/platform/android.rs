@@ -1,6 +1,10 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
+use jni::objects::{JClass, JObjectArray, JString};
+use jni::{JNIEnv, NativeMethod};
+use tokio::sync::oneshot;
 
 #[unsafe(no_mangle)]
 fn android_main(android_app: slint::android::AndroidApp) {
@@ -27,7 +31,7 @@ fn android_main(android_app: slint::android::AndroidApp) {
     // SAFETY: the activity outlives android_main, which returns when it is destroyed.
     let keep = |env: &mut Env, _: &Obj| env.new_global_ref(unsafe { Obj::from_raw(activity.cast()) });
     match with_context(keep) {
-        Ok(activity) => drop(ACTIVITY.set(activity)),
+        Ok(activity) => *ACTIVITY.lock().unwrap() = Some(activity),
         Err(e) => log::warn!("cannot reference the activity: {e}"),
     }
     let request = |env: &mut Env, _: &Obj| match self::activity() {
@@ -36,6 +40,18 @@ fn android_main(android_app: slint::android::AndroidApp) {
     };
     if let Err(e) = with_context(request) {
         log::warn!("cannot ask for the notification permission: {e}");
+    }
+    if let Err(e) = on_activity(|env, activity| {
+        let on_result: extern "system" fn(JNIEnv, JClass, JObjectArray, JString) = on_result;
+        let class = env.get_object_class(activity)?;
+        let method = NativeMethod {
+            name: "onResult".into(),
+            sig: "([Ljava/lang/String;Ljava/lang/String;)V".into(),
+            fn_ptr: on_result as *mut _,
+        };
+        env.register_native_methods(&class, &[method])
+    }) {
+        log::warn!("cannot register the file picker callback: {e}");
     }
     if let Err(e) = crate::run() {
         log::error!("{e:#}");
@@ -68,11 +84,26 @@ const POST_NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
 pub(super) type Env<'a> = jni::JNIEnv<'a>;
 pub(super) type Obj<'a> = jni::objects::JObject<'a>;
 
-static ACTIVITY: std::sync::OnceLock<jni::objects::GlobalRef> = std::sync::OnceLock::new();
+/// Replaced on each android_main: the push service keeps the process alive, so a destroyed
+/// activity's successor runs android_main again in the same process.
+static ACTIVITY: Mutex<Option<jni::objects::GlobalRef>> = Mutex::new(None);
 
 /// The running Activity; ndk_context only has the Application, which cannot show views.
-pub(super) fn activity() -> Option<&'static jni::objects::GlobalRef> {
-    ACTIVITY.get()
+pub(super) fn activity() -> Option<jni::objects::GlobalRef> {
+    ACTIVITY.lock().unwrap().clone()
+}
+
+/// Runs `f` with the JNI environment and the activity (dev.mailclient.MainActivity).
+fn on_activity<T>(f: impl FnOnce(&mut Env, &Obj) -> jni::errors::Result<T>) -> jni::errors::Result<T> {
+    let activity = activity().ok_or(jni::errors::Error::NullPtr("activity"))?;
+    with_context(|env, _| f(env, activity.as_obj()))
+}
+
+/// A class of the app's own Java code (crates/app/java/); FindClass would not see it from a native thread.
+pub(super) fn load_class<'a>(env: &mut Env<'a>, activity: &Obj, name: &str) -> jni::errors::Result<JClass<'a>> {
+    let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+    let name = env.new_string(name)?;
+    Ok(env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[(&name).into()])?.l()?.into())
 }
 
 /// Runs `f` with the JNI environment and the application context.
@@ -164,12 +195,54 @@ fn post_notification(env: &mut Env, context: &Obj, title: &str, body: &str) -> j
     Ok(())
 }
 
-/// shortcut: no file picker on Android yet (needs the Storage Access Framework via JNI).
-pub async fn pick_files() -> Result<Vec<PathBuf>> {
-    bail!("Attaching files is not supported on Android yet")
+/// The picker's answer from MainActivity.onResult: values, or None when cancelled.
+type Answer = std::result::Result<Option<Vec<String>>, String>;
+
+/// The open picker's caller. Opening another one drops it, which reads as cancelled.
+static WAITING: Mutex<Option<oneshot::Sender<Answer>>> = Mutex::new(None);
+
+/// Opens a system picker with `open` and waits for MainActivity to report back.
+async fn picker(open: impl FnOnce(&mut Env, &Obj) -> jni::errors::Result<()>) -> Result<Option<Vec<String>>> {
+    let (tx, rx) = oneshot::channel();
+    *WAITING.lock().unwrap() = Some(tx);
+    on_activity(open)?;
+    rx.await.unwrap_or(Ok(None)).map_err(|e| anyhow!(e))
 }
 
-/// shortcut: no file picker on Android yet (needs the Storage Access Framework via JNI).
-pub async fn save_file(_name: &str) -> Result<Option<PathBuf>> {
-    bail!("Saving attachments is not supported on Android yet")
+/// Called by MainActivity, on a thread of its own.
+extern "system" fn on_result(mut env: JNIEnv, _class: JClass, values: JObjectArray, error: JString) {
+    let string = |env: &mut JNIEnv, s: &JString| env.get_string(s).map(String::from).unwrap_or_default();
+    let answer = if !error.is_null() {
+        Err(string(&mut env, &error))
+    } else if values.is_null() {
+        Ok(None)
+    } else {
+        let mut strings = Vec::new();
+        for i in 0..env.get_array_length(&values).unwrap_or(0) {
+            if let Ok(s) = env.get_object_array_element(&values, i) {
+                strings.push(string(&mut env, &JString::from(s)));
+            }
+        }
+        Ok(Some(strings))
+    };
+    if let Some(tx) = WAITING.lock().unwrap().take() {
+        let _ = tx.send(answer);
+    }
+}
+
+/// Files the user picked to attach, copied into the app's cache; empty when cancelled.
+pub async fn pick_files() -> Result<Vec<PathBuf>> {
+    let paths = picker(|env, activity| env.call_method(activity, "pickFiles", "()V", &[]).map(drop)).await?;
+    Ok(paths.unwrap_or_default().into_iter().map(PathBuf::from).collect())
+}
+
+/// Saves `data` where the user chooses, suggested as `name`; the saved file's name, or `None` when cancelled.
+pub async fn save_file(name: &str, mime_type: &str, data: Vec<u8>) -> Result<Option<String>> {
+    let saved = picker(|env, activity| {
+        let (name, mime_type, data) = (env.new_string(name)?, env.new_string(mime_type)?, env.byte_array_from_slice(&data)?);
+        let args = [(&name).into(), (&mime_type).into(), (&data).into()];
+        env.call_method(activity, "saveFile", "(Ljava/lang/String;Ljava/lang/String;[B)V", &args).map(drop)
+    })
+    .await?;
+    Ok(saved.and_then(|names| names.into_iter().next()))
 }

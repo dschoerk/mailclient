@@ -8,7 +8,8 @@ What the mail client can do today. For ideas that are not built yet see
 
 - **Linux desktop**: the main target, with HTML mail rendered by Servo.
 - **Android**: works. HTML mail is shown in the system WebView (in a window of its own over
-  the reader, with the security rules below); attachments cannot be added or saved yet. New mail is not pushed while the app is in the background.
+  the reader, with the security rules below). Files are attached and saved through the system
+  file pickers. New mail keeps arriving in the background (see "New mail" below).
 - **Windows/macOS**: not supported yet. The Servo rendering code is there but untested.
 - `--no-default-features` builds without Servo. HTML is then shown as plain text and the
   build is much faster.
@@ -55,6 +56,11 @@ What the mail client can do today. For ideas that are not built yet see
   when you open them.
 - **New mail** is pushed on the inbox through IMAP IDLE. If that fails, the client checks
   every 5 minutes. The "Sync" button checks right away.
+- **Push on Android in the background**: a foreground service ("Waiting for new mail", a
+  silent notification in the shade) keeps the app running, and IDLE with it. Back on the
+  main screen sends the app to the background instead of closing it. Swiping it away from
+  Recents stops push until the app is opened again. Battery savers and Doze can still
+  delay mail.
 - **Notifications**: new unread mail arriving in an inbox while the app runs shows a system
   notification (sender and subject; a count for several). Linux desktops get it through the
   freedesktop notification service; Android asks for the permission on first start, and
