@@ -150,3 +150,118 @@ fn html_mail() {
     std::thread::sleep(std::time::Duration::from_secs(2));
     assert!(!pixel.requests().iter().any(|p| p == "/script"), "a script in the message ran");
 }
+
+/// Touch in the Android WebView: it scrolls under a finger, a mailto: link opens the composer,
+/// and the view follows the reader area (hidden under the composer, moved on rotation).
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn html_touch() {
+    if !android() {
+        eprintln!("skipped: touches in the native WebView are Android only");
+        return;
+    }
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    let paragraphs: String = (1..=60).map(|i| format!("<p style=\"background:hsl({},60%,80%)\">Paragraph {i}</p>", i * 37 % 360)).collect();
+    let raw = format!(
+        "From: Shop <shop@example.org>\r\nTo: {}\r\nSubject: Long offer\r\nMIME-Version: 1.0\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\r\n\
+         <html><body><a href=\"mailto:sales@example.org?subject=Order%20question\" \
+         style=\"display:block;height:300px;background:#2f6fde;color:#fff;font-size:32px\">Write to sales</a>\
+         {paragraphs}</body></html>\r\n",
+        account.email
+    );
+    deliver_raw(&account, &raw);
+    let app = App::launch();
+    app.set_up(&account);
+    app.click("Shop: Long offer", "ListItem");
+    let mut frame = None;
+    app.wait_until("HTML view shown", || {
+        frame = e2e::html_frame();
+        frame.is_some()
+    });
+    let [x0, y0, x1, y1] = frame.unwrap();
+    let screen = e2e::Screen::capture();
+    assert!(y0 > 0 && y1 <= screen.height && x1 <= screen.width, "frame {:?} off screen", frame);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Scrolling: the page moves, the native header above it does not.
+    let before = e2e::Screen::capture();
+    let mid = (x0 + x1) / 2;
+    e2e::swipe((mid, y0 + (y1 - y0) * 4 / 5), (mid, y0 + (y1 - y0) / 5), 300);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let after = e2e::Screen::capture();
+    assert!(before.differs(&after, [x0, y0, x1, y1]), "the page did not scroll");
+    assert!(!before.differs(&after, [0, y0.saturating_sub(250), screen.width, y0]), "the header moved with the swipe");
+    e2e::device_screenshot("html_touch_scrolled");
+
+    // Back to the top, then tap the link block.
+    for _ in 0..3 {
+        e2e::swipe((mid, y0 + (y1 - y0) / 5), (mid, y0 + (y1 - y0) * 4 / 5), 200);
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    e2e::tap(mid, y0 + 150);
+    app.wait_for("Send", "Button");
+    let value = |label: &str| app.property(&app.wait_for(label, "TextInput"), "accessibleValue");
+    assert_eq!(value("To"), "sales@example.org");
+    assert_eq!(value("Subject"), "Order question");
+    app.wait_until("HTML view hidden under the composer", || e2e::html_frame().is_none());
+    app.back();
+    app.wait_until("HTML view back after the composer", || e2e::html_frame().is_some());
+
+    // Landscape: the wide layout puts the reader right of the list.
+    let landscape = e2e::Landscape::turn();
+    app.wait_until("HTML view moved to the landscape reader", || {
+        e2e::html_frame().is_some_and(|[lx0, _, lx1, _]| lx0 > 300 && lx1 > x1 + 300)
+    });
+    e2e::device_screenshot("html_touch_landscape");
+    drop(landscape);
+
+    // Leaving the message hides it.
+    app.wait_until("portrait again", || e2e::html_frame().is_some_and(|f| f[0] == x0));
+    app.back();
+    app.wait_until("HTML view hidden with the message closed", || e2e::html_frame().is_none());
+}
+
+/// Real newsletter layouts (corpus templates, target/testdata/templates): rendered on both
+/// platforms, with every remote image pointed at a counting server that must stay silent.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh, the corpus and an app built with --features slint/mcp"]
+fn newsletter_templates() {
+    let root = e2e::workspace_dir().join("target/testdata/templates");
+    let templates = [
+        ("Cerberus", "Cerberus/cerberus-responsive.html"),
+        ("Responsive", "responsive-html-email-template/email-inlined.html"),
+        ("Receipt", "postmark-templates/templates-inlined/basic-full/receipt/content.html"),
+    ];
+    if !root.exists() {
+        eprintln!("skipped: corpus not downloaded (see README)");
+        return;
+    }
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    let pixel = PixelServer::start();
+    for (name, path) in templates {
+        let html = std::fs::read_to_string(root.join(path)).unwrap();
+        let local = format!("http://localhost:{}/", pixel.port);
+        let html = html.replace("src=\"https://", &format!("src=\"{local}")).replace("src=\"http://", &format!("src=\"{local}"));
+        e2e::deliver_html(&account, (name, "news@example.org"), &format!("{name} template"), &html);
+    }
+    let app = App::launch();
+    app.set_up(&account);
+    for (name, _) in templates {
+        app.click(&format!("{name}: {name} template"), "ListItem");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let shot = format!("template_{}", name.to_lowercase());
+        if android() { e2e::device_screenshot(&shot) } else { app.screenshot(&shot); }
+        assert_eq!(pixel.requests(), Vec::<String>::new(), "{name}: remote content loaded without asking");
+        if android() {
+            app.back();
+        }
+    }
+    app.click("Cerberus: Cerberus template", "ListItem");
+    app.click("Load images", "Button");
+    app.wait_until("images requested after Load images", || !pixel.requests().is_empty());
+}

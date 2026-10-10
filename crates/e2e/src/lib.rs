@@ -236,7 +236,7 @@ impl App {
     pub fn screenshot(&self, name: &str) -> Option<PathBuf> {
         let image = self.call("take_screenshot", json!({"windowHandle": self.window})).ok()?;
         let png = base64_decode(image["data"].as_str()?);
-        let path = workspace_dir().join("target/e2e").join(format!("{name}.png"));
+        let path = workspace_dir().join("target/e2e").join(format!("{name}-{}.png", if android() { "android" } else { "desktop" }));
         std::fs::create_dir_all(path.parent()?).ok()?;
         std::fs::write(&path, png).ok()?;
         eprintln!("screenshot: {}", path.display());
@@ -383,6 +383,18 @@ pub fn server_subjects(account: &AccountConfig, folder: &str) -> Vec<String> {
     server_messages(account, folder).into_iter().map(|m| m.subject).collect()
 }
 
+/// Delivers an HTML message; any HTML, also with long lines (encoded as needed).
+pub fn deliver_html(account: &AccountConfig, from: (&str, &str), subject: &str, html: &str) {
+    let raw = mail_builder::MessageBuilder::new()
+        .from(from)
+        .to(account.email.as_str())
+        .subject(subject)
+        .html_body(html)
+        .write_to_string()
+        .unwrap();
+    deliver_raw(account, &raw);
+}
+
 /// Delivers a ready-made message (e.g. HTML) to the account.
 pub fn deliver_raw(account: &AccountConfig, raw: &str) {
     block_on(mailcore::smtp::send(account, "x", raw.as_bytes(), std::slice::from_ref(&account.email))).unwrap();
@@ -423,10 +435,80 @@ impl PixelServer {
     }
 }
 
+/// The device screen as RGBA rows (Android only): `adb exec-out screencap` without -p.
+pub struct Screen {
+    pub width: usize,
+    pub height: usize,
+    pixels: Vec<u8>,
+}
+
+impl Screen {
+    pub fn capture() -> Screen {
+        let out = adb_command().args(["exec-out", "screencap"]).output().expect("adb not found").stdout;
+        let word = |i: usize| u32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+        let (width, height) = (word(0), word(1));
+        // The header is 12 bytes, 16 since Android 11 (color space).
+        let header = out.len() - width * height * 4;
+        assert!(header == 12 || header == 16, "unexpected screencap size");
+        Screen { width, height, pixels: out[header..].to_vec() }
+    }
+
+    /// Whether the rectangle [x0, x1) × [y0, y1) looks different in `other`.
+    pub fn differs(&self, other: &Screen, [x0, y0, x1, y1]: [usize; 4]) -> bool {
+        let row = |s: &Screen, y: usize| (y * s.width + x0) * 4..(y * s.width + x1) * 4;
+        (y0..y1).any(|y| self.pixels[row(self, y)] != other.pixels[row(other, y)])
+    }
+}
+
+/// Screen frame [x0, y0, x1, y1] of the HTML view's window, if it is showing (Android only).
+pub fn html_frame() -> Option<[usize; 4]> {
+    let out = adb_command().args(["shell", "dumpsys", "window", "windows"]).output().expect("adb not found").stdout;
+    let text = String::from_utf8_lossy(&out);
+    let section = text.split("Window #").find(|w| w.contains("PopupWindow:") && w.contains("isVisible=true"))?;
+    // "frame=[0,472][1080,2111]"
+    let frame = section.split(" frame=[").nth(1)?;
+    let numbers: Vec<usize> = frame
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|n| !n.is_empty())
+        .take(4)
+        .map(|n| n.parse().unwrap())
+        .collect();
+    numbers.try_into().ok()
+}
+
+/// A finger drag on the device, in screen pixels (Android only).
+pub fn swipe((x0, y0): (usize, usize), (x1, y1): (usize, usize), ms: u32) {
+    let args: Vec<String> = [x0, y0, x1, y1].iter().map(ToString::to_string).chain([ms.to_string()]).collect();
+    let mut all = vec!["shell", "input", "swipe"];
+    all.extend(args.iter().map(String::as_str));
+    adb(&all);
+}
+
+pub fn tap(x: usize, y: usize) {
+    adb(&["shell", "input", "tap", &x.to_string(), &y.to_string()]);
+}
+
+/// Turns the device to landscape until dropped (Android only).
+pub struct Landscape;
+
+impl Landscape {
+    pub fn turn() -> Landscape {
+        adb(&["shell", "settings", "put", "system", "accelerometer_rotation", "0"]);
+        adb(&["shell", "settings", "put", "system", "user_rotation", "1"]);
+        Landscape
+    }
+}
+
+impl Drop for Landscape {
+    fn drop(&mut self) {
+        let _ = adb_command().args(["shell", "settings", "put", "system", "user_rotation", "0"]).status();
+    }
+}
+
 /// A screenshot of the whole device screen, native views included (Android only).
 pub fn device_screenshot(name: &str) {
     let out = adb_command().args(["exec-out", "screencap", "-p"]).output().expect("adb not found");
-    let path = workspace_dir().join("target/e2e").join(format!("{name}.png"));
+    let path = workspace_dir().join("target/e2e").join(format!("{name}-{}.png", if android() { "android" } else { "desktop" }));
     let _ = std::fs::create_dir_all(path.parent().unwrap());
     std::fs::write(&path, out.stdout).unwrap();
     eprintln!("screenshot: {}", path.display());

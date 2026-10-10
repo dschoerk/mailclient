@@ -44,6 +44,7 @@ state checked over IMAP after each step.
 | US2 Browse | pass (auto) | pass | Phones: one pane at a time, Folders button, system Back. |
 | US3 Read | pass (auto) | pass | Read flag reaches the server. HTML: Servo on desktop, WebView on Android. |
 | US4 Remote images | pass (e2e) | pass (e2e) | 2026-10-10. No request before "Load images", the image after it, never the message's script. |
+| HTML layouts | pass (e2e) | pass (e2e) | 2026-10-10. `newsletter_templates`: Cerberus, a responsive template and a Postmark receipt render (screenshots `target/e2e/template_*`) with no remote request before "Load images". Android `html_touch`: the WebView scrolls under a finger (header stays), hides under the composer and after Back, and follows the reader into landscape. |
 | US5 Unread / flag | pass (auto) | pass | Both reach the server. |
 | US6 Archive / delete | pass (auto) | pass | Land in Archive / Trash on the server. |
 | US7 Search | pass (auto) | pass | |
@@ -53,7 +54,7 @@ state checked over IMAP after each step.
 | US11 Offline | partial (auto) | partial | Covered: the server dropping an idle connection. Not covered: working with no network, then reconnecting. |
 | US12 Attachments | not tested | not supported | Desktop uses native file pickers (not automatable here); Android has no picker yet. |
 | US13 Open .eml | pass (manual) | n/a | |
-| US14 Follow links | not tested | not supported | Needs a real click in the Servo view; Android cannot open links yet. |
+| US14 Follow links | not tested | pass (e2e) | Android: `html_touch` taps a `mailto:` link in the WebView and gets a prefilled composer. Desktop needs a real click in the Servo view. |
 | US15 Multiple accounts | pass (auto) | not tested | Two GreenMail accounts. |
 | US16 Conversations | pass (auto) | not tested | Conversation between the two GreenMail accounts. |
 | US17 Folder tree | pass (auto) | not tested | Nested folders created and deleted over IMAP during the run. |
