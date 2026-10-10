@@ -45,7 +45,7 @@ The ID is compiled in from `MAILCLIENT_MS_CLIENT_ID`:
 
 ```sh
 MAILCLIENT_MS_CLIENT_ID=<client id> cargo run
-MAILCLIENT_MS_CLIENT_ID=<client id> cargo apk build -p mailclient --lib --no-default-features --target x86_64-linux-android
+MAILCLIENT_MS_CLIENT_ID=<client id> scripts/build-android.sh --no-default-features --target x86_64-linux-android
 ```
 
 Once it works, replace `MICROSOFT_CLIENT_ID` in `auth.rs` with the literal ID so every build

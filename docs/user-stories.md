@@ -21,7 +21,7 @@ GreenMail server; the rest are checked by hand. Results: [Test results](#test-re
 | US9 | As a user I reply, reply all or forward. | Recipients, `Re:`/`Fwd:` subject and quoted text are prefilled (**auto**); the original is marked answered (**auto**); forwarding keeps attachments. |
 | US10 | As a user I see new mail without refreshing. | Mail arriving while the app is open appears within seconds (**auto**). |
 | US11 | As a user I keep working offline. | Flags and moves made offline apply locally and reach the server after reconnecting. |
-| US12 | As a user I attach files and save attachments. | File pickers open; attachments are sent and saved correctly (desktop only for now). |
+| US12 | As a user I attach files and save attachments. | File pickers open; attachments are sent and saved correctly. |
 | US13 | As a user I open a `.eml` file. | `mailclient file.eml` shows the message without an account (desktop). |
 | US14 | As a user I follow links safely. | Clicking a link opens the system browser; `mailto:` opens the composer; nothing navigates inside the message view (desktop). |
 | US15 | As a user I read the mail of several accounts in one place. | Further accounts are added from the sidebar; the same address is refused and Cancel returns to the mail (**auto**). "All inboxes" lists every account's inbox newest first, each message with its account's color bar (**auto**). Replies go out through the message's account (**auto**); a folder shows only its account's mail (**auto**). |
@@ -53,9 +53,9 @@ state checked over IMAP after each step.
 | US7 Search | pass (auto) | pass | |
 | US8 Write and send | pass (auto) | pass | Copy in Sent; second draft refused while writing; Back keeps the draft (US18). |
 | US9 Reply | pass (auto) | pass | Prefilled; original marked answered. Forward not covered by a story test. |
-| US10 New mail | pass (auto) | pass | Arrives via IDLE without a manual sync. |
+| US10 New mail | pass (auto) | pass | Arrives via IDLE without a manual sync. Android, 2026-10-10 by hand: with the app 60 s in the background (process not frozen thanks to the service), new mail shows a notification within seconds. |
 | US11 Offline | partial (auto) | partial | Covered: the server dropping an idle connection. Not covered: working with no network, then reconnecting. |
-| US12 Attachments | not tested | not supported | Desktop uses native file pickers (not automatable here); Android has no picker yet. |
+| US12 Attachments | not tested | pass | 2026-10-10, by hand on the emulator: two files attached through the system picker, sent, received with both; one saved to Downloads through "Save as" with the same bytes; cancelling the picker changes nothing. Pickers are not automated. |
 | US13 Open .eml | pass (manual) | n/a | |
 | US14 Follow links | not tested | pass (e2e) | Android: `html_touch` taps a `mailto:` link in the WebView and gets a prefilled composer. Desktop needs a real click in the Servo view. |
 | US15 Multiple accounts | pass (auto) | not tested | Two GreenMail accounts. |

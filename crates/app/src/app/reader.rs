@@ -325,26 +325,26 @@ impl Controller {
     pub(super) fn save_attachment(&self, index: usize) {
         let Some((account, summary)) = self.selected_summary() else { return };
         let Ok(Some(raw)) = self.raw_of(account, &summary) else { return };
-        let Some(name) = self
+        let Some((name, mime_type)) = self
             .state
             .borrow()
             .body
             .as_ref()
             .and_then(|b| b.attachments.iter().find(|a| a.index == index))
-            .map(|a| a.name.clone())
+            .map(|a| (a.name.clone(), a.mime_type.clone()))
         else {
             return;
         };
         let weak = self.window.clone();
         let _ = slint::spawn_local(async move {
-            let result = match crate::platform::save_file(&name).await {
+            let result = match mime::attachment_data(&raw, index) {
+                Some(data) => crate::platform::save_file(&name, &mime_type, data).await,
+                None => Err(anyhow!("attachment not found")),
+            };
+            let result = match result {
                 Ok(None) => return,
-                Ok(Some(path)) => mime::attachment_data(&raw, index)
-                    .ok_or_else(|| anyhow!("attachment not found"))
-                    .and_then(|data| std::fs::write(&path, data).map_err(Into::into))
-                    .map(|()| format!("Saved {}", path.display()))
-                    .map_err(|e| anyhow!("saving attachment: {e:#}")),
-                Err(e) => Err(e),
+                Ok(Some(saved)) => Ok(format!("Saved {saved}")),
+                Err(e) => Err(anyhow!("saving attachment: {e:#}")),
             };
             if let Some(window) = weak.upgrade() {
                 window.set_status(match result {

@@ -18,7 +18,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Local SQLite cache: the last 500 messages per synced folder; bodies downloaded on
   open plus the 40 newest per sync. Works offline from the cache.
 - Push via IMAP IDLE on the inbox, polling every 5 minutes as a fallback; a system
-  notification for new unread mail while the app runs (Linux desktop and Android).
+  notification for new unread mail while the app runs (Linux desktop and Android). On Android
+  a foreground service keeps IDLE running in the background.
 - Read, flag, mark read/unread, archive, delete, also for several conversations at once
   (tick them at the row's left edge, by long press on phones, or with `x`). Changes apply instantly and are
   queued for the server, so they also work offline.
@@ -73,8 +74,11 @@ cargo test --workspace
 
 Builds without Servo: HTML mail is shown in the system WebView instead, with the same rules
 (scripts off, content served from memory under a CSP, remote loads blocked until "Load images").
-Its Java side (`crates/app/java/`) is compiled to dex by `build.rs`, which needs `JAVA_HOME` and
-`ANDROID_HOME`, and loaded at runtime, so the APK stays a NativeActivity. Toolchain: JDK 21, Android SDK with
+The APK carries a little Java (`crates/app/java/`): the activity (a NativeActivity subclass that adds
+the system file pickers), the WebView, and the foreground service that keeps push running in the
+background. cargo-apk cannot add Java code or declare a service, so `scripts/build-android.sh` runs
+`cargo apk build` and then packs the APK again with `crates/app/android/AndroidManifest.xml` and the
+compiled classes, signed with the debug key. Toolchain: JDK 21, Android SDK with
 `platforms;android-35`, `build-tools;35.0.0`, `ndk;28.2.13676358`, Rust targets
 `x86_64-linux-android`/`aarch64-linux-android`, and `cargo install cargo-apk`.
 
@@ -84,8 +88,8 @@ local test server when there is one, and launches the app. By hand:
 
 ```sh
 export JAVA_HOME=~/Android/jdk ANDROID_HOME=~/Android/Sdk ANDROID_NDK_ROOT=~/Android/Sdk/ndk/28.2.13676358 PATH=~/Android/jdk/bin:$PATH
-cargo apk build -p mailclient --lib --no-default-features --target x86_64-linux-android   # emulator
-cargo apk build -p mailclient --lib --no-default-features --target aarch64-linux-android  # phone
+scripts/build-android.sh --no-default-features --target x86_64-linux-android   # emulator
+scripts/build-android.sh --no-default-features --target aarch64-linux-android  # phone
 adb install -r target/debug/apk/mailclient_app.apk
 ```
 
@@ -95,8 +99,8 @@ copy the test CA into the app (debug builds only):
 then set up `corpus@localhost` with IMAP `localhost:3993`, SMTP `localhost:3465`.
 If the emulator crashes in its GL translator, start it with `-gpu swiftshader_indirect`.
 
-Not yet on Android: attaching/saving files, push while the app is in
-the background.
+Android limits: swiping the app away from Recents ends push until it is opened again; Back on
+the main screen only sends it to the background.
 
 Outlook.com and Microsoft 365 need OAuth sign-in, which requires a one-time Microsoft app
 registration: see [docs/oauth-microsoft.md](docs/oauth-microsoft.md).
@@ -145,7 +149,7 @@ scripts/test-mailserver.sh
 cargo build -p mailclient --features slint/mcp
 cargo test -p e2e -- --ignored --test-threads=1   # one at a time: several Servo instances at once time out, and they share the clipboard
 # Android: running emulator or phone, debug APK with the MCP server installed
-cargo apk build -p mailclient --lib --no-default-features --features slint/mcp --target x86_64-linux-android
+scripts/build-android.sh --no-default-features --features slint/mcp --target x86_64-linux-android
 adb install -r target/debug/apk/mailclient_app.apk
 E2E_TARGET=android cargo test -p e2e -- --ignored --test-threads=1
 ```

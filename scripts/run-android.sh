@@ -28,8 +28,7 @@ case "$(adb shell getprop ro.product.cpu.abi | tr -d '\r')" in
   *) echo "unsupported device ABI" >&2; exit 1 ;;
 esac
 
-cd "$root/crates/app"
-cargo apk build --lib --no-default-features --target "$target"
+"$root/scripts/build-android.sh" --no-default-features --target "$target"
 adb install -r "$root/target/debug/apk/mailclient_app.apk"
 
 ca="$root/target/test-mailserver/ca.pem"
@@ -42,5 +41,5 @@ if [[ -f "$ca" ]]; then
   adb shell run-as "$app" cp /data/local/tmp/ca.pem files/extra-ca.pem
 fi
 
-adb shell am start -n "$app/android.app.NativeActivity" >/dev/null
+adb shell am start -n "$app/dev.mailclient.MainActivity" >/dev/null
 echo "Running. Logs: adb logcat -s mailclient"

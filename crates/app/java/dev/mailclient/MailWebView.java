@@ -67,6 +67,7 @@ public final class MailWebView {
     private static volatile Content content = new Content(new byte[0], "", false, new HashMap<>());
     private static WebView view;
     private static Dialog window;
+    private static Activity owner;
     private static int loads;
 
     public static void show(Activity activity, String document, String csp, boolean allowRemote, String anchor,
@@ -114,7 +115,17 @@ public final class MailWebView {
         });
     }
 
+    /** A new activity (the old one was destroyed, the process lived on) needs its own window and view. */
+    private static void own(Activity activity) {
+        if (owner != activity) {
+            owner = activity;
+            window = null;
+            view = null;
+        }
+    }
+
     private static Dialog window(Activity activity) {
+        own(activity);
         if (window != null) {
             return window;
         }
@@ -142,6 +153,7 @@ public final class MailWebView {
     }
 
     private static WebView view(Activity activity) {
+        own(activity);
         if (view != null) {
             return view;
         }
