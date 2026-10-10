@@ -418,6 +418,18 @@ pub fn render_conversation(messages: &[(String, Option<&Body>)], current: usize)
     document(&content)
 }
 
+/// Run by the app (never by the page, whose scripts the CSP sandbox blocks) after the user scrolled a
+/// conversation: the index of the message at the top, the last once scrolled to the end, or -1 when
+/// there is nothing to follow.
+pub const SCROLLED_SCRIPT: &str = "(() => {\
+    const s = document.querySelectorAll('section.message'), e = document.scrollingElement;\
+    if (s.length < 2 || e.scrollHeight <= innerHeight) return -1;\
+    if (e.scrollTop + innerHeight >= e.scrollHeight - 2) return s.length - 1;\
+    let n = 0;\
+    s.forEach((m, i) => { if (m.getBoundingClientRect().top <= 24) n = i; });\
+    return n;\
+})()";
+
 fn document(content: &str) -> String {
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\

@@ -185,6 +185,9 @@ impl Controller {
         let Some((account, summary)) = self.selected_summary() else { return };
         self.update_reader_header();
         let window = self.window();
+        // The new document starts at the open message; the timeline follows again once the user scrolls.
+        window.set_reader_scrolled(false);
+        window.set_scrolled_in_conversation(-1);
         let conversation = {
             let state = self.state.borrow();
             match state.selected_row() {
