@@ -142,7 +142,7 @@ outside Slint's element tree, so only screenshots (`target/e2e/*.png`) show them
 scripts/test-mailserver.sh
 # desktop
 cargo build -p mailclient --features slint/mcp
-cargo test -p e2e -- --ignored
+cargo test -p e2e -- --ignored --test-threads=1   # one at a time: several Servo instances at once time out, and they share the clipboard
 # Android: running emulator or phone, debug APK with the MCP server installed
 cargo apk build -p mailclient --lib --no-default-features --features slint/mcp --target x86_64-linux-android
 adb install -r target/debug/apk/mailclient_app.apk

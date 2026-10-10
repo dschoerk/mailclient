@@ -86,6 +86,8 @@ What the mail client can do today. For ideas that are not built yet see
 - **Remote images** are blocked by default. A banner offers "Load images" for the open
   message.
 - **Links**: `mailto:` links open the composer, and other links open in your web browser.
+- **Copying text**: select text in a message and copy it: drag with the mouse and Ctrl+C on
+  the desktop; long press, then Copy, on Android.
 - **Attachments** are listed with their name and size, and can be saved to disk.
 - **Open a single file**: `mailclient message.eml` opens a message file. No account is
   needed.

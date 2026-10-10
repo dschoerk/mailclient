@@ -31,6 +31,17 @@ pub(crate) fn open_link_later(url: String) {
     with_controller(move |c| c.open_link(&url));
 }
 
+/// The Back key, pressed while the HTML view had key focus (any thread).
+#[cfg(target_os = "android")]
+pub(crate) fn back_later() {
+    with_controller(|c| {
+        use slint::platform::{Key, WindowEvent};
+        let window = c.window();
+        window.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Back.into() });
+        window.window().dispatch_event(WindowEvent::KeyReleased { text: Key::Back.into() });
+    });
+}
+
 /// Runs `f` on the UI thread with the controller, from any thread.
 fn with_controller(f: impl FnOnce(&Rc<Controller>) + Send + 'static) {
     let _ = slint::invoke_from_event_loop(move || {

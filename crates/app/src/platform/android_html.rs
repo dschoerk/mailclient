@@ -103,9 +103,13 @@ fn class(env: &mut Env, activity: &Obj) -> jni::errors::Result<&'static JClass<'
         .l()?
         .into();
     let on_link: extern "system" fn(JNIEnv, JClass, JString) = on_link;
+    let on_back: extern "system" fn(JNIEnv, JClass) = on_back;
     env.register_native_methods(
         &class,
-        &[NativeMethod { name: "onLink".into(), sig: "(Ljava/lang/String;)V".into(), fn_ptr: on_link as *mut _ }],
+        &[
+            NativeMethod { name: "onLink".into(), sig: "(Ljava/lang/String;)V".into(), fn_ptr: on_link as *mut _ },
+            NativeMethod { name: "onBack".into(), sig: "()V".into(), fn_ptr: on_back as *mut _ },
+        ],
     )?;
     let global = env.new_global_ref(class)?;
     Ok(<&JClass>::from(CLASS.get_or_init(|| global).as_obj()))
@@ -115,4 +119,9 @@ fn class(env: &mut Env, activity: &Obj) -> jni::errors::Result<&'static JClass<'
 extern "system" fn on_link(mut env: JNIEnv, _class: JClass, url: JString) {
     let url: String = env.get_string(&url).map(Into::into).unwrap_or_default();
     crate::app::open_link_later(url);
+}
+
+/// Called by MailWebView on the Android UI thread: the view has key focus, so Back arrives here.
+extern "system" fn on_back(_env: JNIEnv, _class: JClass) {
+    crate::app::back_later();
 }

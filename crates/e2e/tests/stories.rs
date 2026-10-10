@@ -41,7 +41,7 @@ fn drafts() {
     app.type_in("Subject", "E2E draft");
     app.type_in("Body", "Written on the go");
     // Phones leave with the system Back key; the desktop with Close.
-    if android() { app.back() } else { app.click("Close", "Button") }
+    if android() { app.back_out() } else { app.click("Close", "Button") }
     app.wait_until("draft in Drafts on the server", || server_subjects(&account, "Drafts") == ["E2E draft"]);
     app.wait_until("composer closed", || !app.exists("Send", "Button"));
 
@@ -207,7 +207,7 @@ fn html_touch() {
     assert_eq!(value("To"), "sales@example.org");
     assert_eq!(value("Subject"), "Order question");
     app.wait_until("HTML view hidden under the composer", || e2e::html_frame().is_none());
-    app.back();
+    app.back_out();
     app.wait_until("HTML view back after the composer", || e2e::html_frame().is_some());
 
     // Landscape: the wide layout puts the reader right of the list.
@@ -246,7 +246,8 @@ fn newsletter_templates() {
     for (name, path) in templates {
         let html = std::fs::read_to_string(root.join(path)).unwrap();
         let local = format!("http://localhost:{}/", pixel.port);
-        let html = html.replace("src=\"https://", &format!("src=\"{local}")).replace("src=\"http://", &format!("src=\"{local}"));
+        // http first: the local URL is http itself and must not be rewritten again.
+        let html = html.replace("src=\"http://", &format!("src=\"{local}")).replace("src=\"https://", &format!("src=\"{local}"));
         e2e::deliver_html(&account, (name, "news@example.org"), &format!("{name} template"), &html);
     }
     let app = App::launch();
@@ -264,4 +265,55 @@ fn newsletter_templates() {
     app.click("Cerberus: Cerberus template", "ListItem");
     app.click("Load images", "Button");
     app.wait_until("images requested after Load images", || !pixel.requests().is_empty());
+}
+
+/// Text in a message can be selected and copied: pasted into the composer, it arrives.
+/// Android: long press, then copy (the toolbar's Copy was checked by hand; the floating toolbar
+/// is out of reach of the tools, Ctrl+C runs the same command). Desktop: double-click, Ctrl+C.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn copy_text() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    // One big word wherever the pointer lands.
+    let words = "Clipboard ".repeat(200);
+    let html = format!("<html><body><p style=\"font-size:40px;line-height:1.2\">{words}</p></body></html>");
+    e2e::deliver_html(&account, ("Notes", "notes@example.org"), "Copy me", &html);
+    let app = App::launch();
+    app.set_up(&account);
+    app.click("Notes: Copy me", "ListItem");
+    if android() {
+        let mut frame = None;
+        app.wait_until("HTML view shown", || {
+            frame = e2e::html_frame();
+            frame.is_some()
+        });
+        let [x0, y0, _, _] = frame.unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // The first word: body margin 16 CSS px, 40px text; one CSS px is 2.625 screen px here.
+        e2e::swipe((x0 + 150, y0 + 100), (x0 + 150, y0 + 100), 900);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        e2e::device_screenshot("copy_text_selected");
+        app.ctrl('c');
+        app.back(); // ends the selection
+        app.back(); // closes the message
+    } else {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        app.drag_id("Webview::touch", -250.0, 0.0);
+        app.screenshot("copy_text_selected");
+        app.ctrl('c');
+    }
+    app.click_in_drawer("New message", "Button");
+    app.wait_for("Send", "Button");
+    app.ctrl('v'); // the To field has focus
+    let to = || app.property(&app.wait_for("To", "TextInput"), "accessibleValue");
+    // Android selects the long-pressed word; the desktop drag ends inside a word.
+    let pasted = |v: &serde_json::Value| v.as_str().is_some_and(|s| s.contains("Clipboa"));
+    let mut last = serde_json::Value::Null;
+    app.wait_until("pasted text in To", || {
+        last = to();
+        pasted(&last)
+    });
+    eprintln!("pasted: {last}");
 }

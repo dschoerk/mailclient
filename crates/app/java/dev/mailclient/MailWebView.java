@@ -1,15 +1,17 @@
 package dev.mailclient;
 
 import android.app.Activity;
+import android.app.Dialog;
 import android.net.Uri;
 import android.os.Build;
 import android.view.Gravity;
+import android.view.Window;
+import android.view.WindowManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.PopupWindow;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -17,8 +19,10 @@ import java.util.Map;
 
 /**
  * The HTML message view on Android: a WebView laid over the native UI's reader area.
- * It lives in a PopupWindow of its own: NativeActivity owns its window's surface and input,
- * so a view inside that window would get neither hardware rendering nor touches.
+ * It lives in a window of its own: NativeActivity owns its window's surface and input, so a
+ * view inside that window would get neither hardware rendering nor touches. The window is a
+ * Dialog rather than a PopupWindow because text selection needs an action mode (the Copy
+ * toolbar), which only a full window can host.
  * Same policy as the desktop's Servo view (webview/delegate.rs): the message and its inline
  * parts are served from memory under ORIGIN with a CSP, JavaScript is off, and every other
  * request is refused unless remote images were allowed for this message. Links never
@@ -31,6 +35,9 @@ public final class MailWebView {
 
     /** A link was activated: opened in the browser, or the composer for mailto:. */
     static native void onLink(String url);
+
+    /** Back, once the view has no use for it (a selection ends first): handled by the app. */
+    static native void onBack();
 
     private static final class Part {
         final String mime;
@@ -59,7 +66,7 @@ public final class MailWebView {
 
     private static volatile Content content = new Content(new byte[0], "", false, new HashMap<>());
     private static WebView view;
-    private static PopupWindow popup;
+    private static Dialog window;
     private static int loads;
 
     public static void show(Activity activity, String document, String csp, boolean allowRemote, String anchor,
@@ -91,26 +98,47 @@ public final class MailWebView {
     /** Physical pixels from the screen's top left (the native UI is drawn edge to edge). */
     public static void place(Activity activity, int x, int y, int width, int height, boolean visible) {
         activity.runOnUiThread(() -> {
-            if (popup == null) {
-                // Not focusable: keys (Back) and touches outside it still reach the native UI.
-                popup = new PopupWindow(view(activity), width, height, false);
-                popup.setAnimationStyle(0);
-                popup.setClippingEnabled(false);
-                // Coordinates are the screen's, status bar included (API 28 has no switch; clipping off suffices there).
-                if (Build.VERSION.SDK_INT >= 29) {
-                    popup.setIsLaidOutInScreen(true);
-                }
-            }
+            Dialog d = window(activity);
             if (!visible || width <= 0 || height <= 0) {
-                popup.dismiss();
-            } else if (popup.isShowing()) {
-                popup.update(x, y, width, height);
-            } else {
-                popup.setWidth(width);
-                popup.setHeight(height);
-                popup.showAtLocation(activity.getWindow().getDecorView(), Gravity.TOP | Gravity.START, x, y);
+                d.hide();
+                return;
             }
+            Window w = d.getWindow();
+            WindowManager.LayoutParams params = w.getAttributes();
+            params.x = x;
+            params.y = y;
+            params.width = width;
+            params.height = height;
+            w.setAttributes(params);
+            d.show();
         });
+    }
+
+    private static Dialog window(Activity activity) {
+        if (window != null) {
+            return window;
+        }
+        Dialog d = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar) {
+            @Override
+            public void onBackPressed() {
+                onBack();
+            }
+        };
+        d.setContentView(view(activity));
+        d.setCancelable(false);
+        Window w = d.getWindow();
+        w.setWindowAnimations(0);
+        w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        // Touches outside go to the native UI below; positions are the screen's, status bar included.
+        w.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+        w.setGravity(Gravity.TOP | Gravity.START);
+        if (Build.VERSION.SDK_INT >= 30) {
+            w.setDecorFitsSystemWindows(false);
+        }
+        window = d;
+        return d;
     }
 
     private static WebView view(Activity activity) {

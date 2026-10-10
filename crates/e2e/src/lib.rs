@@ -84,6 +84,15 @@ impl App {
     /// Expects the APK to be installed. Wipes its data, so every run starts at setup.
     fn launch_android(port: u16) -> App {
         let p = &port.to_string();
+        // After a copy, Android shows a clipboard preview for a few seconds; it would take the next Back key.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            let out = adb_command().args(["shell", "dumpsys", "window", "windows"]).output().expect("adb not found");
+            if !String::from_utf8_lossy(&out.stdout).contains("ClipboardOverlay") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
         adb(&["shell", "am", "force-stop", PACKAGE]);
         adb(&["shell", "pm", "clear", PACKAGE]);
         // Answers the permission prompt the app shows on first start (US19).
@@ -143,9 +152,10 @@ impl App {
         found.map(|r| r["elementHandles"].as_array().cloned().unwrap_or_default()).unwrap_or_default()
     }
 
-    /// Waits up to 30 s for an element to appear.
+    /// Waits up to 60 s for an element to appear.
     pub fn wait_for(&self, label: &str, role: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // Generous: the desktop suite starts several Servo instances at once.
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Some(e) = self.find(label, role).into_iter().next() {
                 return e;
@@ -210,18 +220,74 @@ impl App {
         adb(&["shell", "input", "swipe", &x, &y, &x, &y, "800"]);
     }
 
+    /// Ctrl+`letter` (a–z) to whatever has key focus.
+    pub fn ctrl(&self, letter: char) {
+        if android() {
+            // KEYCODE_CTRL_LEFT, then KEYCODE_A + offset.
+            let code = 29 + (letter as u8 - b'a') as u32;
+            adb(&["shell", "input", "keycombination", "113", &code.to_string()]);
+            return;
+        }
+        let key = |text: &str, kind: &str| {
+            self.call("dispatch_key_event", json!({"windowHandle": self.window, "text": text, "eventType": kind})).unwrap();
+        };
+        key("\u{11}", "Press"); // Slint's Key.Control
+        key(&letter.to_string(), "PressAndRelease");
+        key("\u{11}", "Release");
+    }
+
+    fn by_id(&self, id: &str) -> Value {
+        let found = self.call("find_elements_by_id", json!({"windowHandle": self.window, "elementsId": id})).unwrap();
+        found["elementHandles"].get(0).cloned().unwrap_or_else(|| panic!("no element {id}: {found}"))
+    }
+
+    /// Double-clicks the element with this qualified id (e.g. "Webview::touch").
+    pub fn double_click_id(&self, id: &str) {
+        self.call("click_element", json!({"elementHandle": self.by_id(id), "action": "DoubleClick"})).unwrap();
+    }
+
+    /// Drags with the left button from the element's center by (dx, dy) logical pixels.
+    pub fn drag_id(&self, id: &str, dx: f64, dy: f64) {
+        let e = self.by_id(id);
+        let props = self.call("get_element_properties", json!({"elementHandle": e})).unwrap();
+        let center = |axis: &str, extent: &str| {
+            props["absolutePosition"][axis].as_f64().unwrap_or(0.0) + props["size"][extent].as_f64().unwrap() / 2.0
+        };
+        let target = json!({"x": center("x", "width") + dx, "y": center("y", "height") + dy});
+        self.call("drag_element", json!({"elementHandle": e, "target": target})).unwrap();
+    }
+
+    /// Back as a user leaves a screen: once more if the first one only closed the soft keyboard.
+    pub fn back_out(&self) {
+        let keyboard = || {
+            let out = adb_command().args(["shell", "dumpsys", "input_method"]).output().expect("adb not found");
+            String::from_utf8_lossy(&out.stdout).contains("mInputShown=true")
+        };
+        if keyboard() {
+            eprintln!("soft keyboard up: Back closes it first");
+            self.back();
+        }
+        self.back();
+    }
+
     /// Android's system Back key.
     pub fn back(&self) {
         assert!(android(), "Back is an Android key");
         adb(&["shell", "input", "keyevent", "KEYCODE_BACK"]);
     }
 
-    /// Waits up to 30 s for `cond`, with a screenshot on timeout.
+    /// Waits up to 60 s for `cond`, with a screenshot on timeout.
     pub fn wait_until(&self, what: &str, mut cond: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // Generous: the desktop suite starts several Servo instances at once.
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !cond() {
             if Instant::now() > deadline {
                 self.screenshot("timeout");
+                if android() {
+                    let out = adb_command().args(["shell", "dumpsys", "window"]).output().expect("adb not found");
+                    let focus = String::from_utf8_lossy(&out.stdout).lines().find(|l| l.contains("mCurrentFocus")).unwrap_or_default().to_string();
+                    eprintln!("key focus: {}", focus.trim());
+                }
                 panic!("timed out waiting for {what}");
             }
             std::thread::sleep(Duration::from_millis(300));
@@ -333,7 +399,7 @@ pub fn test_account() -> AccountConfig {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-    let user = format!("e2e{now}-{n}@localhost");
+    let user = format!("e2e{now}-{}-{n}@localhost", std::process::id());
     AccountConfig {
         name: "E2E".into(),
         email: user.clone(),
@@ -464,7 +530,10 @@ impl Screen {
 pub fn html_frame() -> Option<[usize; 4]> {
     let out = adb_command().args(["shell", "dumpsys", "window", "windows"]).output().expect("adb not found").stdout;
     let text = String::from_utf8_lossy(&out);
-    let section = text.split("Window #").find(|w| w.contains("PopupWindow:") && w.contains("isVisible=true"))?;
+    // The app's own window is BASE_APPLICATION; the HTML view's is an APPLICATION window over it.
+    let section = text
+        .split("Window #")
+        .find(|w| w.contains(PACKAGE) && w.contains(" ty=APPLICATION ") && w.contains("isVisible=true"))?;
     // "frame=[0,472][1080,2111]"
     let frame = section.split(" frame=[").nth(1)?;
     let numbers: Vec<usize> = frame
