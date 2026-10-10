@@ -310,7 +310,7 @@ fn user_stories() {
             w.window().set_size(slint::LogicalSize::new(1280., 800.));
             next?;
             ensure(w.get_current_message() == 1, format!("Next selected {}", w.get_current_message()))?;
-            // Set on the desktop layout: phones hide the folder pane with the checkbox.
+            click(&w, "Settings")?;
             let checkbox = element(&w, "Left-handed", &[AccessibleRole::Checkbox])?;
             checkbox.invoke_accessible_default_action();
             ensure(w.get_left_handed(), "setting not toggled")?;
@@ -319,6 +319,7 @@ fn user_stories() {
             // The floating variant has its own Next.
             element(&w, "Floating buttons", &[AccessibleRole::Checkbox])?.invoke_accessible_default_action();
             ensure(config::load_settings().is_ok_and(|s| s.floating_buttons), "floating setting not saved")?;
+            click(&w, "Close")?;
             click(&w, "Alice: Lunch on Friday?")?;
             w.window().set_size(slint::LogicalSize::new(400., 800.));
             let next = click(&w, "Next");
@@ -599,6 +600,7 @@ fn user_stories() {
             let second = test_account(&user2);
             create_folders(&second);
             deliver(&second, ("Dave", "dave@example.org"), "Second account hello", "Hi there.");
+            click(&w, "Settings")?;
             click(&w, "Add account")?;
             ensure(w.get_needs_setup(), "setup not shown")?;
             submit_setup(&w, &user2)?;
@@ -636,11 +638,14 @@ fn user_stories() {
             ensure(!subjects(&w).iter().any(|s| s == "Second account hello"), "other account's mail in folder")?;
 
             // The same address cannot be added twice; Cancel returns to the mail.
+            click(&w, "Settings")?;
             click(&w, "Add account")?;
             submit_setup(&w, &user2)?;
             ensure(w.get_setup_error().contains("already"), format!("error: {}", w.get_setup_error()))?;
             click(&w, "Cancel")?;
             ensure(!w.get_needs_setup(), "Cancel did not close setup")?;
+            click(&w, "Close")?;
+            ensure(!w.get_show_settings(), "Close did not close settings")?;
             ensure(config::load_accounts().is_ok_and(|a| a.len() == 2), "accounts changed")
         }
         .await;
@@ -708,6 +713,64 @@ fn user_stories() {
         }
         .await;
         record("US16 conversation between accounts", r);
+
+        // Settings: preferences are saved, accounts can be edited and removed.
+        let r = async {
+            let user2 = format!("second-{user}");
+            let second = test_account(&user2);
+            let db = |email: &str| config::data_dir().unwrap().join(format!("{email}.sqlite"));
+            click(&w, "Folder All inboxes")?;
+            click(&w, "Settings")?;
+            ensure(w.get_show_settings(), "settings not shown")?;
+            element(&w, "New-mail notifications", &[AccessibleRole::Checkbox])?.invoke_accessible_default_action();
+            ensure(config::load_settings().is_ok_and(|s| s.mute_notifications), "mute not saved")?;
+            deliver(&second, ("Erin", "erin@example.org"), "Muted arrival", "No popup please.");
+            wait_for("muted message listed", || subjects(&w).iter().any(|s| s == "Muted arrival")).await?;
+            sleep(1000).await;
+            ensure(
+                !crate::platform::NOTIFIED.with(|n| n.borrow().iter().any(|(_, body)| body.contains("Muted arrival"))),
+                "notified while muted",
+            )?;
+
+            // Wrong server settings are rejected and nothing is saved.
+            click(&w, "Edit")?;
+            ensure(w.get_needs_setup() && w.get_setup().email == user.as_str(), "first account not in the form")?;
+            type_in(&w, "IMAP port", "1")?;
+            click(&w, "Save")?;
+            wait_for("login error", || !w.get_setup_error().is_empty()).await?;
+            ensure(config::load_accounts().unwrap()[0].imap_port == 3993, "bad port saved")?;
+            // A new name with the password left empty keeps the stored one and restarts the engine.
+            type_in(&w, "IMAP port", "3993")?;
+            type_in(&w, "Your name", "Renamed Story")?;
+            click(&w, "Save")?;
+            wait_for("edit saved", || !w.get_needs_setup()).await?;
+            ensure(config::load_accounts().unwrap()[0].name == "Renamed Story", "name not saved")?;
+            ensure(w.get_accounts().row_data(0).is_some_and(|a| a.name == "Renamed Story"), "settings list not updated")?;
+            deliver(&account, ("Frank", "frank@example.org"), "After the edit", "Still syncing?");
+            wait_for("sync after restart", || subjects(&w).iter().any(|s| s == "After the edit")).await?;
+
+            // Removing the first account forgets it on this device only.
+            click(&w, "Remove")?;
+            click(&w, "Remove account")?;
+            let left: Vec<String> = config::load_accounts().unwrap().into_iter().map(|a| a.email).collect();
+            ensure(left == [user2.clone()], format!("accounts left: {left:?}"))?;
+            ensure(!db(&user).exists(), "cache not deleted")?;
+            ensure(on_server(&account, "INBOX", "After the edit").is_some(), "server mail touched")?;
+            wait_for("only the second account listed", || {
+                !subjects(&w).is_empty() && !subjects(&w).iter().any(|s| s == "After the edit")
+            })
+            .await?;
+            ensure(w.get_has_account() && !w.get_needs_setup(), "still one account")?;
+
+            // Removing the last one goes back to setup.
+            click(&w, "Remove")?;
+            click(&w, "Remove account")?;
+            ensure(config::load_accounts().unwrap().is_empty(), "last account not removed")?;
+            ensure(w.get_needs_setup() && !w.get_has_account(), "setup not shown after removing the last account")?;
+            ensure(subjects(&w).is_empty(), "messages still listed")
+        }
+        .await;
+        record("Settings: preferences, edit and remove accounts", r);
 
         let _ = slint::quit_event_loop();
     })

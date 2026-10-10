@@ -62,8 +62,8 @@ has it. Without an ID, the sign-in button reports "this build has no Microsoft c
 
 ## Known gaps
 
-- If the refresh token expires (about 90 days unused) or is revoked, the only fix is to
-  remove and re-add the account; there is no re-sign-in button yet.
+- If the refresh token expires (about 90 days unused) or is revoked, sign in again with
+  Settings → Edit → Save, which opens the browser.
 - Android: after signing in, the user switches back to the app by hand.
 - Microsoft 365 organizations may block unapproved third-party apps until an admin consents.
 - Consent screens show "unverified" until publisher verification (needs a Microsoft Partner

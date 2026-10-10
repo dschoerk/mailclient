@@ -1,0 +1,233 @@
+// Settings: app preferences and the accounts.
+
+import { Button, CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
+import { AccountItem } from "types.slint";
+import { Theme, Divider, ToolButton } from "widgets.slint";
+
+component SectionTitle inherits VerticalLayout {
+    in property <string> text;
+    // Space above separates the groups; the first one sits under the top bar.
+    in property <bool> first;
+    padding-top: root.first ? 0px : 10px;
+    Text {
+        text: root.text;
+        font-size: 13px;
+        font-weight: 600;
+        color: Theme.accent;
+    }
+}
+
+/// A setting: a checkbox with an optional explanation under it.
+component Toggle inherits VerticalLayout {
+    in property <string> text;
+    in property <string> hint;
+    in-out property <bool> checked;
+    callback toggled();
+    spacing: 2px;
+    CheckBox {
+        text: root.text;
+        checked <=> root.checked;
+        toggled => root.toggled();
+    }
+    if root.hint != "": HorizontalLayout {
+        // Lines up with the checkbox label.
+        padding-left: 28px;
+        Text {
+            text: root.hint;
+            color: Theme.muted;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component SettingsView inherits Rectangle {
+    /// 0 system, 1 light, 2 dark.
+    in-out property <int> theme;
+    in-out property <bool> notifications;
+    in-out property <bool> always-load-images;
+    in-out property <bool> left-handed;
+    in-out property <bool> floating-buttons;
+    in property <[AccountItem]> accounts;
+    /// Removing shifts account indices under an open composer.
+    in property <bool> composing;
+    /// Phones: room for the status and navigation bars.
+    in property <length> inset-top;
+    in property <length> inset-bottom;
+    callback changed();
+    callback add-account();
+    callback edit-account(int);
+    callback remove-account(int);
+    callback close();
+    /// The account whose removal awaits confirmation.
+    property <int> confirm-remove: -1;
+    background: Palette.background;
+    // Drawn over the mail view: keep clicks from reaching it.
+    TouchArea { }
+
+    VerticalLayout {
+        padding-top: root.inset-top;
+        // Top bar, fixed while the settings scroll.
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 8px;
+            alignment: start;
+            ToolButton {
+                text: "Close";
+                icon: @image-url("icons/arrow-left.svg");
+                show-text: false;
+                clicked => {
+                    root.confirm-remove = -1;
+                    root.close();
+                }
+            }
+            Text {
+                text: "Settings";
+                font-size: 20px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        Divider {
+            height: 1px;
+        }
+        sv := ScrollView {
+            vertical-stretch: 1;
+            HorizontalLayout {
+                // As wide as the screen: long labels wrap instead of scrolling sideways.
+                width: sv.visible-width;
+                alignment: center;
+                VerticalLayout {
+                    width: min(560px, sv.visible-width - 32px);
+                    alignment: start;
+                    padding-top: 16px;
+                    padding-bottom: 16px + root.inset-bottom;
+                    spacing: 14px;
+
+                    SectionTitle {
+                        first: true;
+                        text: "General";
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Theme";
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        ComboBox {
+                            width: 140px;
+                            model: ["System", "Light", "Dark"];
+                            current-index <=> root.theme;
+                            selected => root.changed();
+                        }
+                    }
+                    Toggle {
+                        text: "New-mail notifications";
+                        checked <=> root.notifications;
+                        toggled => root.changed();
+                    }
+                    Toggle {
+                        text: "Always load remote images";
+                        hint: "Senders can see when you open their mail.";
+                        checked <=> root.always-load-images;
+                        toggled => root.changed();
+                    }
+
+                    SectionTitle {
+                        text: "Phone layout";
+                    }
+                    Toggle {
+                        text: "Left-handed";
+                        hint: "Reader buttons on the left, in reach of the left thumb.";
+                        checked <=> root.left-handed;
+                        toggled => root.changed();
+                    }
+                    Toggle {
+                        text: "Floating buttons";
+                        hint: "Reader buttons float over the message instead of a bottom bar.";
+                        checked <=> root.floating-buttons;
+                        toggled => root.changed();
+                    }
+
+                    SectionTitle {
+                        text: "Accounts";
+                    }
+                    for account[i] in root.accounts: VerticalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                Text {
+                                    text: account.name;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: account.email;
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                }
+                            }
+                            Button {
+                                text: "Edit";
+                                clicked => {
+                                    root.confirm-remove = -1;
+                                    root.edit-account(i);
+                                }
+                            }
+                            Button {
+                                text: "Remove";
+                                enabled: !root.composing;
+                                clicked => { root.confirm-remove = i; }
+                            }
+                        }
+                        if root.confirm-remove == i: Rectangle {
+                            border-radius: 8px;
+                            background: Palette.alternate-background;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
+                                Text {
+                                    text: "Remove " + account.email + " and its downloaded mail from this device? Mail on the server is not touched.";
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 10px;
+                                    Button {
+                                        text: "Cancel";
+                                        clicked => { root.confirm-remove = -1; }
+                                    }
+                                    Button {
+                                        text: "Remove account";
+                                        primary: true;
+                                        clicked => {
+                                            root.confirm-remove = -1;
+                                            root.remove-account(i);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Divider {
+                            height: 1px;
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        Button {
+                            text: "Add account";
+                            clicked => {
+                                root.confirm-remove = -1;
+                                root.add-account();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

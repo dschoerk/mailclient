@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(target_os = "android"))]
+use keyring::Error as KeyringError;
+#[cfg(target_os = "android")]
+use keyring_core::Error as KeyringError;
+
 const KEYRING_SERVICE: &str = "mailclient";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +46,16 @@ pub struct AccountConfig {
     pub auth: Auth,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follows the system's light or dark mode.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// App preferences, stored next to the accounts in `config.toml`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -49,6 +64,11 @@ pub struct Settings {
     pub left_handed: bool,
     /// Phone reader actions float over the message instead of sitting in a bottom bar.
     pub floating_buttons: bool,
+    pub theme: Theme,
+    /// No notification for new mail.
+    pub mute_notifications: bool,
+    /// Remote images load without asking (gives up tracking protection).
+    pub load_remote_images: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -69,6 +89,10 @@ impl ConfigFile {
             Some(existing) => *existing = account.clone(),
             None => self.accounts.push(account.clone()),
         }
+    }
+
+    fn remove(&mut self, email: &str) {
+        self.accounts.retain(|a| !a.email.eq_ignore_ascii_case(email));
     }
 }
 
@@ -177,6 +201,17 @@ impl AccountConfig {
             .set_password(password)
             .context("saving password to keyring")
     }
+
+    /// Forgets the stored password or refresh token; nothing stored is fine.
+    pub fn delete_password(&self) -> Result<()> {
+        if std::env::var_os("MAILCLIENT_PASSWORD").is_some() {
+            return Ok(());
+        }
+        match self.keyring_entry()?.delete_credential() {
+            Err(KeyringError::NoEntry) => Ok(()),
+            result => result.context("removing password from keyring"),
+        }
+    }
 }
 
 static BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -251,6 +286,13 @@ pub fn save_account(account: &AccountConfig) -> Result<()> {
     write_config(&file)
 }
 
+/// Removes the account with this address.
+pub fn remove_account(email: &str) -> Result<()> {
+    let mut file = read_config()?;
+    file.remove(email);
+    write_config(&file)
+}
+
 pub fn load_settings() -> Result<Settings> {
     Ok(read_config()?.settings)
 }
@@ -289,6 +331,9 @@ mod tests {
         let settings = Settings {
             left_handed: true,
             floating_buttons: true,
+            theme: Theme::Dark,
+            mute_notifications: true,
+            load_remote_images: true,
         };
         let text = toml::to_string_pretty(&ConfigFile {
             accounts: vec![account.clone()],
@@ -304,7 +349,7 @@ mod tests {
             old.settings,
             Settings {
                 left_handed: true,
-                floating_buttons: false
+                ..Settings::default()
             }
         );
     }
@@ -320,5 +365,8 @@ mod tests {
         let emails: Vec<&str> = file.accounts.iter().map(|a| a.email.as_str()).collect();
         assert_eq!(emails, ["A@example.org", "b@gmail.com"]);
         assert_eq!(file.accounts[0].name, "Changed");
+        file.remove("a@EXAMPLE.org");
+        let emails: Vec<&str> = file.accounts.iter().map(|a| a.email.as_str()).collect();
+        assert_eq!(emails, ["b@gmail.com"]);
     }
 }
