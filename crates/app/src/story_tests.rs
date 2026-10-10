@@ -688,7 +688,7 @@ fn user_stories() {
             .await?;
             ensure(w.get_current_message() == row, "list selection moved")?;
 
-            // Scrolling to the end highlights the reply on the timeline; the original stays open.
+            // Scrolling to the end highlights the last message, the reply; the original stays open.
             ensure(w.get_scrolled_in_conversation() == -1, "highlight kept from the previous render")?;
             w.window().set_size(slint::LogicalSize::new(800., 300.));
             sleep(50).await;

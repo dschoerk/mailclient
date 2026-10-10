@@ -105,10 +105,12 @@ impl WebViewDelegate for AppDelegate {
                 let (app, spying) = (self.app.clone(), self.spying.clone());
                 webview.evaluate_javascript(mailcore::mime::SCROLLED_SCRIPT, move |result| {
                     spying.set(false);
-                    if let (Ok(JSValue::Number(n)), Some(app)) = (result, app.upgrade())
-                        && n >= 0.0 && app.get_reader_scrolled()
-                    {
-                        app.set_scrolled_in_conversation(n as i32);
+                    match (result, app.upgrade()) {
+                        (Ok(JSValue::Number(n)), Some(app)) if n >= 0.0 && app.get_reader_scrolled() => {
+                            app.set_scrolled_in_conversation(n as i32)
+                        }
+                        (Err(e), _) => log::warn!("finding the scrolled-to message: {e:?}"),
+                        _ => {}
                     }
                 });
             }
