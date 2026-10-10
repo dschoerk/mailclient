@@ -2,6 +2,12 @@ package dev.mailclient;
 
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.Context;
+import android.content.res.ColorStateList;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -17,6 +23,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -49,6 +56,8 @@ public final class MailWebView {
     /** Back, once the view has no use for it (a selection ends first): handled by the app. */
     static native void onBack();
 
+    /** A floating button was tapped: 0 Delete, 1 Archive, 2 Next. */
+    static native void onFloat(int action);
     /** The user scrolled the conversation to this message (the one under the reading line). */
     static native void onScrolledTo(int index);
 
@@ -83,6 +92,9 @@ public final class MailWebView {
     /** The open conversation, or null while a lone message is shown. */
     private static Conversation conversation;
     private static Dialog window;
+    private static LinearLayout buttons;
+    /** The window's content under the buttons: the lone message's view or the conversation. */
+    private static FrameLayout body;
     private static Activity owner;
     private static int loads;
 
@@ -107,13 +119,11 @@ public final class MailWebView {
             if (headings.length < 2) {
                 WebView v = view(activity);
                 v.getSettings().setBlockNetworkLoads(!allowRemote);
-                if (v.getParent() == null) {
-                    d.setContentView(v);
-                }
+                body(v);
                 v.loadUrl(ORIGIN + "/msg/" + loads + "/0");
             } else {
                 conversation = new Conversation(activity, documents, headings, current, allowRemote);
-                d.setContentView(conversation.scroll);
+                body(conversation.scroll);
                 if (view != null) {
                     view.loadUrl("about:blank");
                 }
@@ -126,11 +136,18 @@ public final class MailWebView {
             content = new Content(new byte[0][], "", false, new HashMap<>());
             dropConversation();
             WebView v = view(activity);
-            if (v.getParent() == null) {
-                window(activity).setContentView(v);
-            }
+            window(activity);
+            body(v);
             v.loadUrl("about:blank");
         });
+    }
+
+    /** Shows v in the window, under the floating buttons. */
+    private static void body(View v) {
+        if (v.getParent() != body) {
+            body.removeAllViews();
+            body.addView(v);
+        }
     }
 
     private static void dropConversation() {
@@ -271,12 +288,31 @@ public final class MailWebView {
         });
     }
 
+    /**
+     * The reader's floating buttons, drawn here as the native UI's would be hidden under this window.
+     * side: 0 none, 1 right, 2 left; colors are ARGB.
+     */
+    public static void buttons(Activity activity, int side, int background, int pressed, int foreground, int border) {
+        activity.runOnUiThread(() -> {
+            window(activity);
+            buttons.setVisibility(side == 0 ? View.GONE : View.VISIBLE);
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) buttons.getLayoutParams();
+            lp.gravity = Gravity.BOTTOM | (side == 2 ? Gravity.START : Gravity.END);
+            buttons.setLayoutParams(lp);
+            for (int i = 0; i < buttons.getChildCount(); i++) {
+                ((FloatButton) buttons.getChildAt(i)).colors(background, pressed, foreground, border);
+            }
+        });
+    }
+
     /** A new activity (the old one was destroyed, the process lived on) needs its own window and view. */
     private static void own(Activity activity) {
         if (owner != activity) {
             owner = activity;
             window = null;
             view = null;
+            buttons = null;
+            body = null;
             conversation = null;
         }
     }
@@ -292,7 +328,30 @@ public final class MailWebView {
                 onBack();
             }
         };
-        d.setContentView(view(activity));
+        FrameLayout root = new FrameLayout(activity);
+        body = new FrameLayout(activity);
+        body.addView(view(activity));
+        root.addView(body);
+        float dp = activity.getResources().getDisplayMetrics().density;
+        LinearLayout column = new LinearLayout(activity);
+        column.setOrientation(LinearLayout.VERTICAL);
+        String[] labels = {"Delete", "Archive", "Next"};
+        for (int i = 0; i < labels.length; i++) {
+            int action = i;
+            FloatButton b = new FloatButton(activity, i);
+            b.setContentDescription(labels[i]);
+            b.setOnClickListener(v -> onFloat(action));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Math.round(56 * dp), Math.round(56 * dp));
+            lp.topMargin = i == 0 ? 0 : Math.round(12 * dp);
+            column.addView(b, lp);
+        }
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        lp.setMargins(Math.round(16 * dp), 0, Math.round(16 * dp), Math.round(16 * dp));
+        column.setVisibility(View.GONE);
+        root.addView(column, lp);
+        buttons = column;
+        d.setContentView(root);
         d.setCancelable(false);
         Window w = d.getWindow();
         w.setWindowAnimations(0);
@@ -341,6 +400,68 @@ public final class MailWebView {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         v.setWebViewClient(new Client());
         return v;
+    }
+
+    /** The native UI's FloatButton (widgets.slint): a round button with a Lucide icon. */
+    private static final class FloatButton extends View {
+        private final Path icon = new Path();
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final GradientDrawable background = new GradientDrawable();
+
+        FloatButton(Context context, int which) {
+            super(context);
+            float dp = context.getResources().getDisplayMetrics().density;
+            background.setShape(GradientDrawable.OVAL);
+            setBackground(background);
+            setElevation(4 * dp);
+            setClickable(true);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            // The icons' SVG paths (ui/icons), on their 24-unit grid.
+            Path p = icon;
+            if (which == 0) { // trash.svg
+                p.moveTo(10, 11); p.lineTo(10, 17);
+                p.moveTo(14, 11); p.lineTo(14, 17);
+                p.moveTo(19, 6); p.lineTo(19, 20); p.arcTo(new RectF(15, 18, 19, 22), 0, 90);
+                p.lineTo(7, 22); p.arcTo(new RectF(5, 18, 9, 22), 90, 90); p.lineTo(5, 6);
+                p.moveTo(3, 6); p.lineTo(21, 6);
+                p.moveTo(8, 6); p.lineTo(8, 4); p.arcTo(new RectF(8, 2, 12, 6), 180, 90);
+                p.lineTo(14, 2); p.arcTo(new RectF(12, 2, 16, 6), 270, 90); p.lineTo(16, 6);
+            } else if (which == 1) { // archive.svg
+                p.addRoundRect(new RectF(2, 3, 22, 8), 1, 1, Path.Direction.CW);
+                p.moveTo(4, 8); p.lineTo(4, 19); p.arcTo(new RectF(4, 17, 8, 21), 180, -90);
+                p.lineTo(18, 21); p.arcTo(new RectF(16, 17, 20, 21), 90, -90); p.lineTo(20, 8);
+                p.moveTo(10, 12); p.lineTo(14, 12);
+            } else { // arrow-down.svg
+                p.moveTo(12, 5); p.lineTo(12, 19);
+                p.moveTo(19, 12); p.lineTo(12, 19); p.lineTo(5, 12);
+            }
+        }
+
+        void colors(int fill, int pressed, int foreground, int border) {
+            int[][] states = {{android.R.attr.state_pressed}, {}};
+            background.setColor(new ColorStateList(states, new int[] {pressed, fill}));
+            background.setStroke(Math.round(getResources().getDisplayMetrics().density), border);
+            paint.setColor(foreground);
+            invalidate();
+        }
+
+        @Override
+        public void setPressed(boolean pressed) {
+            super.setPressed(pressed);
+            // Pressed, the button sinks, as the native UI's does.
+            animate().scaleX(pressed ? 0.92f : 1f).scaleY(pressed ? 0.92f : 1f).setDuration(pressed ? 60 : 220).start();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float size = 22 * getResources().getDisplayMetrics().density;
+            canvas.translate((getWidth() - size) / 2, (getHeight() - size) / 2);
+            canvas.scale(size / 24, size / 24);
+            canvas.drawPath(icon, paint);
+        }
     }
 
     private static final class Client extends WebViewClient {

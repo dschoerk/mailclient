@@ -228,10 +228,7 @@ impl App {
             // Zero coordinates are left out of the reply.
             props["absolutePosition"][axis].as_f64().unwrap_or(0.0) + props["size"][extent].as_f64().unwrap() / 2.0
         };
-        // Slint lays out in logical pixels: density / 160 physical pixels each.
-        let out = adb_command().args(["shell", "wm", "density"]).output().expect("adb not found");
-        let density: f64 = String::from_utf8_lossy(&out.stdout).rsplit(':').next().unwrap().trim().parse().unwrap();
-        let scale = density / 160.0;
+        let scale = scale();
         let (x, y) = (center("x", "width") * scale, center("y", "height") * scale);
         let to = x + dx * props["size"]["width"].as_f64().unwrap() * scale;
         swipe((x as usize, y as usize), (to.max(1.0) as usize, y as usize), ms);
@@ -568,6 +565,13 @@ pub fn swipe((x0, y0): (usize, usize), (x1, y1): (usize, usize), ms: u32) {
     let mut all = vec!["shell", "input", "swipe"];
     all.extend(args.iter().map(String::as_str));
     adb(&all);
+}
+
+/// Physical pixels per logical one (Android only): Slint lays out in density / 160 each.
+pub fn scale() -> f64 {
+    let out = adb_command().args(["shell", "wm", "density"]).output().expect("adb not found");
+    let density: f64 = String::from_utf8_lossy(&out.stdout).rsplit(':').next().unwrap().trim().parse().unwrap();
+    density / 160.0
 }
 
 pub fn tap(x: usize, y: usize) {

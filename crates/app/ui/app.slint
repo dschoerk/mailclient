@@ -42,8 +42,16 @@ export component AppWindow inherits Window {
     changed html-width => { root.html-area-changed(); }
     changed html-height => { root.html-area-changed(); }
     changed html-visible => { root.html-area-changed(); }
-    /// The floating buttons would sit under the native HTML view: use the thumb bar then.
-    property <bool> floating: root.floating-buttons && !root.html-overlay;
+    property <bool> floating: root.floating-buttons;
+    /// The floating buttons would sit under the native HTML view: it draws its own then (0 none, 1 right, 2 left).
+    out property <int> html-buttons: root.html-visible && root.narrow && root.floating ? (root.left-handed ? 2 : 1) : 0;
+    out property <color> float-background: Palette.background;
+    out property <color> float-pressed: Palette.alternate-background;
+    out property <color> float-foreground: Palette.foreground;
+    out property <color> float-border: Theme.divider;
+    changed html-buttons => { root.html-area-changed(); }
+    /// Next from the native floating buttons.
+    public function next-message() { keys.select-relative(1); }
     in property <string> account-label;
 
     in property <[FolderItem]> folders;
@@ -753,7 +761,7 @@ export component AppWindow inherits Window {
                                 height: 32px;
                             }
                             // Floating variant of the thumb bar: stacked in the thumb's corner, Next lowest.
-                            if root.narrow && root.has-message && !root.composing && root.floating: VerticalLayout {
+                            if root.narrow && root.has-message && !root.composing && root.floating && !root.html-visible: VerticalLayout {
                                 // Unsized children fill their parent; keep the column at its natural size.
                                 width: self.preferred-width;
                                 height: self.preferred-height;

@@ -86,6 +86,17 @@ pub fn place(x: i32, y: i32, width: i32, height: i32, visible: bool) {
     });
 }
 
+/// The native floating buttons: `side` 0 none, 1 right, 2 left; colors (ARGB) background, pressed, foreground, border.
+pub fn buttons(side: i32, colors: [i32; 4]) {
+    call("buttons", |env, activity| {
+        let class = class(env, activity)?;
+        let [bg, pressed, fg, border] = colors;
+        let args: [JValue; 6] = [activity.into(), side.into(), bg.into(), pressed.into(), fg.into(), border.into()];
+        env.call_static_method(class, "buttons", "(Landroid/app/Activity;IIIII)V", &args)?;
+        Ok(())
+    });
+}
+
 fn call(what: &str, f: impl FnOnce(&mut Env, &Obj) -> jni::errors::Result<()>) {
     let Some(activity) = activity() else { return };
     if let Err(e) = with_context(|env, _| f(env, activity.as_obj())) {
@@ -101,12 +112,14 @@ fn class(env: &mut Env, activity: &Obj) -> jni::errors::Result<&'static JClass<'
     let class = load_class(env, activity, "dev.mailclient.MailWebView")?;
     let on_link: extern "system" fn(JNIEnv, JClass, JString) = on_link;
     let on_back: extern "system" fn(JNIEnv, JClass) = on_back;
+    let on_float: extern "system" fn(JNIEnv, JClass, i32) = on_float;
     let on_scrolled_to: extern "system" fn(JNIEnv, JClass, jni::sys::jint) = on_scrolled_to;
     env.register_native_methods(
         &class,
         &[
             NativeMethod { name: "onLink".into(), sig: "(Ljava/lang/String;)V".into(), fn_ptr: on_link as *mut _ },
             NativeMethod { name: "onBack".into(), sig: "()V".into(), fn_ptr: on_back as *mut _ },
+            NativeMethod { name: "onFloat".into(), sig: "(I)V".into(), fn_ptr: on_float as *mut _ },
             NativeMethod { name: "onScrolledTo".into(), sig: "(I)V".into(), fn_ptr: on_scrolled_to as *mut _ },
         ],
     )?;
@@ -123,6 +136,11 @@ extern "system" fn on_link(mut env: JNIEnv, _class: JClass, url: JString) {
 /// Called by MailWebView on the Android UI thread: the view has key focus, so Back arrives here.
 extern "system" fn on_back(_env: JNIEnv, _class: JClass) {
     crate::app::back_later();
+}
+
+/// Called by MailWebView on the Android UI thread: a floating button was tapped.
+extern "system" fn on_float(_env: JNIEnv, _class: JClass, action: i32) {
+    crate::app::float_action_later(action);
 }
 
 /// Called by MailWebView on the Android UI thread: the user scrolled the conversation to this message.

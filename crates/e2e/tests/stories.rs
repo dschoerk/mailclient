@@ -252,6 +252,50 @@ fn html_touch() {
     app.wait_until("HTML view hidden with the message closed", || e2e::html_frame().is_none());
 }
 
+/// Issue #6: with Floating buttons on, the HTML view draws Delete/Archive/Next over the message itself.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn floating_buttons_over_html() {
+    if !android() {
+        eprintln!("skipped: the native HTML view is Android only");
+        return;
+    }
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    for subject in ["Float one", "Float two"] {
+        let raw = format!(
+            "From: Erin <erin@example.org>\r\nTo: {}\r\nSubject: {subject}\r\nMIME-Version: 1.0\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\r\n<html><body><h1>{subject}</h1></body></html>\r\n",
+            account.email
+        );
+        deliver_raw(&account, &raw);
+    }
+    let app = App::launch();
+    app.set_up(&account);
+    app.wait_for("Erin: Float two", "ListItem");
+    app.click_in_drawer("Settings", "Button");
+    app.click("Floating buttons", "Checkbox");
+    app.back_out();
+    app.click("Erin: Float two", "ListItem");
+    let mut frame = None;
+    app.wait_until("HTML view shown", || {
+        frame = e2e::html_frame();
+        frame.is_some()
+    });
+    assert!(!app.exists("Archive", "Button"), "the thumb bar is still shown");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    e2e::device_screenshot("floating_buttons");
+    // The column sits 16 from the frame's bottom right: Next lowest, Archive above it (56 tall, 12 apart).
+    let [_, _, x1, y1] = frame.unwrap();
+    let px = |v: f64| (v * e2e::scale()) as usize;
+    let x = x1 - px(16.0 + 28.0);
+    e2e::tap(x, y1 - px(16.0 + 28.0));
+    e2e::tap(x, y1 - px(16.0 + 28.0 + 56.0 + 12.0));
+    // Next moved on to the older message, so Archive took that one.
+    app.wait_until("archived on the server", || server_subjects(&account, "Archive") == ["Float one"]);
+}
+
 /// Real newsletter layouts (corpus templates, target/testdata/templates): rendered on both
 /// platforms, with every remote image pointed at a counting server that must stay silent.
 #[test]

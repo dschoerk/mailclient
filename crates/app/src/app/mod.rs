@@ -42,6 +42,16 @@ pub(crate) fn back_later() {
     });
 }
 
+/// A native floating button over the HTML view (any thread): 0 Delete, 1 Archive, 2 Next.
+#[cfg(target_os = "android")]
+pub(crate) fn float_action_later(action: i32) {
+    with_controller(move |c| match action {
+        0 => c.window().invoke_delete(),
+        1 => c.window().invoke_archive(),
+        _ => c.window().invoke_next_message(),
+    });
+}
+
 /// The user scrolled the HTML view's conversation to this message (any thread).
 #[cfg(target_os = "android")]
 pub(crate) fn scrolled_to_later(index: i32) {
@@ -283,6 +293,9 @@ impl Controller {
             let scale = w.window().scale_factor();
             let px = |v: f32| (v * scale).round() as i32;
             crate::platform::html::place(px(w.get_html_x()), px(w.get_html_y()), px(w.get_html_width()), px(w.get_html_height()), w.get_html_visible());
+            let argb = |c: slint::Color| u32::from(c.as_argb_encoded()) as i32;
+            let colors = [w.get_float_background(), w.get_float_pressed(), w.get_float_foreground(), w.get_float_border()].map(argb);
+            crate::platform::html::buttons(w.get_html_buttons(), colors);
         });
         on!(on_archive, |c| c.remove_selected(true));
         on!(on_delete, |c| c.remove_selected(false));
