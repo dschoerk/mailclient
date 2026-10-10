@@ -253,6 +253,8 @@ fn user_stories() {
             }
             ensure(subjects(&w) == ["Lunch on Friday?", "Quarterly invoice"], format!("order: {:?}", subjects(&w)))?;
             ensure(w.get_messages().iter().all(|m| !m.seen), "messages should start unread")?;
+            let shown = crate::platform::NOTIFIED.with(|n| n.borrow().clone());
+            ensure(shown.is_empty(), format!("mail already there when set up was announced: {shown:?}"))?;
             click(&w, "Folder Sent")?;
             wait_for("Sent list", || subjects(&w).is_empty() && w.get_list_title() == "Sent").await?;
             click(&w, "Folder Inbox")?;
@@ -431,10 +433,15 @@ fn user_stories() {
         // US10: mail from elsewhere shows up without a manual sync (IDLE).
         let r = async {
             deliver(&account, ("Carol", "carol@example.org"), "Pushed via IDLE", "Arrived while open.");
-            wait_for("pushed message listed", || subjects(&w).iter().any(|s| s == "Pushed via IDLE")).await
+            wait_for("pushed message listed", || subjects(&w).iter().any(|s| s == "Pushed via IDLE")).await?;
+            // US19: and announces it with a notification.
+            let notified = || crate::platform::NOTIFIED.with(|n| n.borrow().clone());
+            wait_for("notification", || notified().iter().any(|(_, body)| body.contains("Pushed via IDLE"))).await?;
+            let (title, _) = notified().into_iter().find(|(_, body)| body.contains("Pushed via IDLE")).unwrap();
+            ensure(title.contains("Carol"), format!("notification title: {title}"))
         }
         .await;
-        record("US10 receive new mail", r);
+        record("US10/US19 receive new mail, notified", r);
 
         // US6: archive and delete leave the list at once and land in Archive/Trash.
         let r = async {

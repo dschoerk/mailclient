@@ -86,6 +86,8 @@ impl App {
         let p = &port.to_string();
         adb(&["shell", "am", "force-stop", PACKAGE]);
         adb(&["shell", "pm", "clear", PACKAGE]);
+        // Answers the permission prompt the app shows on first start (US19).
+        adb(&["shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS"]);
         adb(&["push", test_ca().to_str().unwrap(), "/data/local/tmp/mailclient-ca.pem"]);
         // run-as only works for debug builds, which is what tests use.
         let setup = format!("mkdir -p files && cp /data/local/tmp/mailclient-ca.pem files/extra-ca.pem && echo {port} > files/mcp-port");
@@ -179,6 +181,8 @@ impl App {
         self.type_in("SMTP server", "localhost");
         self.type_in("SMTP port", "3465");
         self.click("Save and connect", "Button");
+        // The mail view sits under the setup screen; it only works once the account is saved.
+        self.wait_until("setup to finish", || !self.exists("Save and connect", "Button"));
     }
 
     /// Clicks an item of the folder pane, which is a drawer on phones.
@@ -253,6 +257,57 @@ fn base64_decode(s: &str) -> Vec<u8> {
             n.to_be_bytes()[1..c.len()].to_vec()
         })
         .collect()
+}
+
+/// Records the notifications the app shows from now on: D-Bus on the desktop,
+/// the notification service on Android.
+pub struct Notifications {
+    monitor: Option<Child>,
+    seen: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Notifications {
+    pub fn watch() -> Notifications {
+        let seen = std::sync::Arc::<std::sync::Mutex<String>>::default();
+        if android() {
+            return Notifications { monitor: None, seen };
+        }
+        let mut monitor = Command::new("dbus-monitor")
+            .args(["--session", "interface='org.freedesktop.Notifications',member='Notify'"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("dbus-monitor not found");
+        let mut out = monitor.stdout.take().unwrap();
+        let sink = seen.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0; 4096];
+            while let Ok(n @ 1..) = out.read(&mut buf) {
+                sink.lock().unwrap().push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+        // dbus-monitor needs a moment to register with the bus.
+        std::thread::sleep(Duration::from_millis(500));
+        Notifications { monitor: Some(monitor), seen }
+    }
+
+    /// Whether a notification mentioning `text` was shown.
+    pub fn shown(&self, text: &str) -> bool {
+        if android() {
+            let out = adb_command().args(["shell", "dumpsys", "notification", "--noredact"]).output().expect("adb not found");
+            // --noredact prints the title and text of every posted notification.
+            return String::from_utf8_lossy(&out.stdout).contains(text);
+        }
+        self.seen.lock().unwrap().contains(text)
+    }
+}
+
+impl Drop for Notifications {
+    fn drop(&mut self) {
+        if let Some(monitor) = &mut self.monitor {
+            let _ = monitor.kill();
+            let _ = monitor.wait();
+        }
+    }
 }
 
 /// A fresh GreenMail account (any login is accepted, users are created on first login).

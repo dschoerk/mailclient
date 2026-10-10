@@ -48,7 +48,8 @@ The biggest gaps among baseline features, roughly in order of user impact per ef
 1. ~~Threaded view~~ (done).
 2. Bulk select and actions: reuses the existing single-message actions.
 3. ~~Multiple accounts, then the unified inbox~~ (done).
-4. Notifications for new mail (desktop and Android).
+4. ~~Notifications for new mail (desktop and Android)~~ (done while the app runs; Android
+   background push still missing).
 5. Undo send, then snooze and scheduled send.
 
 ## Caveats

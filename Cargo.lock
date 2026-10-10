@@ -4958,6 +4958,7 @@ dependencies = [
  "tokio",
  "url",
  "winit",
+ "zbus",
 ]
 
 [[package]]

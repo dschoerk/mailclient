@@ -260,6 +260,16 @@ impl Controller {
                 self.window().set_online(all_online);
             }
             Event::FoldersChanged => self.reload_folders(),
+            Event::NewMail(messages) => {
+                let (title, body) = match messages.as_slice() {
+                    [m] => (format::person(&m.from_name, &m.from_addr), m.subject.clone()),
+                    _ => (
+                        format!("{} new messages", messages.len()),
+                        messages.iter().map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"),
+                    ),
+                };
+                crate::platform::notify(&title, &body);
+            }
             Event::MessagesChanged(_) => {
                 let state = self.state.borrow();
                 // Any folder can add to the listed conversations (replies sit in Sent).

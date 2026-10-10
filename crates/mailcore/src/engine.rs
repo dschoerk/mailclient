@@ -18,7 +18,7 @@ use crate::backend::Backend;
 use crate::config::AccountConfig;
 use crate::imap::Imap;
 use crate::mime::{self, Draft};
-use crate::store::{PendingOp, Role, Store};
+use crate::store::{MessageSummary, PendingOp, Role, Store};
 
 /// Messages fetched when a folder is synced for the first time.
 const INITIAL_WINDOW: u32 = 500;
@@ -57,6 +57,8 @@ pub enum Event {
     Online(bool),
     FoldersChanged,
     MessagesChanged(String),
+    /// Unread messages that arrived in the inbox since the last sync (not on the first sync).
+    NewMail(Vec<MessageSummary>),
     BodyReady { folder: String, uid: u32 },
     Sent(u64),
     /// A send or a draft save failed.
@@ -362,6 +364,10 @@ impl<B: Backend> Worker<B> {
             (Some(min), Some(max)) => {
                 let new = self.conn().await?.fetch_new(folder, max).await?;
                 self.store.upsert_messages(&new)?;
+                let unread: Vec<MessageSummary> = new.into_iter().filter(|m| !m.seen).collect();
+                if !unread.is_empty() && self.store.folder_role(folder)? == Role::Inbox {
+                    self.emit(Event::NewMail(unread));
+                }
                 let flags = self.conn().await?.fetch_flags(folder, min, max).await?;
                 let on_server: std::collections::HashSet<u32> = flags.iter().map(|f| f.0).collect();
                 let gone: Vec<u32> = self

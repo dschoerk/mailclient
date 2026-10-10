@@ -1,7 +1,7 @@
 //! User stories (docs/user-stories.md) against the real app. Needs scripts/test-mailserver.sh and
 //! an app built with the MCP server; see README, "End-to-end tests".
 
-use e2e::{App, android, create_folders, deliver, init_server, server_subjects, test_account, test_ca};
+use e2e::{App, Notifications, android, create_folders, deliver, init_server, server_subjects, test_account, test_ca};
 
 #[test]
 #[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
@@ -53,4 +53,24 @@ fn drafts() {
     app.click("Send", "Button");
     app.wait_until("draft removed after sending", || server_subjects(&account, "Drafts").is_empty());
     app.wait_until("copy in Sent", || server_subjects(&account, "Sent") == ["E2E draft"]);
+}
+
+/// US19: mail arriving while the app runs is announced with a system notification.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn new_mail_notification() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    deliver(&account, ("Bob", "bob@example.org"), "Old news", "Already here before setup.");
+    let app = App::launch();
+    let notifications = Notifications::watch();
+    app.set_up(&account);
+    app.wait_for("Bob: Old news", "ListItem");
+
+    let subject = format!("Fresh mail {}", account.email);
+    deliver(&account, ("Carol", "carol@example.org"), &subject, "Arrived while the app was open.");
+    app.wait_for(&format!("Carol: {subject}"), "ListItem");
+    app.wait_until("notification", || notifications.shown(&subject));
+    assert!(!notifications.shown("Old news"), "mail from before setup was announced");
 }

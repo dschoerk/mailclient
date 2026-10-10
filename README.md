@@ -17,7 +17,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Folder list with special-use detection, unread counts.
 - Local SQLite cache: the last 500 messages per synced folder; bodies downloaded on
   open plus the 40 newest per sync. Works offline from the cache.
-- Push via IMAP IDLE on the inbox, polling every 5 minutes as a fallback.
+- Push via IMAP IDLE on the inbox, polling every 5 minutes as a fallback; a system
+  notification for new unread mail while the app runs (Linux desktop and Android).
 - Read, flag, mark read/unread, archive, delete. Changes apply instantly and are
   queued for the server, so they also work offline.
 - Full-text search (SQLite FTS5) over subject, sender and downloaded bodies.
