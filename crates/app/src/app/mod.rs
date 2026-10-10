@@ -19,7 +19,7 @@ mod folders;
 mod reader;
 mod setup;
 
-use crate::{AppWindow, AttachmentItem, ConversationItem, FolderItem, MessageItem, ReaderPart, SetupData};
+use crate::{AccountItem, AppWindow, AttachmentItem, ConversationItem, FolderItem, MessageItem, ReaderPart, SetupData};
 
 thread_local! {
     static CONTROLLER: RefCell<Option<Rc<Controller>>> = const { RefCell::new(None) };
@@ -52,6 +52,8 @@ fn with_controller(f: impl FnOnce(&Rc<Controller>) + Send + 'static) {
 }
 
 struct Account {
+    /// Routes engine events; an edited account gets a new engine and id, so stale events are dropped.
+    id: u64,
     config: AccountConfig,
     engine: Engine,
     store: Store,
@@ -59,7 +61,7 @@ struct Account {
     online: bool,
 }
 
-/// A row of the folder sidebar. Accounts are only ever appended, so their index is stable.
+/// A row of the folder sidebar. Removing an account resets every index-keyed piece of state.
 #[derive(Clone, PartialEq)]
 enum Row {
     /// The inboxes of all accounts in one list.
@@ -92,6 +94,8 @@ struct State {
     engine_status: String,
     /// A message opened from a file (`mailclient message.eml`), shown without an account.
     standalone: Option<(MessageSummary, Vec<u8>)>,
+    /// The account the setup form is editing, if not adding one.
+    editing: Option<usize>,
 }
 
 impl State {
@@ -125,6 +129,7 @@ pub struct Controller {
     conversation_model: Rc<VecModel<ConversationItem>>,
     composer: RefCell<Option<Rc<Composer>>>,
     next_send_id: std::cell::Cell<u64>,
+    next_account_id: std::cell::Cell<u64>,
     #[cfg(feature = "servo")]
     viewer: RefCell<Option<Rc<crate::webview::MailView>>>,
 }
@@ -141,6 +146,7 @@ impl Controller {
             conversation_model: Rc::new(VecModel::default()),
             composer: RefCell::new(None),
             next_send_id: std::cell::Cell::new(1),
+            next_account_id: std::cell::Cell::new(1),
             #[cfg(feature = "servo")]
             viewer: RefCell::new(None),
         });
@@ -158,6 +164,9 @@ impl Controller {
         });
         window.set_left_handed(settings.left_handed);
         window.set_floating_buttons(settings.floating_buttons);
+        window.set_theme(settings.theme as i32);
+        window.set_notifications(!settings.mute_notifications);
+        window.set_always_load_images(settings.load_remote_images);
         controller.connect_callbacks(window);
         #[cfg(feature = "servo")]
         controller.init_webview(window);
@@ -212,13 +221,20 @@ impl Controller {
         }
         on!(on_setup_email_edited, |c, email| c.setup_email_edited(&email));
         on!(on_setup_submit, |c| c.setup_submit());
-        on!(on_setup_cancel, |c| c.window().set_needs_setup(false));
+        on!(on_setup_cancel, |c| {
+            c.state.borrow_mut().editing = None;
+            c.window().set_needs_setup(false);
+        });
         on!(on_add_account, |c| {
+            c.state.borrow_mut().editing = None;
             let w = c.window();
             w.set_setup(SetupData::default());
             w.set_setup_error("".into());
+            w.set_setup_editing(false);
             w.set_needs_setup(true);
         });
+        on!(on_edit_account, |c, index| c.edit_account(index as usize));
+        on!(on_remove_account, |c, index| c.remove_account(index as usize));
         on!(on_folder_selected, |c, index| c.select_folder(index as usize));
         on!(on_message_selected, |c, index| c.select_message(index as usize));
         on!(on_conversation_selected, |c, index| c.select_in_conversation(index as usize));
@@ -263,7 +279,17 @@ impl Controller {
         on!(on_close_message, |c| c.close_message());
         on!(on_settings_changed, |c| {
             let w = c.window();
-            let settings = config::Settings { left_handed: w.get_left_handed(), floating_buttons: w.get_floating_buttons() };
+            let settings = config::Settings {
+                left_handed: w.get_left_handed(),
+                floating_buttons: w.get_floating_buttons(),
+                theme: match w.get_theme() {
+                    1 => config::Theme::Light,
+                    2 => config::Theme::Dark,
+                    _ => config::Theme::System,
+                },
+                mute_notifications: !w.get_notifications(),
+                load_remote_images: w.get_always_load_images(),
+            };
             if let Err(e) = config::save_settings(settings) {
                 c.show_error(&e);
             }
@@ -289,7 +315,9 @@ impl Controller {
 
     // ---- engine events ----
 
-    fn on_event(&self, account: usize, event: Event) {
+    fn on_event(&self, id: u64, event: Event) {
+        // A removed or replaced account's engine may still be winding down.
+        let Some(account) = self.state.borrow().accounts.iter().position(|a| a.id == id) else { return };
         match event {
             Event::Status(s) => self.set_status(s),
             Event::Error(e) => self.set_status(format!("⚠ {e}")),
@@ -304,6 +332,7 @@ impl Controller {
                 self.window().set_online(all_online);
             }
             Event::FoldersChanged => self.reload_folders(),
+            Event::NewMail(_) if !self.window().get_notifications() => {}
             Event::NewMail(messages) => {
                 let (title, body) = match messages.as_slice() {
                     [m] => (format::person(&m.from_name, &m.from_addr), m.subject.clone()),

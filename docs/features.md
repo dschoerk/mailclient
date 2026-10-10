@@ -34,8 +34,15 @@ What the mail client can do today. For ideas that are not built yet see
 - **Microsoft sign-in** (Outlook.com, Microsoft 365): you sign in through your browser
   with OAuth2, and the client then uses XOAUTH2 for IMAP and SMTP. This needs a one-time
   app registration: see [oauth-microsoft.md](oauth-microsoft.md).
-- **More than one account**: use "Add account" in the side panel. Each account has its
-  own sync and its own cache.
+- **More than one account**: use "Add account" under Settings (side panel). Each account
+  has its own sync and its own cache.
+- **Edit an account** (Settings → Edit): name, servers, ports, password. An empty
+  password keeps the stored one. If the browser sign-in has expired, saving opens it
+  again. The login is checked before anything is saved.
+- **Remove an account** (Settings → Remove): forgets the account, its stored password
+  and its downloaded mail on this device. Mail on the server stays.
+- **Settings** also hold the theme (system, light, dark), new-mail notifications on or
+  off, and "Always load remote images".
 - **All inboxes**: one list with the inboxes of all accounts. A colored bar on each row
   shows which account the message belongs to.
 

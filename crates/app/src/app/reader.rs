@@ -223,7 +223,7 @@ impl Controller {
         window.set_msg_loading(false);
         let bodies: Vec<Option<Body>> = raws.iter().map(|raw| raw.as_deref().map(mime::body_from_raw)).collect();
         let body = bodies[current].clone().expect("checked above");
-        let allow_remote = {
+        let allow_remote = window.get_always_load_images() || {
             let state = self.state.borrow();
             conversation.iter().all(|m| state.remote_allowed.contains(&(account, m.folder.clone(), m.uid)))
         };

@@ -10,6 +10,8 @@ export component SetupView inherits Rectangle {
     in property <bool> busy;
     /// Adding a further account, which can be abandoned.
     in property <bool> can-cancel;
+    /// Editing an existing account: the address is fixed and a blank password keeps the stored one.
+    in property <bool> editing;
     callback email-edited(string);
     callback submit();
     callback cancel();
@@ -29,12 +31,14 @@ export component SetupView inherits Rectangle {
                 width: min(520px, root.width - 32px);
                 spacing: 10px;
                 Text {
-                    text: root.can-cancel ? "Add a mail account" : "Set up your mail account";
+                    text: root.editing ? "Edit account" : root.can-cancel ? "Add a mail account" : "Set up your mail account";
                     font-size: 22px;
                     font-weight: 600;
                 }
                 Text {
-                    text: "Use an app password for Gmail, iCloud and Fastmail. Outlook.com and Microsoft 365 sign in through your browser.";
+                    text: root.editing
+                        ? "Leave the password empty to keep the current one. If the browser sign-in has expired, saving opens it again."
+                        : "Use an app password for Gmail, iCloud and Fastmail. Outlook.com and Microsoft 365 sign in through your browser.";
                     color: Theme.muted;
                     wrap: word-wrap;
                 }
@@ -42,6 +46,7 @@ export component SetupView inherits Rectangle {
                     label: "Email";
                     text <=> data.email;
                     placeholder: "you@example.org";
+                    read-only: root.editing;
                     edited(t) => root.email-edited(t);
                 }
                 Field {
@@ -52,6 +57,7 @@ export component SetupView inherits Rectangle {
                     label: "Password";
                     text <=> data.password;
                     input-type: InputType.password;
+                    placeholder: root.editing ? "unchanged" : "";
                 }
                 Divider {
                     height: 1px;
@@ -126,7 +132,7 @@ export component SetupView inherits Rectangle {
                         clicked => root.cancel();
                     }
                     Button {
-                        text: data.oauth ? "Sign in with browser" : "Save and connect";
+                        text: root.editing ? "Save" : data.oauth ? "Sign in with browser" : "Save and connect";
                         primary: true;
                         enabled: !root.busy;
                         clicked => root.submit();

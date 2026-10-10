@@ -1,0 +1,163 @@
+// Settings: app preferences and the accounts.
+
+import { Button, CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
+import { AccountItem } from "types.slint";
+import { Theme, Divider } from "widgets.slint";
+
+export component SettingsView inherits Rectangle {
+    /// 0 system, 1 light, 2 dark.
+    in-out property <int> theme;
+    in-out property <bool> notifications;
+    in-out property <bool> always-load-images;
+    in-out property <bool> left-handed;
+    in-out property <bool> floating-buttons;
+    in property <[AccountItem]> accounts;
+    /// Removing shifts account indices under an open composer.
+    in property <bool> composing;
+    callback changed();
+    callback add-account();
+    callback edit-account(int);
+    callback remove-account(int);
+    callback close();
+    /// The account whose removal awaits confirmation.
+    property <int> confirm-remove: -1;
+    background: Palette.background;
+    // Drawn over the mail view: keep clicks from reaching it.
+    TouchArea { }
+
+    ScrollView {
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                width: min(520px, root.width - 32px);
+                padding-top: 24px;
+                padding-bottom: 24px;
+                spacing: 10px;
+                HorizontalLayout {
+                    Text {
+                        text: "Settings";
+                        font-size: 22px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "Close";
+                        clicked => {
+                            root.confirm-remove = -1;
+                            root.close();
+                        }
+                    }
+                }
+                Text {
+                    text: "General";
+                    font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Theme";
+                        vertical-alignment: center;
+                        color: Theme.muted;
+                    }
+                    ComboBox {
+                        model: ["System", "Light", "Dark"];
+                        current-index <=> root.theme;
+                        selected => root.changed();
+                    }
+                }
+                CheckBox {
+                    text: "Notify me about new mail";
+                    checked <=> root.notifications;
+                    toggled => root.changed();
+                }
+                CheckBox {
+                    text: "Always load remote images (senders can see when you read their mail)";
+                    checked <=> root.always-load-images;
+                    toggled => root.changed();
+                }
+                CheckBox {
+                    text: "Left-handed";
+                    checked <=> root.left-handed;
+                    toggled => root.changed();
+                }
+                CheckBox {
+                    text: "Floating buttons";
+                    checked <=> root.floating-buttons;
+                    toggled => root.changed();
+                }
+                Divider {
+                    height: 1px;
+                }
+                Text {
+                    text: "Accounts";
+                    font-weight: 600;
+                }
+                for account[i] in root.accounts: VerticalLayout {
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: account.name;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: account.email;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                        }
+                        Button {
+                            text: "Edit";
+                            clicked => {
+                                root.confirm-remove = -1;
+                                root.edit-account(i);
+                            }
+                        }
+                        Button {
+                            text: "Remove";
+                            enabled: !root.composing;
+                            clicked => { root.confirm-remove = i; }
+                        }
+                    }
+                    if root.confirm-remove == i: VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Remove " + account.email + " and its downloaded mail from this device? Mail on the server is not touched.";
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 10px;
+                            Button {
+                                text: "Cancel";
+                                clicked => { root.confirm-remove = -1; }
+                            }
+                            Button {
+                                text: "Remove account";
+                                primary: true;
+                                clicked => {
+                                    root.confirm-remove = -1;
+                                    root.remove-account(i);
+                                }
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    Button {
+                        text: "Add account";
+                        clicked => {
+                            root.confirm-remove = -1;
+                            root.add-account();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
