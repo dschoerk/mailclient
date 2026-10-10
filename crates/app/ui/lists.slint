@@ -69,6 +69,7 @@ export component TimelineItem inherits Rectangle {
     callback clicked();
     accessible-role: list-item;
     accessible-label: "Conversation: " + item.sender + ", " + item.date;
+    accessible-description: current ? "current" : "";
     accessible-action-default => { root.clicked(); }
     height: 30px;
     border-radius: 4px;

@@ -11,12 +11,15 @@ use super::android::{Env, Obj, activity, load_class, with_context};
 
 static CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
-/// The message to show, as the desktop view gets it (`webview::delegate::MessageContent`).
+/// The conversation to show: one document per message, stacked; "" while a body is loading.
 pub struct Message<'a> {
-    pub document: &'a str,
+    pub documents: &'a [String],
+    /// Sender and date per message; empty for a lone message.
+    pub headings: &'a [String],
+    /// The open message, scrolled to.
+    pub current: usize,
     pub csp: &'a str,
     pub allow_remote: bool,
-    pub anchor: &'a str,
     /// Content-ID -> (mime type, bytes).
     pub inline_parts: &'a HashMap<String, (String, Vec<u8>)>,
 }
@@ -32,20 +35,21 @@ pub fn show(message: &Message) {
             env.set_object_array_element(&mimes, i as i32, mime)?;
             env.set_object_array_element(&data, i as i32, bytes)?;
         }
-        let document = env.new_string(message.document)?;
+        let documents = strings(env, message.documents)?;
+        let headings = strings(env, message.headings)?;
         let csp = env.new_string(message.csp)?;
-        let anchor = env.new_string(message.anchor)?;
         let class = class(env, activity)?;
         env.call_static_method(
             class,
             "show",
-            "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[[B)V",
+            "(Landroid/app/Activity;[Ljava/lang/String;[Ljava/lang/String;ILjava/lang/String;Z[Ljava/lang/String;[Ljava/lang/String;[[B)V",
             &[
                 activity.into(),
-                (&document).into(),
+                (&documents).into(),
+                (&headings).into(),
+                (message.current as i32).into(),
                 (&csp).into(),
                 message.allow_remote.into(),
-                (&anchor).into(),
                 (&cids).into(),
                 (&mimes).into(),
                 (&data).into(),
@@ -53,6 +57,15 @@ pub fn show(message: &Message) {
         )?;
         Ok(())
     });
+}
+
+fn strings<'e>(env: &mut Env<'e>, items: &[String]) -> jni::errors::Result<jni::objects::JObjectArray<'e>> {
+    let array = env.new_object_array(items.len() as i32, "java/lang/String", JObject::null())?;
+    for (i, item) in items.iter().enumerate() {
+        let item = env.new_string(item)?;
+        env.set_object_array_element(&array, i as i32, item)?;
+    }
+    Ok(array)
 }
 
 pub fn clear() {
@@ -100,12 +113,14 @@ fn class(env: &mut Env, activity: &Obj) -> jni::errors::Result<&'static JClass<'
     let on_link: extern "system" fn(JNIEnv, JClass, JString) = on_link;
     let on_back: extern "system" fn(JNIEnv, JClass) = on_back;
     let on_float: extern "system" fn(JNIEnv, JClass, i32) = on_float;
+    let on_scrolled_to: extern "system" fn(JNIEnv, JClass, jni::sys::jint) = on_scrolled_to;
     env.register_native_methods(
         &class,
         &[
             NativeMethod { name: "onLink".into(), sig: "(Ljava/lang/String;)V".into(), fn_ptr: on_link as *mut _ },
             NativeMethod { name: "onBack".into(), sig: "()V".into(), fn_ptr: on_back as *mut _ },
             NativeMethod { name: "onFloat".into(), sig: "(I)V".into(), fn_ptr: on_float as *mut _ },
+            NativeMethod { name: "onScrolledTo".into(), sig: "(I)V".into(), fn_ptr: on_scrolled_to as *mut _ },
         ],
     )?;
     let global = env.new_global_ref(class)?;
@@ -126,4 +141,9 @@ extern "system" fn on_back(_env: JNIEnv, _class: JClass) {
 /// Called by MailWebView on the Android UI thread: a floating button was tapped.
 extern "system" fn on_float(_env: JNIEnv, _class: JClass, action: i32) {
     crate::app::float_action_later(action);
+}
+
+/// Called by MailWebView on the Android UI thread: the user scrolled the conversation to this message.
+extern "system" fn on_scrolled_to(_env: JNIEnv, _class: JClass, index: jni::sys::jint) {
+    crate::app::scrolled_to_later(index);
 }

@@ -185,6 +185,9 @@ impl Controller {
         let Some((account, summary)) = self.selected_summary() else { return };
         self.update_reader_header();
         let window = self.window();
+        // The new document starts at the open message; the timeline follows again once the user scrolls.
+        window.set_reader_scrolled(false);
+        window.set_scrolled_in_conversation(-1);
         let conversation = {
             let state = self.state.borrow();
             match state.selected_row() {
@@ -257,29 +260,34 @@ impl Controller {
         );
         #[cfg(any(feature = "servo", target_os = "android"))]
         {
-            let (document, anchor) = if conversation.len() == 1 {
-                (mime::render_document(&body), String::new())
-            } else {
-                let parts: Vec<(String, Option<&Body>)> = headings
-                    .into_iter().zip(bodies.iter().map(Option::as_ref)).collect();
-                (mime::render_conversation(&parts, current), format!("m{current}"))
-            };
             let csp = mime::content_security_policy(allow_remote);
             // shortcut: one map for all messages; Content-IDs are meant to be globally unique.
             let inline_parts: HashMap<String, (String, Vec<u8>)> =
                 bodies.iter().flatten().flat_map(|b| b.inline_parts.clone()).collect();
             #[cfg(feature = "servo")]
             if let Some(view) = self.viewer.borrow().as_ref() {
-                view.show(crate::webview::delegate::MessageContent { document, csp, inline_parts, allow_remote, anchor });
+                let (document, anchor) = if conversation.len() == 1 {
+                    (mime::render_document(&body), String::new())
+                } else {
+                    let parts: Vec<(String, Option<&Body>)> =
+                        headings.iter().cloned().zip(bodies.iter().map(Option::as_ref)).collect();
+                    (mime::render_conversation(&parts, current), format!("m{current}"))
+                };
+                view.show(crate::webview::delegate::MessageContent { document, csp: csp.clone(), inline_parts: inline_parts.clone(), allow_remote, anchor });
             }
+            // One WebView per message, stacked natively: Java then knows where each starts without scripts.
             #[cfg(target_os = "android")]
-            crate::platform::html::show(&crate::platform::html::Message {
-                document: &document,
-                csp: &csp,
-                allow_remote,
-                anchor: &anchor,
-                inline_parts: &inline_parts,
-            });
+            {
+                let documents: Vec<String> = bodies.iter().map(|b| b.as_ref().map(mime::render_document).unwrap_or_default()).collect();
+                crate::platform::html::show(&crate::platform::html::Message {
+                    documents: &documents,
+                    headings: if conversation.len() > 1 { &headings } else { &[] },
+                    current,
+                    csp: &csp,
+                    allow_remote,
+                    inline_parts: &inline_parts,
+                });
+            }
         }
         self.state.borrow_mut().body = Some(body);
     }

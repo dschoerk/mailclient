@@ -3,13 +3,13 @@
 // Adapted from Slint's examples/servo: adds the mail security policy (request
 // blocking, navigation interception) on top of frame forwarding.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use http::{HeaderMap, HeaderValue, StatusCode, header};
 use servo::{
-    CreateNewWebViewRequest, Cursor, LoadStatus, NavigationRequest, WebResourceLoad, WebResourceResponse, WebView,
+    CreateNewWebViewRequest, Cursor, JSValue, LoadStatus, NavigationRequest, WebResourceLoad, WebResourceResponse, WebView,
     WebViewDelegate,
 };
 use slint::ComponentHandle;
@@ -51,6 +51,8 @@ pub struct AppDelegate {
     content: Rc<RefCell<MessageContent>>,
     gate: Rc<LoadGate>,
     hooks: Hooks,
+    /// A SCROLLED_SCRIPT evaluation is running; frames meanwhile start no other.
+    spying: Rc<Cell<bool>>,
 }
 
 impl AppDelegate {
@@ -61,7 +63,7 @@ impl AppDelegate {
         gate: Rc<LoadGate>,
         hooks: Hooks,
     ) -> Self {
-        Self { app: app.as_weak(), adapter, content, gate, hooks }
+        Self { app: app.as_weak(), adapter, content, gate, hooks, spying: Rc::default() }
     }
 
     fn serve(&self, url: &Url) -> (StatusCode, HeaderMap, Vec<u8>) {
@@ -98,6 +100,20 @@ impl WebViewDelegate for AppDelegate {
         webview.paint();
         if let Some(app) = self.app.upgrade() {
             self.adapter.update_web_content_with_latest_frame(&app);
+            // A scrolled page paints a new frame: find the message now at the top for the timeline.
+            if app.get_reader_scrolled() && !self.spying.replace(true) {
+                let (app, spying) = (self.app.clone(), self.spying.clone());
+                webview.evaluate_javascript(mailcore::mime::SCROLLED_SCRIPT, move |result| {
+                    spying.set(false);
+                    match (result, app.upgrade()) {
+                        (Ok(JSValue::Number(n)), Some(app)) if n >= 0.0 && app.get_reader_scrolled() => {
+                            app.set_scrolled_in_conversation(n as i32)
+                        }
+                        (Err(e), _) => log::warn!("finding the scrolled-to message: {e:?}"),
+                        _ => {}
+                    }
+                });
+            }
         }
     }
 

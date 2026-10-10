@@ -152,6 +152,13 @@ impl App {
         found.map(|r| r["elementHandles"].as_array().cloned().unwrap_or_default()).unwrap_or_default()
     }
 
+    /// Handles of all elements with this role.
+    pub fn find_role(&self, role: &str) -> Vec<Value> {
+        let query = json!([{"matchDescendants": true}, {"matchElementAccessibleRole": role}]);
+        let found = self.call("query_element_descendants", json!({"elementHandle": self.root(), "queryStack": query, "findAll": true}));
+        found.map(|r| r["elementHandles"].as_array().cloned().unwrap_or_default()).unwrap_or_default()
+    }
+
     /// Waits up to 60 s for an element to appear.
     pub fn wait_for(&self, label: &str, role: &str) -> Value {
         // Generous: the desktop suite starts several Servo instances at once.

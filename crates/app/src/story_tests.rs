@@ -693,6 +693,17 @@ fn user_stories() {
             .await?;
             ensure(w.get_current_message() == row, "list selection moved")?;
 
+            // Scrolling to the end highlights the last message, the reply; the original stays open.
+            ensure(w.get_scrolled_in_conversation() == -1, "highlight kept from the previous render")?;
+            w.window().set_size(slint::LogicalSize::new(800., 300.));
+            sleep(50).await;
+            let reader = ElementHandle::find_by_element_id(&w, "AppWindow::reader-scroll").next().ok_or("no text reader")?;
+            let (pos, size) = (reader.absolute_position(), reader.size());
+            let position = slint::LogicalPosition::new(pos.x + size.width / 2., pos.y + size.height / 2.);
+            w.window().dispatch_event(slint::platform::WindowEvent::PointerScrolled { position, delta_x: 0., delta_y: -2000. });
+            wait_for("timeline follows the scroll", || w.get_scrolled_in_conversation() == 1).await?;
+            ensure(w.get_msg_subject() == "Project kickoff", "scrolling opened another message")?;
+
             // Archiving from the inbox moves the conversation's inbox messages; Sent keeps its copy.
             click(&w, "Archive")?;
             ensure(!subjects(&w).iter().any(|s| s == "Re: Project kickoff"), "conversation still listed")?;

@@ -410,3 +410,62 @@ fn mail_from_sender() {
     assert_eq!(app.property(&search, "accessibleValue"), "from:frank@example.org");
     app.screenshot("mail_from_sender");
 }
+
+/// #7: scrolling a conversation in the Android WebView stack moves the timeline's highlight through
+/// every message, the short one between two long ones included, without opening another.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn conversation_scroll() {
+    if !android() {
+        eprintln!("skipped: the desktop reader is covered by the story tests (text reader)");
+        return;
+    }
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    let long = |who: &str| (1..=40).map(|i| format!("{who}, paragraph {i}.")).collect::<Vec<_>>().join("\r\n\r\n");
+    let messages = [("Alice", long("Alice")), ("Bob", "Short and sweet.".to_string()), ("Carol", long("Carol"))];
+    for (i, (who, body)) in messages.iter().enumerate() {
+        let references: String = (0..i).map(|j| format!("<plan{j}@example.org>")).collect::<Vec<_>>().join(" ");
+        let threading = if i == 0 { String::new() } else { format!("In-Reply-To: <plan{}@example.org>\r\nReferences: {references}\r\n", i - 1) };
+        deliver_raw(&account, &format!(
+            "From: {who} <{}@example.org>\r\nTo: {}\r\nSubject: {}Plan\r\nMessage-ID: <plan{i}@example.org>\r\n{threading}\
+             Date: Mon, 5 Oct 2026 1{i}:00:00 +0000\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n",
+            who.to_lowercase(), account.email, if i == 0 { "" } else { "Re: " }
+        ));
+    }
+    let app = App::launch();
+    app.set_up(&account);
+    app.click("Carol: Re: Plan", "ListItem");
+    let mut frame = None;
+    app.wait_until("HTML view shown", || {
+        frame = e2e::html_frame();
+        frame.is_some()
+    });
+    let [x0, y0, x1, y1] = frame.unwrap();
+    // The sender on the timeline entry marked current.
+    let highlighted = || {
+        app.find_role("ListItem").iter().map(|e| app.call("get_element_properties", serde_json::json!({"elementHandle": e})).unwrap())
+            .find(|p| p["accessibleDescription"] == "current")
+            .and_then(|p| p["accessibleLabel"].as_str().and_then(|l| l.strip_prefix("Conversation: ")).map(|l| l.split(',').next().unwrap().to_string()))
+    };
+    app.wait_until("the open message highlighted", || highlighted().as_deref() == Some("Carol"));
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    e2e::device_screenshot("conversation_scroll_open");
+
+    // Short drags back to the start: the reading line passes every message on the way.
+    let mut seen = vec!["Carol".to_string()];
+    let mid = (x0 + x1) / 2;
+    for _ in 0..30 {
+        e2e::swipe((mid, y0 + (y1 - y0) / 3), (mid, y0 + (y1 - y0) * 2 / 3), 400);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        if let Some(who) = highlighted() && seen.last() != Some(&who) {
+            seen.push(who);
+        }
+        if seen.last().map(String::as_str) == Some("Alice") {
+            break;
+        }
+    }
+    e2e::device_screenshot("conversation_scroll_top");
+    assert_eq!(seen, ["Carol", "Bob", "Alice"], "highlight did not step through the conversation");
+}

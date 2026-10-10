@@ -52,6 +52,16 @@ pub(crate) fn float_action_later(action: i32) {
     });
 }
 
+/// The user scrolled the HTML view's conversation to this message (any thread).
+#[cfg(target_os = "android")]
+pub(crate) fn scrolled_to_later(index: i32) {
+    with_controller(move |c| {
+        let window = c.window();
+        window.set_reader_scrolled(true);
+        window.set_scrolled_in_conversation(index);
+    });
+}
+
 /// Runs `f` on the UI thread with the controller, from any thread.
 fn with_controller(f: impl FnOnce(&Rc<Controller>) + Send + 'static) {
     let _ = slint::invoke_from_event_loop(move || {
