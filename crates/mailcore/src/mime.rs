@@ -463,6 +463,8 @@ pub struct Draft {
     pub body: String,
     pub in_reply_to: String,
     pub references: String,
+    /// Kept across saves, so a newer copy of a draft can replace the older one in Drafts.
+    pub message_id: String,
     pub attachments: Vec<std::path::PathBuf>,
 }
 
@@ -510,6 +512,15 @@ pub struct BuiltMessage {
 }
 
 pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
+    build(draft, false)
+}
+
+/// A draft for the Drafts folder: recipients may be missing, Bcc is kept.
+pub fn build_draft(draft: &Draft) -> Result<BuiltMessage> {
+    build(draft, true)
+}
+
+fn build(draft: &Draft, is_draft: bool) -> Result<BuiltMessage> {
     use mail_builder::MessageBuilder;
     use mail_builder::headers::address::Address as MbAddress;
 
@@ -522,7 +533,7 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
         .chain(&bcc)
         .map(|(_, a)| a.clone())
         .collect();
-    if recipients.is_empty() {
+    if recipients.is_empty() && !is_draft {
         return Err(anyhow!("add at least one recipient"));
     }
     for r in &recipients {
@@ -551,6 +562,9 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
     if !cc.is_empty() {
         builder = builder.cc(to_mb(&cc));
     }
+    if is_draft && !bcc.is_empty() {
+        builder = builder.bcc(to_mb(&bcc));
+    }
     let strip = |s: &str| {
         s.split_whitespace()
             .map(|id| id.trim_matches(['<', '>']).to_string())
@@ -561,6 +575,9 @@ pub fn build_message(draft: &Draft) -> Result<BuiltMessage> {
     }
     if !draft.references.is_empty() {
         builder = builder.references(strip(&draft.references));
+    }
+    if let Some(id) = strip(&draft.message_id).pop() {
+        builder = builder.message_id(id);
     }
     for path in &draft.attachments {
         let data = std::fs::read(path).map_err(|e| anyhow!("reading {}: {e}", path.display()))?;
@@ -591,6 +608,30 @@ fn guess_mime(name: &str) -> &'static str {
         Some("ics") => "text/calendar",
         _ => "application/octet-stream",
     }
+}
+
+/// Reads a saved draft back for editing. Attachments are left to the caller.
+pub fn draft_from_raw(raw: &[u8]) -> Draft {
+    let summary = summary_from_headers("", 0, raw, None);
+    let bcc = MessageParser::default().parse_headers(raw).map(|m| format_addresses(m.bcc())).unwrap_or_default();
+    Draft {
+        to: summary.to,
+        cc: summary.cc,
+        bcc,
+        subject: summary.subject,
+        body: body_from_raw(raw).text.replace("\r\n", "\n"),
+        in_reply_to: summary.in_reply_to,
+        references: summary.references,
+        message_id: summary.message_id,
+        ..Default::default()
+    }
+}
+
+/// A fresh Message-ID for a new draft, in the sender's domain.
+pub fn new_message_id(from_addr: &str) -> String {
+    let domain = from_addr.rsplit_once('@').map_or("localhost", |(_, d)| d);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("<{nanos:x}.{:x}@{domain}>", std::process::id())
 }
 
 pub enum ReplyKind {
@@ -855,6 +896,29 @@ iVBORw0KGgo=\r\n\
                 .collect::<Vec<_>>(),
             ["Hi", "there"]
         );
+    }
+
+    #[test]
+    fn draft_roundtrip() {
+        let draft = Draft {
+            from_addr: "me@example.org".into(),
+            bcc: "Hidden <hidden@example.org>".into(),
+            subject: "Unfinished".into(),
+            body: "First line\nsecond".into(),
+            in_reply_to: "<a@x>".into(),
+            references: "<r@x> <a@x>".into(),
+            message_id: "<draft1@example.org>".into(),
+            ..Default::default()
+        };
+        assert!(build_message(&Draft { bcc: String::new(), ..draft.clone() }).is_err(), "sending needs a recipient");
+        let back = draft_from_raw(&build_draft(&draft).unwrap().raw);
+        assert_eq!(back.to, "");
+        assert_eq!(back.bcc, draft.bcc);
+        assert_eq!(back.subject, draft.subject);
+        assert_eq!(back.body.trim_end(), draft.body);
+        assert_eq!((back.in_reply_to, back.references), (draft.in_reply_to, draft.references));
+        assert_eq!(back.message_id, draft.message_id);
+        assert!(new_message_id("me@example.org").ends_with("@example.org>"));
     }
 
     #[test]

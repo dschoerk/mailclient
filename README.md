@@ -23,6 +23,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Full-text search (SQLite FTS5) over subject, sender and downloaded bodies.
 - Compose, reply, reply all and forward (including attachments) as plain text, with
   file attachments. Sent mail is filed to the Sent folder (Gmail does this itself).
+- Drafts: closing the composer (or Back on Android) saves to Drafts, plus an autosave every
+  15 s; reopen with "Edit draft". Sending or discarding removes the draft.
 - Save attachments; `mailto:` links open the composer; other links open in the
   system browser.
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,

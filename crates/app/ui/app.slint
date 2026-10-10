@@ -42,6 +42,8 @@ export component AppWindow inherits Window {
     in property <string> msg-cc;
     in property <string> msg-date;
     in property <bool> msg-flagged;
+    /// The open message is in Drafts: it can be edited.
+    in property <bool> msg-is-draft;
     in property <bool> msg-seen;
     in property <bool> msg-loading;
     in property <bool> msg-remote-blocked;
@@ -70,6 +72,7 @@ export component AppWindow inherits Window {
     callback reply();
     callback reply-all();
     callback forward();
+    callback edit-draft();
     callback archive();
     callback delete();
     callback toggle-seen();
@@ -96,6 +99,7 @@ export component AppWindow inherits Window {
     callback compose-attach();
     callback compose-remove-attachment(int);
     callback compose-discard();
+    callback compose-close();
 
     // Phones: one pane at a time (1 list, 2 message); folders are a drawer over them.
     property <bool> narrow: root.width < 700px;
@@ -316,6 +320,7 @@ export component AppWindow inherits Window {
                             attach => root.compose-attach();
                             remove-attachment(i) => root.compose-remove-attachment(i);
                             discard => root.compose-discard();
+                            close => root.compose-close();
                         }
                         if !root.has-message && !root.narrow && !root.composing: Rectangle {
                             vertical-stretch: 1;
@@ -337,6 +342,12 @@ export component AppWindow inherits Window {
                                     icon: @image-url("icons/arrow-left.svg");
                                     show-text: false;
                                     clicked => root.close-message();
+                                }
+                                if root.msg-is-draft: ToolButton {
+                                    text: "Edit draft";
+                                    icon: @image-url("icons/file-pen-line.svg");
+                                    show-text: true;
+                                    clicked => root.edit-draft();
                                 }
                                 ToolButton {
                                     text: "Reply";

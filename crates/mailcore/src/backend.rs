@@ -87,6 +87,13 @@ pub trait Backend: Sized + Send + 'static {
 
     fn save_sent(&mut self, folder: &str, raw: &[u8]) -> impl Future<Output = Result<()>> + Send;
 
+    fn save_draft(&mut self, folder: &str, raw: &[u8]) -> impl Future<Output = Result<()>> + Send;
+
+    /// UIDs of the messages in `folder` with this Message-ID header (`<id@host>`).
+    fn find_message_id(&mut self, folder: &str, id: &str) -> impl Future<Output = Result<Vec<u32>>> + Send;
+
+    fn create_folder(&mut self, name: &str) -> impl Future<Output = Result<()>> + Send;
+
     /// Waits until `folder` changes or `timeout` passes, keeping the session alive.
     /// Returns the session and whether something changed.
     fn wait_for_change(

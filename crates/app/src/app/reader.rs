@@ -146,7 +146,7 @@ impl Controller {
     }
 
     pub(super) fn update_reader_header(&self) {
-        let Some((_, m)) = self.selected_summary() else { return };
+        let Some((account, m)) = self.selected_summary() else { return };
         let window = self.window();
         window.set_has_message(true);
         window.set_msg_subject(if m.subject.is_empty() { "(no subject)".into() } else { m.subject.clone().into() });
@@ -157,6 +157,7 @@ impl Controller {
         window.set_msg_seen(m.seen);
         window.set_msg_flagged(m.flagged);
         let state = self.state.borrow();
+        window.set_msg_is_draft(state.folder(account, &m.folder).is_some_and(|f| f.role == Role::Drafts));
         let conversation = state.selected_row().map(|row| state.conversations[row].as_slice()).unwrap_or_default();
         // A single message needs no conversation strip.
         let items: Vec<ConversationItem> = if conversation.len() < 2 {

@@ -115,6 +115,10 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
   set the threading headers. Messages you answer get the "answered" flag.
 - **Fields**: To, Cc, Bcc and Subject. The body is plain text.
 - **Attachments**: add files with "Attach…" and remove them again before sending.
+- **Drafts**: leaving the composer (Close, or Back on Android) keeps the message in the
+  Drafts folder, which is created if the account has none. Changes are also saved every
+  15 seconds while you write. Open a draft from Drafts and click "Edit draft" to continue;
+  each save replaces the previous copy. Sending removes the draft, and Discard deletes it.
 - **Sending** uses SMTP. A copy of the sent message goes to the Sent folder (Gmail does
   this itself). If sending fails, the message stays in the compose window so you can try
   again.
@@ -170,7 +174,7 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 ## Not supported yet
 
 - Removing an account from inside the app. For now, edit `config.toml`.
-- Saving drafts, address autocomplete, and rich-text (HTML) writing.
+- Address autocomplete, and rich-text (HTML) writing.
 - Grouping conversations by subject, or across accounts.
 - CONDSTORE/QRESYNC. Flag changes are found by fetching the flags of cached messages
   again.

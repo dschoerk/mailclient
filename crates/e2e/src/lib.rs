@@ -25,7 +25,7 @@ pub fn test_ca() -> PathBuf {
     workspace_dir().join("target/test-mailserver/ca.pem")
 }
 
-fn android() -> bool {
+pub fn android() -> bool {
     std::env::var("E2E_TARGET").is_ok_and(|t| t == "android")
 }
 
@@ -170,6 +170,43 @@ impl App {
         self.call("set_element_value", json!({"elementHandle": e, "value": text})).unwrap();
     }
 
+    /// Fills and submits the setup form for a GreenMail account.
+    pub fn set_up(&self, account: &AccountConfig) {
+        self.type_in("Email", &account.email);
+        self.type_in("Password", "x");
+        self.type_in("IMAP server", "localhost");
+        self.type_in("IMAP port", "3993");
+        self.type_in("SMTP server", "localhost");
+        self.type_in("SMTP port", "3465");
+        self.click("Save and connect", "Button");
+    }
+
+    /// Clicks an item of the folder pane, which is a drawer on phones.
+    pub fn click_in_drawer(&self, label: &str, role: &str) {
+        if android() {
+            self.click("Folders", "Button");
+        }
+        self.click(label, role);
+    }
+
+    /// Android's system Back key.
+    pub fn back(&self) {
+        assert!(android(), "Back is an Android key");
+        adb(&["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    }
+
+    /// Waits up to 30 s for `cond`, with a screenshot on timeout.
+    pub fn wait_until(&self, what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !cond() {
+            if Instant::now() > deadline {
+                self.screenshot("timeout");
+                panic!("timed out waiting for {what}");
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+
     pub fn property(&self, element: &Value, name: &str) -> Value {
         self.call("get_element_properties", json!({"elementHandle": element})).unwrap()[name].clone()
     }
@@ -220,7 +257,11 @@ fn base64_decode(s: &str) -> Vec<u8> {
 
 /// A fresh GreenMail account (any login is accepted, users are created on first login).
 pub fn test_account() -> AccountConfig {
-    let user = format!("e2e{}@localhost", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    // Tests run in parallel: the counter keeps their accounts apart.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let user = format!("e2e{now}-{n}@localhost");
     AccountConfig {
         name: "E2E".into(),
         email: user.clone(),
@@ -253,6 +294,16 @@ pub fn create_folders(account: &AccountConfig, folders: &[&str]) {
             imap.create(f).await.unwrap();
         }
         imap.logout().await;
+    })
+}
+
+/// Subjects of the messages in a server folder (empty if the folder does not exist).
+pub fn server_subjects(account: &AccountConfig, folder: &str) -> Vec<String> {
+    block_on(async {
+        let mut imap = Imap::connect(account, "x").await.unwrap();
+        let messages = imap.fetch_new(folder, 0).await.unwrap_or_default();
+        imap.logout().await;
+        messages.into_iter().map(|m| m.subject).collect()
     })
 }
 

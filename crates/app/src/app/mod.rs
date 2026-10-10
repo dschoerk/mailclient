@@ -208,6 +208,7 @@ impl Controller {
         on!(on_reply, |c| c.reply(ReplyKind::Reply));
         on!(on_reply_all, |c| c.reply(ReplyKind::ReplyAll));
         on!(on_forward, |c| c.reply(ReplyKind::Forward));
+        on!(on_edit_draft, |c| c.edit_draft());
         on!(on_archive, |c| c.remove_selected(true));
         on!(on_delete, |c| c.remove_selected(false));
         on!(on_toggle_seen, |c| c.toggle_selected(false));
@@ -293,8 +294,16 @@ impl Controller {
                 }
             }
             Event::SendFailed(id, error) => {
-                if let Some(composer) = self.composer.borrow().as_ref().filter(|c| c.id() == Some(id)) {
-                    composer.send_failed(&error);
+                let composer = self.composer.borrow().clone();
+                if !composer.is_some_and(|c| c.failed(id, &error)) {
+                    // A save from a composer already closed by an earlier save.
+                    self.set_status(format!("⚠ {error}"));
+                }
+            }
+            Event::DraftSaved(id) => {
+                let composer = self.composer.borrow().clone();
+                if let Some(composer) = composer {
+                    composer.draft_saved(id);
                 }
             }
         }

@@ -91,10 +91,27 @@ impl Controller {
         Ok(())
     }
 
+    /// Opens the selected message from Drafts in the composer.
+    pub(super) fn edit_draft(&self) {
+        let Some((account, m)) = self.selected_summary() else { return };
+        let raw = match self.raw_of(account, &m) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return self.set_status("The draft is still downloading"),
+            Err(e) => return self.show_error(&e),
+        };
+        let mut draft = mime::draft_from_raw(&raw);
+        if let Err(e) = self.attach_original_files(account, &m, &mut draft) {
+            return self.show_error(&e);
+        }
+        // shortcut: a reopened reply no longer marks its original answered; would need the original's UID saved with the draft.
+        self.open_composer(account, draft, None);
+    }
+
     /// `account`: who the message is sent from (and whose message `replied_to` is).
-    pub(super) fn open_composer(&self, account: usize, draft: Draft, replied_to: Option<(String, u32)>) {
-        if self.state.borrow().accounts.get(account).is_none() {
-            return;
+    pub(super) fn open_composer(&self, account: usize, mut draft: Draft, replied_to: Option<(String, u32)>) {
+        let Some(email) = self.state.borrow().accounts.get(account).map(|a| a.config.email.clone()) else { return };
+        if draft.message_id.is_empty() {
+            draft.message_id = mime::new_message_id(&email);
         }
         if self.composer.borrow().is_some() {
             // One draft at a time; never throw away what the user is writing.
@@ -115,8 +132,24 @@ impl Controller {
                 id
             })
         };
-        let on_close: Box<dyn Fn(&Composer)> = Box::new(move |_| {
+        let on_save: Box<dyn Fn(Draft) -> u64> = {
+            let weak = weak_self.clone();
+            Box::new(move |draft| {
+                let Some(c) = weak.upgrade() else { return 0 };
+                let id = c.next_send_id.get();
+                c.next_send_id.set(id + 1);
+                // shortcut: changing From after a save leaves the older copy in the first account's Drafts.
+                let from = usize::try_from(c.window().get_compose_from_index()).unwrap_or(account);
+                c.send(from, Command::SaveDraft { id, draft });
+                id
+            })
+        };
+        let on_close: Box<dyn Fn(&Composer, bool)> = Box::new(move |composer, discarded| {
             if let Some(c) = weak_self.upgrade() {
+                if discarded {
+                    let from = usize::try_from(c.window().get_compose_from_index()).unwrap_or(account);
+                    c.send(from, Command::DeleteDraft { message_id: composer.message_id().to_string() });
+                }
                 c.composer.borrow_mut().take();
             }
         });
@@ -129,7 +162,7 @@ impl Controller {
             .collect();
         self.window().set_compose_from_options(ModelRc::from(senders.as_slice()));
         self.window().set_compose_from_index(account as i32);
-        let composer = Composer::open(&self.window(), draft, replied_to, on_send, on_close);
+        let composer = Composer::open(&self.window(), draft, replied_to, on_send, on_save, on_close);
         *self.composer.borrow_mut() = Some(composer);
     }
 }

@@ -491,6 +491,24 @@ impl Backend for Imap {
         self.append(folder, "(\\Seen)", raw).await
     }
 
+    async fn save_draft(&mut self, folder: &str, raw: &[u8]) -> Result<()> {
+        self.append(folder, "(\\Draft \\Seen)", raw).await
+    }
+
+    async fn find_message_id(&mut self, folder: &str, id: &str) -> Result<Vec<u32>> {
+        self.ensure_selected(folder).await?;
+        // The id goes into a quoted string; drafts' ids are ours, but never let a quote through.
+        let id = id.replace(['"', '\\'], "");
+        let mut uids: Vec<u32> = self.session.uid_search(format!("HEADER Message-ID \"{id}\"")).await?.into_iter().collect();
+        self.confirm().await?;
+        uids.sort_unstable();
+        Ok(uids)
+    }
+
+    async fn create_folder(&mut self, name: &str) -> Result<()> {
+        self.create(name).await
+    }
+
     async fn wait_for_change(self, folder: &str, timeout: Duration) -> Result<(Imap, bool)> {
         let never = tokio::sync::Notify::new();
         let (mut imap, changed) = self.idle(folder, timeout, &never).await?;

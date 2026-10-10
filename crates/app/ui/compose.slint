@@ -21,6 +21,8 @@ export component ComposeView {
     callback attach();
     callback remove-attachment(int);
     callback discard();
+    /// Saves to Drafts (if changed), then closes.
+    callback close();
 
     init => {
         if root.to == "" {
@@ -36,9 +38,9 @@ export component ComposeView {
                 root.send();
                 return accept;
             }
-            // Android Back discards the draft rather than closing the app.
+            // Android Back keeps the draft in Drafts rather than closing the app.
             if event.text == Key.Back && !root.sending {
-                root.discard();
+                root.close();
                 return accept;
             }
             reject
@@ -46,15 +48,15 @@ export component ComposeView {
         VerticalLayout {
             padding: 12px;
             spacing: 8px;
-            // Top bar: Discard where a back button usually is, actions on the right.
+            // Top bar: Close (keeps the draft) where a back button usually is, actions on the right.
             HorizontalLayout {
                 spacing: 8px;
                 ToolButton {
-                    text: "Discard";
-                    icon: @image-url("icons/x.svg");
+                    text: "Close";
+                    icon: @image-url("icons/arrow-left.svg");
                     show-text: false;
                     enabled: !root.sending;
-                    clicked => root.discard();
+                    clicked => root.close();
                 }
                 Rectangle {
                     horizontal-stretch: 1;
@@ -63,6 +65,13 @@ export component ComposeView {
                     indeterminate: true;
                     width: 24px;
                     height: 24px;
+                }
+                ToolButton {
+                    text: "Discard";
+                    icon: @image-url("icons/trash.svg");
+                    show-text: false;
+                    enabled: !root.sending;
+                    clicked => root.discard();
                 }
                 ToolButton {
                     text: "Attach…";

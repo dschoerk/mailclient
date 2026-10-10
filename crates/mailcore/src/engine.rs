@@ -43,6 +43,11 @@ pub enum Command {
         draft: Draft,
         replied_to: Option<(String, u32)>,
     },
+    /// Files the draft in Drafts, replacing older copies with its Message-ID.
+    /// `id` is echoed back in [`Event::DraftSaved`] / [`Event::SendFailed`].
+    SaveDraft { id: u64, draft: Draft },
+    /// Removes the saved copies of a discarded draft.
+    DeleteDraft { message_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +59,9 @@ pub enum Event {
     MessagesChanged(String),
     BodyReady { folder: String, uid: u32 },
     Sent(u64),
+    /// A send or a draft save failed.
     SendFailed(u64, String),
+    DraftSaved(u64),
 }
 
 pub struct Engine {
@@ -169,6 +176,10 @@ impl<B: Backend> Worker<B> {
             if matches!(command, Command::SyncAll) {
                 while let Ok(Command::SyncAll) = rx.try_recv() {}
             }
+            let draft_id = match &command {
+                Command::SaveDraft { id, .. } => Some(*id),
+                _ => None,
+            };
             // Sending is never retried: SMTP may already have delivered it.
             let retry = (!matches!(command, Command::Send { .. })).then(|| command.clone());
             let mut result = self.handle(command).await;
@@ -182,6 +193,9 @@ impl<B: Backend> Worker<B> {
             }
             if let Err(e) = result {
                 log::warn!("engine: {e:#}");
+                if let Some(id) = draft_id {
+                    self.emit(Event::SendFailed(id, format!("Draft not saved: {e:#}")));
+                }
                 if !B::is_rejection(&e) {
                     // Assume the connection is broken; reconnect on next use.
                     self.conn = None;
@@ -257,6 +271,63 @@ impl<B: Backend> Worker<B> {
                     self.emit(Event::Status(String::new()));
                 }
             }
+            Command::SaveDraft { id, draft } => {
+                self.save_draft(&draft).await?;
+                self.emit(Event::DraftSaved(id));
+            }
+            Command::DeleteDraft { message_id } => {
+                if let Some(drafts) = self.store.folder_by_role(Role::Drafts)? {
+                    self.remove_drafts(&drafts, &message_id, 0).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The Drafts folder, created when the server has none.
+    async fn drafts_folder(&mut self) -> Result<String> {
+        for create in [false, true] {
+            if let Some(drafts) = self.store.folder_by_role(Role::Drafts)? {
+                return Ok(drafts);
+            }
+            if create {
+                self.conn().await?.create_folder("Drafts").await?;
+            }
+            let folders = self.conn().await?.list_folders().await?;
+            self.store.sync_folders(&folders)?;
+            self.emit(Event::FoldersChanged);
+        }
+        self.store.folder_by_role(Role::Drafts)?.ok_or_else(|| anyhow!("no Drafts folder on this account"))
+    }
+
+    async fn save_draft(&mut self, draft: &Draft) -> Result<()> {
+        let mut draft = draft.clone();
+        draft.from_name = self.account.name.clone();
+        draft.from_addr = self.account.email.clone();
+        let built = mime::build_draft(&draft)?;
+        let drafts = self.drafts_folder().await?;
+        self.conn().await?.save_draft(&drafts, &built.raw).await?;
+        // The copy just saved has the highest UID; older ones go.
+        self.remove_drafts(&drafts, &draft.message_id, 1).await?;
+        if self.active.as_deref() == Some(drafts.as_str()) {
+            self.sync_folder(&drafts).await?;
+        }
+        Ok(())
+    }
+
+    /// Erases the copies of a draft in `folder`, all but the newest `keep`.
+    async fn remove_drafts(&mut self, folder: &str, message_id: &str, keep: usize) -> Result<()> {
+        if message_id.is_empty() {
+            return Ok(());
+        }
+        let uids = self.conn().await?.find_message_id(folder, message_id).await?;
+        let old = &uids[..uids.len().saturating_sub(keep)];
+        for uid in old {
+            self.conn().await?.apply(folder, *uid, &PendingOp::Expunge).await?;
+        }
+        if !old.is_empty() {
+            self.store.delete_messages(folder, old)?;
+            self.emit(Event::MessagesChanged(folder.to_string()));
         }
         Ok(())
     }
@@ -355,6 +426,10 @@ impl<B: Backend> Worker<B> {
         sent.set(true);
         self.emit(Event::Sent(id));
         self.emit(Event::Status("Message sent".into()));
+
+        if let Some(drafts) = self.store.folder_by_role(Role::Drafts)? {
+            self.remove_drafts(&drafts, &draft.message_id, 0).await?;
+        }
 
         if let Some((folder, uid)) = replied_to {
             self.store

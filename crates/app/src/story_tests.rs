@@ -70,9 +70,26 @@ fn server(account: &AccountConfig, folder: &str) -> Vec<MessageSummary> {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let mut imap = Imap::connect(&account, "x").await.unwrap();
-            let messages = imap.fetch_new(&folder, 0).await.unwrap();
+            let messages = imap.fetch_new(&folder, 0).await.unwrap_or_default(); // folder may not exist yet
             imap.logout().await;
             messages
+        })
+    })
+    .join()
+    .unwrap()
+}
+
+/// Plain-text bodies of the messages with this subject in a server folder.
+fn server_texts(account: &AccountConfig, folder: &str, subject: &str) -> Vec<String> {
+    let uids: Vec<u32> = server(account, folder).into_iter().filter(|m| m.subject == subject).map(|m| m.uid).collect();
+    let (account, folder) = (account.clone(), folder.to_string());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut imap = Imap::connect(&account, "x").await.unwrap();
+            let bodies = if uids.is_empty() { Vec::new() } else { imap.fetch_bodies(&folder, &uids).await.unwrap() };
+            imap.logout().await;
+            bodies.iter().map(|(_, raw)| mime::body_from_raw(raw).text).collect()
         })
     })
     .join()
@@ -350,6 +367,67 @@ fn user_stories() {
         .await;
         record("US8 write and send", r);
 
+        // US18: unfinished messages are kept in Drafts (created here, the account has none),
+        // reopened from there, replaced on every save, and removed when sent or discarded.
+        let r = async {
+            // Drafts lists the recipient, like Sent.
+            let row = |subject: &str| format!("To: {user}: {subject}");
+            click(&w, "New message")?;
+            type_in(&w, "To", &user)?;
+            type_in(&w, "Subject", "Draft story")?;
+            type_in(&w, "Body", "First version")?;
+            wait_for("autosave to Drafts", || server_texts(&account, "Drafts", "Draft story").len() == 1).await?;
+            click(&w, "Close")?;
+            wait_for("composer closed", || !w.get_composing() && Controller::current().composer().is_none()).await?;
+
+            click(&w, "Folder Drafts")?;
+            wait_for("draft listed", || subjects(&w) == ["Draft story"]).await?;
+            click(&w, &row("Draft story"))?;
+            wait_for("draft open", || w.get_msg_is_draft() && w.get_msg_text().contains("First version")).await?;
+            click(&w, "Edit draft")?;
+            ensure(w.get_composing(), "draft not opened in the composer")?;
+            ensure(w.get_compose_to() == user.as_str(), format!("to: {}", w.get_compose_to()))?;
+            ensure(w.get_compose_subject() == "Draft story", format!("subject: {}", w.get_compose_subject()))?;
+            ensure(w.get_compose_body().trim_end() == "First version", format!("body: {:?}", w.get_compose_body()))?;
+            type_in(&w, "Body", "Second version")?;
+            click(&w, "Close")?;
+            wait_for("composer closed after saving", || !w.get_composing()).await?;
+            let texts = server_texts(&account, "Drafts", "Draft story");
+            ensure(texts.len() == 1 && texts[0].contains("Second version"), format!("Drafts on server: {texts:?}"))?;
+            wait_for("list shows the new copy only", || subjects(&w) == ["Draft story"]).await?;
+
+            // Sending a reopened draft removes it from Drafts.
+            click(&w, &row("Draft story"))?;
+            wait_for("draft open", || w.get_msg_text().contains("Second version")).await?;
+            click(&w, "Edit draft")?;
+            click(&w, "Send")?;
+            wait_for("composer closed after sending", || !w.get_composing()).await?;
+            wait_for("draft gone after sending", || on_server(&account, "Drafts", "Draft story").is_none()).await?;
+            wait_for("sent copy", || on_server(&account, "Sent", "Draft story").is_some()).await?;
+
+            // Discard removes a saved draft.
+            click(&w, "New message")?;
+            type_in(&w, "To", &user)?;
+            type_in(&w, "Subject", "Discarded draft")?;
+            click(&w, "Close")?;
+            wait_for("saved", || !w.get_composing() && on_server(&account, "Drafts", "Discarded draft").is_some()).await?;
+            click(&w, &row("Discarded draft"))?;
+            wait_for("draft open", || w.get_msg_subject() == "Discarded draft" && !w.get_msg_loading()).await?;
+            click(&w, "Edit draft")?;
+            click(&w, "Discard")?;
+            ensure(!w.get_composing(), "composer still open after Discard")?;
+            wait_for("discarded draft gone", || on_server(&account, "Drafts", "Discarded draft").is_none()).await?;
+
+            // An untouched new message closes without leaving a draft.
+            click(&w, "New message")?;
+            click(&w, "Close")?;
+            ensure(!w.get_composing(), "empty composer did not close")?;
+            click(&w, "Folder Inbox")?;
+            wait_for("inbox", || w.get_list_title() == "Inbox").await
+        }
+        .await;
+        record("US18 drafts", r);
+
         // US10: mail from elsewhere shows up without a manual sync (IDLE).
         let r = async {
             deliver(&account, ("Carol", "carol@example.org"), "Pushed via IDLE", "Arrived while open.");
@@ -387,6 +465,7 @@ fn user_stories() {
                 row("Inbox", 0),
                 row("Receipts", 1),
                 row("2026", 2),
+                row("Drafts", 0), // created by US18
                 row("Sent", 0),
                 row("Archive", 0),
                 row("Trash", 0),

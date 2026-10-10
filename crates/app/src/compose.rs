@@ -9,7 +9,12 @@ use crate::format;
 use crate::{AppWindow, AttachmentItem};
 
 type SendFn = Box<dyn Fn(Draft, Option<(String, u32)>) -> u64>;
-type CloseFn = Box<dyn Fn(&Composer)>;
+type SaveFn = Box<dyn Fn(Draft) -> u64>;
+/// Called once the composer is gone; `true` when the draft was discarded.
+type CloseFn = Box<dyn Fn(&Composer, bool)>;
+
+/// Unsaved changes reach Drafts at most this late (a killed app loses no more).
+const AUTOSAVE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The draft being written. It is shown inside the main window (replacing the reader),
 /// because Android has a single window surface; one draft at a time.
@@ -18,11 +23,17 @@ pub struct Composer {
     attachments: RefCell<Vec<PathBuf>>,
     attachment_model: Rc<VecModel<AttachmentItem>>,
     replied_to: Option<(String, u32)>,
-    /// In-Reply-To and References from the reply template.
-    threading: (String, String),
+    /// In-Reply-To, References and Message-ID, kept from the template or reopened draft.
+    threading: (String, String, String),
     /// Id of the send in flight, if any.
     send_id: Cell<Option<u64>>,
+    /// The draft as Drafts has it (or as opened).
+    saved: RefCell<Draft>,
+    /// Save in flight: id, content, and whether to close once it is stored.
+    saving: RefCell<Option<(u64, Draft, bool)>>,
+    autosave: slint::Timer,
     on_send: SendFn,
+    on_save: SaveFn,
     on_close: CloseFn,
 }
 
@@ -32,6 +43,7 @@ impl Composer {
         draft: Draft,
         replied_to: Option<(String, u32)>,
         on_send: SendFn,
+        on_save: SaveFn,
         on_close: CloseFn,
     ) -> Rc<Composer> {
         app.set_compose_to(draft.to.clone().into());
@@ -47,9 +59,13 @@ impl Composer {
             attachments: RefCell::new(draft.attachments.clone()),
             attachment_model: Rc::new(VecModel::default()),
             replied_to,
-            threading: (draft.in_reply_to, draft.references),
+            threading: (draft.in_reply_to.clone(), draft.references.clone(), draft.message_id.clone()),
             send_id: Cell::new(None),
+            saved: RefCell::new(draft),
+            saving: RefCell::new(None),
+            autosave: slint::Timer::default(),
             on_send,
+            on_save,
             on_close,
         });
         app.set_compose_attachments(ModelRc::from(composer.attachment_model.clone()));
@@ -81,7 +97,19 @@ impl Composer {
         let weak = Rc::downgrade(&composer);
         app.on_compose_discard(move || {
             if let Some(c) = weak.upgrade() {
-                c.close();
+                c.finish(true);
+            }
+        });
+        let weak = Rc::downgrade(&composer);
+        app.on_compose_close(move || {
+            if let Some(c) = weak.upgrade() {
+                c.save(true);
+            }
+        });
+        let weak = Rc::downgrade(&composer);
+        composer.autosave.start(slint::TimerMode::Repeated, AUTOSAVE, move || {
+            if let Some(c) = weak.upgrade() {
+                c.save(false);
             }
         });
         app.set_composing(true);
@@ -96,16 +124,82 @@ impl Composer {
         self.send_id.get()
     }
 
+    /// Closes after sending.
     pub fn close(&self) {
-        self.app().set_composing(false);
-        (self.on_close)(self);
+        self.finish(false);
     }
 
-    pub fn send_failed(&self, error: &str) {
-        self.send_id.set(None);
-        let app = self.app();
-        app.set_compose_sending(false);
-        app.set_compose_error(error.into());
+    fn finish(&self, discarded: bool) {
+        self.autosave.stop();
+        self.app().set_composing(false);
+        (self.on_close)(self, discarded);
+    }
+
+    pub fn message_id(&self) -> &str {
+        &self.threading.2
+    }
+
+    /// A send or a save failed. Returns false when `id` is not one of ours.
+    pub fn failed(&self, id: u64, error: &str) -> bool {
+        let closing = match &*self.saving.borrow() {
+            Some((saving, _, closing)) if *saving == id => *closing,
+            _ if self.send_id.get() == Some(id) => true,
+            _ => return false,
+        };
+        if self.send_id.get() == Some(id) {
+            self.send_id.set(None);
+        } else {
+            self.saving.borrow_mut().take();
+        }
+        // An autosave failing is not worth interrupting the writer; the next one retries.
+        if closing {
+            let app = self.app();
+            app.set_compose_sending(false);
+            app.set_compose_error(error.into());
+        }
+        true
+    }
+
+    pub fn draft_saved(&self, id: u64) {
+        let Some((saving, draft, closing)) = self.saving.borrow().clone() else { return };
+        if saving != id {
+            return;
+        }
+        self.saving.borrow_mut().take();
+        *self.saved.borrow_mut() = draft;
+        if closing {
+            // Saves once more if it changed while this save was under way.
+            self.save(true);
+        }
+    }
+
+    /// Stores the draft in Drafts if it changed; `close`: then leave the composer.
+    fn save(&self, close: bool) {
+        if self.send_id.get().is_some() {
+            return;
+        }
+        let draft = self.draft();
+        if let Some((_, _, closing)) = self.saving.borrow_mut().as_mut() {
+            // One save at a time; a close waits for the one in flight, then saves again if needed.
+            *closing |= close;
+            if close {
+                self.app().set_compose_sending(true);
+            }
+            return;
+        }
+        if draft == *self.saved.borrow() {
+            if close {
+                self.finish(false);
+            }
+            return;
+        }
+        if close {
+            let app = self.app();
+            app.set_compose_error("".into());
+            app.set_compose_sending(true);
+        }
+        let id = (self.on_save)(draft.clone());
+        *self.saving.borrow_mut() = Some((id, draft, close));
     }
 
     fn draft(&self) -> Draft {
@@ -118,6 +212,7 @@ impl Composer {
             body: app.get_compose_body().into(),
             in_reply_to: self.threading.0.clone(),
             references: self.threading.1.clone(),
+            message_id: self.threading.2.clone(),
             attachments: self.attachments.borrow().clone(),
             ..Default::default()
         }
