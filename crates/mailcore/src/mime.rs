@@ -418,6 +418,20 @@ pub fn render_conversation(messages: &[(String, Option<&Body>)], current: usize)
     document(&content)
 }
 
+/// Run by the app (never by the page, whose scripts the CSP sandbox blocks) after the user scrolled a
+/// conversation: marks the message under the reading line as current and returns its index, or -1 when
+/// there is nothing to follow. The line moves from the viewport's top to its bottom as the page scrolls
+/// from start to end, so it passes every message, however short.
+pub const SCROLLED_SCRIPT: &str = "(() => {\
+    const s = document.querySelectorAll('section.message'), e = document.scrollingElement;\
+    if (s.length < 2 || e.scrollHeight <= innerHeight) return -1;\
+    const line = e.scrollTop / (e.scrollHeight - innerHeight) * innerHeight;\
+    let n = 0;\
+    s.forEach((m, i) => { if (m.getBoundingClientRect().top <= line) n = i; });\
+    s.forEach((m, i) => m.classList.toggle('current', i === n));\
+    return n;\
+})()";
+
 fn document(content: &str) -> String {
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\

@@ -18,9 +18,13 @@ export global WebviewLogic {
 }
 
 export component Webview {
+    /// The user scrolled the page (wheel or keys).
+    callback scrolled();
+
     focus_scope := FocusScope {
         key-pressed(event) => {
             WebviewLogic.key_event(event, true);
+            root.scrolled();
             accept
         }
         key-released(event) => {
@@ -57,6 +61,7 @@ export component Webview {
 
             scroll-event(event) => {
                 WebviewLogic.scroll(self.mouse-x, self.mouse-y, event.delta-x, event.delta-y);
+                root.scrolled();
                 return accept;
             }
         }

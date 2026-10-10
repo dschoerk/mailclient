@@ -76,6 +76,12 @@ export component AppWindow inherits Window {
     // Every message of the open conversation, oldest first; empty for a lone message.
     in property <[ConversationItem]> conversation;
     in property <int> current-in-conversation: -1;
+    /// The reader was scrolled by the user since the conversation was rendered; Rust resets it.
+    in-out property <bool> reader-scrolled;
+    /// The message at the top of the scrolled reader, or -1 until the user scrolls.
+    in-out property <int> scrolled-in-conversation: -1;
+    /// Highlighted on the conversation's timeline: follows the reader's scroll position.
+    property <int> highlighted-in-conversation: root.reader-scrolled && root.scrolled-in-conversation >= 0 ? root.scrolled-in-conversation : root.current-in-conversation;
     // The text reader's messages, oldest first; the open one is current-in-conversation.
     in property <[ReaderPart]> msg-parts;
     // Phones: the reader's thumb actions sit on this side.
@@ -400,7 +406,7 @@ export component AppWindow inherits Window {
                                     msg: msg;
                                     selected: i == root.current-message;
                                     thread: root.conversation;
-                                    thread-current: root.current-in-conversation;
+                                    thread-current: root.highlighted-in-conversation;
                                     selecting: root.checked-count > 0;
                                     swipeable: root.narrow;
                                     swiped(archive) => { root.row-swiped(i, archive); }
@@ -599,7 +605,7 @@ export component AppWindow inherits Window {
                                 height: min(root.conversation.length, 4) * 30px;
                                 vertical-stretch: 0;
                                 // Keeps the open entry in view, with the one before it for context.
-                                property <int> current: root.current-in-conversation;
+                                property <int> current: root.highlighted-in-conversation;
                                 function reveal() {
                                     self.viewport-y = -max(0, min(self.current - 1, root.conversation.length - 4)) * 30px;
                                 }
@@ -607,7 +613,7 @@ export component AppWindow inherits Window {
                                 changed current => { self.reveal(); }
                                 for item[i] in root.conversation: TimelineItem {
                                     item: item;
-                                    current: i == root.current-in-conversation;
+                                    current: i == root.highlighted-in-conversation;
                                     first: i == 0;
                                     last: i == root.conversation.length - 1;
                                     line-color: Theme.accent;
@@ -688,8 +694,10 @@ export component AppWindow inherits Window {
                                 width: 100%;
                                 height: 100%;
                                 visible: root.has-message && !root.composing;
+                                scrolled => { root.reader-scrolled = true; }
                             }
                             if !root.use-webview && !root.html-overlay && root.has-message && !root.composing: reader-scroll := ScrollView {
+                                scrolled => { root.reader-scrolled = true; }
                                 VerticalLayout {
                                     width: reader-scroll.visible-width;
                                     padding: 14px;
@@ -697,6 +705,17 @@ export component AppWindow inherits Window {
                                     spacing: 18px;
                                     for part[i] in root.msg-parts: part-row := HorizontalLayout {
                                         spacing: 8px;
+                                        // The reading line, as in the HTML reader (mailcore::mime::SCROLLED_SCRIPT): it moves
+                                        // from the viewport's top to its bottom as the reader scrolls from start to end.
+                                        property <length> line: -reader-scroll.content-y * (1 + reader-scroll.visible-height / max(1px, reader-scroll.content-height - reader-scroll.visible-height));
+                                        // Each message owns the gap after it; the first also what comes before.
+                                        property <bool> on-line: (i == 0 || self.y <= self.line) && (i == root.msg-parts.length - 1 || self.line < self.y + self.height + 18px);
+                                        property <bool> spied: root.reader-scrolled && self.on-line;
+                                        changed spied => {
+                                            if self.spied {
+                                                root.scrolled-in-conversation = i;
+                                            }
+                                        }
                                         // Scrolls to the open message once laid out; Rust sets a new model on every
                                         // render, so this runs again for each opened message.
                                         Timer {
@@ -707,10 +726,10 @@ export component AppWindow inherits Window {
                                                 self.running = false;
                                             }
                                         }
-                                        // Marks the open message, like the Servo reader.
+                                        // Marks the open message, or the scrolled-to one, like the Servo reader.
                                         if root.msg-parts.length > 1: Rectangle {
                                             width: 3px;
-                                            background: i == root.current-in-conversation ? Theme.accent : Theme.divider;
+                                            background: i == root.highlighted-in-conversation ? Theme.accent : Theme.divider;
                                         }
                                         VerticalLayout {
                                             spacing: 8px;
