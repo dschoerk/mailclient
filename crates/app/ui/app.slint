@@ -885,6 +885,8 @@ export component AppWindow inherits Window {
         floating-buttons <=> root.floating-buttons;
         accounts: root.accounts;
         composing: root.composing;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
         changed => root.settings-changed();
         add-account => root.add-account();
         edit-account(i) => root.edit-account(i);

@@ -711,7 +711,7 @@ fn user_stories() {
             click(&w, "Folder All inboxes")?;
             click(&w, "Settings")?;
             ensure(w.get_show_settings(), "settings not shown")?;
-            element(&w, "Notify me about new mail", &[AccessibleRole::Checkbox])?.invoke_accessible_default_action();
+            element(&w, "New-mail notifications", &[AccessibleRole::Checkbox])?.invoke_accessible_default_action();
             ensure(config::load_settings().is_ok_and(|s| s.mute_notifications), "mute not saved")?;
             deliver(&second, ("Erin", "erin@example.org"), "Muted arrival", "No popup please.");
             wait_for("muted message listed", || subjects(&w).iter().any(|s| s == "Muted arrival")).await?;
