@@ -50,6 +50,8 @@ pub enum Command {
     SaveDraft { id: u64, draft: Draft },
     /// Removes the saved copies of a discarded draft.
     DeleteDraft { message_id: String },
+    /// Finishes the queued commands, logs out and ends the engine thread. Sent on drop.
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +129,13 @@ impl Engine {
     }
 }
 
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // The IDLE task holds a sender too, so the channel never closes by itself.
+        self.send(Command::Stop);
+    }
+}
+
 /// What deleting a message in `folder` means: move to Trash, or erase when it
 /// is already in Trash (or there is no Trash folder).
 pub fn delete_op(store: &Store, folder: &str) -> Result<PendingOp> {
@@ -176,6 +185,9 @@ impl<B: Backend> Worker<B> {
                 },
                 _ = poll.tick() => Command::SyncAll,
             };
+            if matches!(command, Command::Stop) {
+                break;
+            }
             // Collapse bursts of syncs (e.g. IDLE notifications plus a poll tick).
             if matches!(command, Command::SyncAll) {
                 while let Ok(Command::SyncAll) = rx.try_recv() {}
@@ -285,6 +297,7 @@ impl<B: Backend> Worker<B> {
                     self.remove_drafts(&drafts, &message_id, 0).await?;
                 }
             }
+            Command::Stop => {}
         }
         Ok(())
     }

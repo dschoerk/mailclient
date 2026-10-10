@@ -11,7 +11,7 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 
 - Account setup with server guesses for common providers; login verified before saving.
   Password stored in the system keyring (Secret Service).
-- Multiple accounts ("Add account" in the sidebar), each with its own sync engine and cache,
+- Multiple accounts (Settings: add, edit, sign in again, remove), each with its own sync engine and cache,
   and an "All inboxes" view; a colored bar in the message list marks each account.
 - Conversations: the list shows one row per conversation (by `References`/`In-Reply-To`),
   the open one unfolds into a timeline of its messages, and the reader shows them all

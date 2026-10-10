@@ -97,6 +97,7 @@ export component Field inherits HorizontalLayout {
     in-out property <string> text;
     in property <string> placeholder;
     in property <InputType> input-type: InputType.text;
+    in property <bool> read-only;
     callback edited(string);
     spacing: 8px;
     Text {
@@ -111,6 +112,7 @@ export component Field inherits HorizontalLayout {
         text <=> root.text;
         placeholder-text: root.placeholder;
         input-type: root.input-type;
+        read-only: root.read-only;
         edited(t) => root.edited(t);
     }
 }

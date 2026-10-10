@@ -124,7 +124,7 @@ impl Credentials {
         }
         let tokens = refresh(self.account.auth, &state.0)
             .await
-            .context("signing in again (remove and re-add the account if this persists)")?;
+            .context("sign-in expired: open Settings, edit the account and save to sign in again")?;
         if let Some(new) = tokens.refresh {
             // Rotated: the sliding expiry only extends for the newest refresh token.
             self.account.store_password(&new)?;
