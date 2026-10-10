@@ -90,6 +90,8 @@ struct State {
     /// Bodies requested from the engine and not there yet.
     fetching: HashSet<Key>,
     engine_status: String,
+    /// Accounts whose user-requested sync has not finished: the list's refresh arrows spin until then.
+    syncing: HashSet<usize>,
     /// A message opened from a file (`mailclient message.eml`), shown without an account.
     standalone: Option<(MessageSummary, Vec<u8>)>,
 }
@@ -233,9 +235,12 @@ impl Controller {
             c.search(&query);
         });
         on!(on_refresh, |c| {
-            for account in &c.state.borrow().accounts {
+            let mut state = c.state.borrow_mut();
+            for account in &state.accounts {
                 account.engine.send(Command::SyncAll);
             }
+            state.syncing = (0..state.accounts.len()).collect();
+            c.window().set_syncing(!state.syncing.is_empty());
         });
         on!(on_compose, |c| c.open_composer(c.compose_account(), Draft::default(), None));
         on!(on_reply, |c| c.reply(ReplyKind::Reply));
@@ -290,6 +295,13 @@ impl Controller {
     // ---- engine events ----
 
     fn on_event(&self, account: usize, event: Event) {
+        // shortcut: any idle status ends the account's sync, even one from another command finishing first.
+        if matches!(&event, Event::Status(s) if s.is_empty()) || matches!(event, Event::Error(_)) {
+            let mut state = self.state.borrow_mut();
+            if state.syncing.remove(&account) && state.syncing.is_empty() {
+                self.window().set_syncing(false);
+            }
+        }
         match event {
             Event::Status(s) => self.set_status(s),
             Event::Error(e) => self.set_status(format!("⚠ {e}")),
