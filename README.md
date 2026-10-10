@@ -21,7 +21,7 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   open plus the 40 newest per sync. Works offline from the cache.
 - Push via IMAP IDLE on the inbox, polling every 5 minutes as a fallback; a system
   notification for new unread mail while the app runs (Linux desktop and Android). On Android
-  a foreground service keeps IDLE running in the background.
+  a background job checks the inboxes about every 15 minutes while the app is closed.
 - Read, flag, mark read/unread, archive, delete, also for several conversations at once
   (tick them at the row's left edge, by long press on phones, or with `x`); on phones a row swiped
   right is archived, swiped left deleted. Changes apply instantly and are
@@ -78,8 +78,8 @@ cargo test --workspace
 Builds without Servo: HTML mail is shown in the system WebView instead, with the same rules
 (scripts off, content served from memory under a CSP, remote loads blocked until "Load images").
 The APK carries a little Java (`crates/app/java/`): the activity (a NativeActivity subclass that adds
-the system file pickers), the WebView, and the foreground service that keeps push running in the
-background. cargo-apk cannot add Java code or declare a service, so `scripts/build-android.sh` runs
+the system file pickers), the WebView, and the background job that checks for new mail every 15
+minutes. cargo-apk cannot add Java code or declare a service, so `scripts/build-android.sh` runs
 `cargo apk build` and then packs the APK again with `crates/app/android/AndroidManifest.xml` and the
 compiled classes, signed with the debug key. Toolchain: JDK 21, Android SDK with
 `platforms;android-35`, `build-tools;35.0.0`, `ndk;28.2.13676358`, Rust targets

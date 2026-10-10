@@ -2,28 +2,20 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{Result, anyhow};
-use jni::objects::{JClass, JObjectArray, JString};
+use jni::objects::{JClass, JObject, JObjectArray, JString};
 use jni::{JNIEnv, NativeMethod};
 use tokio::sync::oneshot;
 
 #[unsafe(no_mangle)]
 fn android_main(android_app: slint::android::AndroidApp) {
     init_logging();
-    // No home directory on Android: keep config and cache in the app's private storage.
     if let Some(dir) = android_app.internal_data_path() {
-        // Development: no environment on Android, so MAILCLIENT_EXTRA_CA comes from a file
-        // (copied in with `adb shell run-as`, which only works for debug builds).
-        let ca = dir.join("extra-ca.pem");
-        if ca.exists() {
-            // SAFETY: no other threads exist yet.
-            unsafe { std::env::set_var("MAILCLIENT_EXTRA_CA", ca) };
-        }
         // End-to-end tests: port for Slint's MCP server (only in builds with `slint/mcp`).
         if let Ok(port) = std::fs::read_to_string(dir.join("mcp-port")) {
             // SAFETY: no other threads exist yet.
             unsafe { std::env::set_var("SLINT_MCP_PORT", port.trim()) };
         }
-        mailcore::config::set_base_dir(dir);
+        use_data_dir(dir);
     }
     // ndk_context holds the Application; asking for a permission needs the Activity itself.
     let activity = android_app.activity_as_ptr();
@@ -43,19 +35,82 @@ fn android_main(android_app: slint::android::AndroidApp) {
     }
     if let Err(e) = on_activity(|env, activity| {
         let on_result: extern "system" fn(JNIEnv, JClass, JObjectArray, JString) = on_result;
+        let on_resumed: extern "system" fn(JNIEnv, JClass) = on_resumed;
         let class = env.get_object_class(activity)?;
-        let method = NativeMethod {
-            name: "onResult".into(),
-            sig: "([Ljava/lang/String;Ljava/lang/String;)V".into(),
-            fn_ptr: on_result as *mut _,
-        };
-        env.register_native_methods(&class, &[method])
+        let methods = [
+            NativeMethod {
+                name: "onResult".into(),
+                sig: "([Ljava/lang/String;Ljava/lang/String;)V".into(),
+                fn_ptr: on_result as *mut _,
+            },
+            NativeMethod { name: "onResumed".into(), sig: "()V".into(), fn_ptr: on_resumed as *mut _ },
+        ];
+        env.register_native_methods(&class, &methods)
     }) {
-        log::warn!("cannot register the file picker callback: {e}");
+        log::warn!("cannot register the activity callbacks: {e}");
     }
     if let Err(e) = crate::run() {
         log::error!("{e:#}");
     }
+}
+
+/// No home directory on Android: config and cache live in the app's private storage.
+fn use_data_dir(dir: PathBuf) {
+    // Development: no environment on Android, so MAILCLIENT_EXTRA_CA comes from a file
+    // (copied in with `adb shell run-as`, which only works for debug builds).
+    let ca = dir.join("extra-ca.pem");
+    if ca.exists() {
+        // SAFETY: called before any other thread of ours starts.
+        unsafe { std::env::set_var("MAILCLIENT_EXTRA_CA", ca) };
+    }
+    mailcore::config::set_base_dir(dir);
+}
+
+/// Called by MainActivity.onResume. In the background Android freezes the process and IDLE
+/// with it, so mail that arrived meanwhile is fetched now.
+extern "system" fn on_resumed(_env: JNIEnv, _class: JClass) {
+    crate::app::sync_now();
+}
+
+/// SyncJob's periodic check, in its own process (`:sync`) without the UI: syncs each inbox
+/// once and notifies about new mail. `files_dir` is Context.getFilesDir().
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_mailclient_SyncJob_checkMail(mut env: JNIEnv, _class: JClass, context: JObject, files_dir: JString) {
+    init_logging();
+    // The keystore and notifications reach Java through ndk_context, which only the activity
+    // sets up otherwise; this process never runs one, so setting it here cannot clash.
+    static CONTEXT: std::sync::OnceLock<Option<jni::objects::GlobalRef>> = std::sync::OnceLock::new();
+    let context = CONTEXT.get_or_init(|| {
+        let global = env.new_global_ref(&context).ok()?;
+        let vm = env.get_java_vm().ok()?;
+        // SAFETY: the global reference is kept for the life of the process.
+        unsafe { ndk_context::initialize_android_context(vm.get_java_vm_pointer().cast(), global.as_obj().as_raw().cast()) };
+        let dir: String = env.get_string(&files_dir).ok()?.into();
+        use_data_dir(PathBuf::from(dir));
+        mailcore::init_tls();
+        Some(global)
+    });
+    if context.is_none() {
+        return log::warn!("background check: no Android context");
+    }
+    if let Err(e) = check_mail() {
+        log::warn!("background check: {e:#}");
+    }
+}
+
+fn check_mail() -> Result<()> {
+    if mailcore::config::load_settings()?.mute_notifications {
+        return Ok(());
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    for account in mailcore::config::load_accounts()? {
+        match runtime.block_on(mailcore::engine::check_inbox(&account, &crate::app::db_path(&account)?)) {
+            Ok(arrived) if !arrived.is_empty() => crate::app::notify_new_mail(&arrived),
+            Ok(_) => {}
+            Err(e) => log::warn!("background check of {}: {e:#}", account.email),
+        }
+    }
+    Ok(())
 }
 
 pub fn init_logging() {
@@ -84,8 +139,8 @@ const POST_NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
 pub(super) type Env<'a> = jni::JNIEnv<'a>;
 pub(super) type Obj<'a> = jni::objects::JObject<'a>;
 
-/// Replaced on each android_main: the push service keeps the process alive, so a destroyed
-/// activity's successor runs android_main again in the same process.
+/// Replaced on each android_main: a destroyed activity's successor can run android_main
+/// again in the same process.
 static ACTIVITY: Mutex<Option<jni::objects::GlobalRef>> = Mutex::new(None);
 
 /// The running Activity; ndk_context only has the Application, which cannot show views.

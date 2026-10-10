@@ -136,6 +136,34 @@ impl Drop for Engine {
     }
 }
 
+/// Syncs the inbox once, without an engine thread: a background check for new mail
+/// (Android's periodic job). Returns the unread messages that arrived since the last sync.
+pub async fn check_inbox(account: &AccountConfig, db_path: &std::path::Path) -> Result<Vec<MessageSummary>> {
+    let store = Store::open(db_path)?;
+    // Never synced: the app's first sync fills the cache, without notifying.
+    let Some(inbox) = store.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+    let arrived = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = arrived.clone();
+    let mut worker = Worker::<Imap> {
+        account: account.clone(),
+        creds: Arc::new(Credentials::load(account)?),
+        store,
+        conn: None,
+        active: None,
+        on_event: Arc::new(move |e| {
+            if let Event::NewMail(m) = e {
+                sink.lock().unwrap().extend(m);
+            }
+        }),
+    };
+    let result = worker.sync_folder(&inbox).await;
+    if let Some(conn) = worker.conn.take() {
+        conn.logout().await;
+    }
+    result?;
+    Ok(std::mem::take(&mut *arrived.lock().unwrap()))
+}
+
 /// What deleting a message in `folder` means: move to Trash, or erase when it
 /// is already in Trash (or there is no Trash folder).
 pub fn delete_op(store: &Store, folder: &str) -> Result<PendingOp> {
