@@ -105,8 +105,12 @@ fn check_mail() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     for account in mailcore::config::load_accounts()? {
         match runtime.block_on(mailcore::engine::check_inbox(&account, &crate::app::db_path(&account)?)) {
-            Ok(arrived) if !arrived.is_empty() => crate::app::notify_new_mail(&arrived),
-            Ok(_) => {}
+            Ok(arrived) => {
+                log::info!("background check of {}: {} new", account.email, arrived.len());
+                if !arrived.is_empty() {
+                    crate::app::notify_new_mail(&arrived);
+                }
+            }
             Err(e) => log::warn!("background check of {}: {e:#}", account.email),
         }
     }
