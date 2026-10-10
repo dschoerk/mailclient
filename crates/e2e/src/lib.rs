@@ -205,7 +205,16 @@ impl App {
 
     /// Holds a finger on the element for 0.8 s (Android only: a real touch through adb).
     pub fn long_press(&self, label: &str, role: &str) {
-        assert!(android(), "long press is a touch gesture");
+        self.touch_drag(label, role, 0.0, 800);
+    }
+
+    /// Drags a finger from the element's center sideways by `dx` times its width (Android only).
+    pub fn swipe_across(&self, label: &str, role: &str, dx: f64) {
+        self.touch_drag(label, role, dx, 300);
+    }
+
+    fn touch_drag(&self, label: &str, role: &str, dx: f64, ms: u32) {
+        assert!(android(), "a touch gesture");
         let e = self.wait_for(label, role);
         let props = self.call("get_element_properties", json!({"elementHandle": e})).unwrap();
         let center = |axis: &str, extent: &str| {
@@ -215,9 +224,10 @@ impl App {
         // Slint lays out in logical pixels: density / 160 physical pixels each.
         let out = adb_command().args(["shell", "wm", "density"]).output().expect("adb not found");
         let density: f64 = String::from_utf8_lossy(&out.stdout).rsplit(':').next().unwrap().trim().parse().unwrap();
-        let (x, y) = ((center("x", "width") * density / 160.0) as i64, (center("y", "height") * density / 160.0) as i64);
-        let (x, y) = (x.to_string(), y.to_string());
-        adb(&["shell", "input", "swipe", &x, &y, &x, &y, "800"]);
+        let scale = density / 160.0;
+        let (x, y) = (center("x", "width") * scale, center("y", "height") * scale);
+        let to = x + dx * props["size"]["width"].as_f64().unwrap() * scale;
+        swipe((x as usize, y as usize), (to.max(1.0) as usize, y as usize), ms);
     }
 
     /// Ctrl+`letter` (a–z) to whatever has key focus.

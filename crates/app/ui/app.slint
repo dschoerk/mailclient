@@ -98,6 +98,8 @@ export component AppWindow inherits Window {
     callback toggle-checked(int);
     /// "seen", "flag", "archive", "delete" or "clear", on the ticked rows.
     callback bulk-action(string);
+    /// A list row swiped away (phones): archived if true, else deleted.
+    callback row-swiped(int, bool);
     in property <int> checked-count;
     in property <bool> checked-all-seen;
     in property <bool> checked-all-flagged;
@@ -362,6 +364,8 @@ export component AppWindow inherits Window {
                                 thread: root.conversation;
                                 thread-current: root.current-in-conversation;
                                 selecting: root.checked-count > 0;
+                                swipeable: root.narrow;
+                                swiped(archive) => { root.row-swiped(i, archive); }
                                 clicked => {
                                     // Phones: while ticking, a tap ticks too.
                                     if root.narrow && root.checked-count > 0 {
