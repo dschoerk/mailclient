@@ -108,6 +108,10 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 
 - Reply, reply all, forward (with the attachments), archive and delete.
 - Mark as read or unread, and flag or unflag.
+- **Several at once**: tick conversations with the circle at the left edge of a row (on
+  phones also with a long press; while ticking, a tap ticks too), or with `x` on the
+  current row. A bar above the list then shows the count and acts on all ticked rows:
+  read/unread, flag/unflag, archive, delete, and clear (also Esc, or Back on Android).
 - **Archive** moves the message to the Archive folder. If there is none, it uses All Mail,
   as on Gmail.
 - **Delete** moves the message to Trash. If the message is already in Trash, or the
@@ -147,6 +151,7 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 | `#` / Delete | Delete |
 | `u` | Mark read / unread |
 | `s` | Flag / unflag |
+| `x` | Tick the current conversation; `e`, `#`, `u`, `s` then act on all ticked ones |
 | `/` | Search |
 | Esc | Clear the search |
 | Ctrl+Enter | Send (in the compose window) |

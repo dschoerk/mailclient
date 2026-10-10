@@ -216,6 +216,7 @@ impl Controller {
                     attachments: conversation.iter().any(|c| c.has_attachments),
                     color: account_color(*a, count),
                     count: conversation.len() as i32,
+                    checked: state.is_checked(*a, conversation),
                     dots: if conversation.len() > 1 {
                         let newest = &conversation[conversation.len().saturating_sub(MAX_DOTS)..];
                         ModelRc::new(VecModel::from(newest.iter().map(|c| c.seen).collect::<Vec<_>>()))
@@ -225,10 +226,27 @@ impl Controller {
                 })
                 .collect()
         };
-        self.message_model.set_vec(items);
+        // Replacing the rows would rebuild them and drop a press in progress (syncs reload often).
+        if self.message_model.row_count() == items.len() {
+            for (i, item) in items.into_iter().enumerate() {
+                if self.message_model.row_data(i).as_ref() != Some(&item) {
+                    self.message_model.set_row_data(i, item);
+                }
+            }
+        } else {
+            self.message_model.set_vec(items);
+        }
         let selected_index = {
             let mut state = self.state.borrow_mut();
             (state.messages, state.conversations) = rows.into_iter().map(|(a, m, c)| ((a, m), c)).unzip();
+            // Rows that left the list (another folder, moved, deleted) are no longer ticked.
+            let listed: HashSet<Key> = state
+                .messages
+                .iter()
+                .zip(&state.conversations)
+                .flat_map(|((a, _), c)| c.iter().map(move |m| (*a, m.folder.clone(), m.uid)))
+                .collect();
+            state.checked.retain(|k| listed.contains(k));
             let index = state.selected_row();
             if index.is_none() && state.selected.is_some() {
                 // The selected message is gone (moved elsewhere or deleted on another device).
@@ -237,6 +255,7 @@ impl Controller {
             }
             index
         };
+        self.update_checked_summary();
         self.window().set_current_message(selected_index.map(|i| i as i32).unwrap_or(-1));
         if selected_index.is_none() {
             if self.window().get_has_message() {

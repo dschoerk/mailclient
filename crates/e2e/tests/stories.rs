@@ -74,3 +74,45 @@ fn new_mail_notification() {
     app.wait_until("notification", || notifications.shown(&subject));
     assert!(!notifications.shown("Old news"), "mail from before setup was announced");
 }
+
+/// US20: several conversations ticked, then read and archived at once.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn bulk_actions() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    for subject in ["Bulk one", "Bulk two", "Bulk three"] {
+        deliver(&account, ("Erin", "erin@example.org"), subject, "One of several.");
+    }
+    let app = App::launch();
+    app.set_up(&account);
+    app.wait_for("Erin: Bulk three", "ListItem");
+
+    // Phones tick with a long press, then a tap; the desktop with the tick box.
+    if android() {
+        app.long_press("Erin: Bulk one", "ListItem");
+        app.wait_for("1 selected", "Text");
+        app.click("Erin: Bulk two", "ListItem");
+    } else {
+        app.click("Select Erin: Bulk one", "Checkbox");
+        app.click("Select Erin: Bulk two", "Checkbox");
+    }
+    app.wait_for("2 selected", "Text");
+    app.screenshot("bulk_selected");
+    app.click("Mark selected read", "Button");
+    app.wait_until("read on the server", || {
+        let read = e2e::server_messages(&account, "INBOX");
+        ["Bulk one", "Bulk two"].iter().all(|s| read.iter().any(|m| m.subject == *s && m.seen))
+            && read.iter().any(|m| m.subject == "Bulk three" && !m.seen)
+    });
+
+    app.click("Select Erin: Bulk one", "Checkbox");
+    app.click("Select Erin: Bulk two", "Checkbox");
+    app.click("Archive selected", "Button");
+    app.wait_until("archived on the server", || server_subjects(&account, "INBOX") == ["Bulk three"]);
+    assert!(!app.exists("Erin: Bulk one", "ListItem"), "archived row still listed");
+    let mut archived = server_subjects(&account, "Archive");
+    archived.sort();
+    assert_eq!(archived, ["Bulk one", "Bulk two"]);
+}

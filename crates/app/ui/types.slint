@@ -27,6 +27,8 @@ export struct MessageItem {
     count: int,
     /// Read state of the conversation's newest messages, oldest first; drawn as a mini timeline.
     dots: [bool],
+    /// Ticked for an action on several conversations at once.
+    checked: bool,
 }
 
 export struct ConversationItem {

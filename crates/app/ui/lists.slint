@@ -126,8 +126,13 @@ export component MessageRow inherits Rectangle {
     /// Messages of the open conversation, oldest first; shown under the selected row.
     in property <[ConversationItem]> thread;
     in property <int> thread-current: -1;
+    /// Some row is ticked: every row shows its tick box instead of the unread dot.
+    in property <bool> selecting;
     callback clicked();
     callback thread-clicked(int);
+    /// Tick box tapped, or the row long-pressed.
+    callback check-toggled();
+    property <bool> long-pressed;
     property <bool> expanded: root.selected && root.thread.length > 1;
     // The mini timeline; the unfolded one replaces it.
     property <bool> strip: root.msg.dots.length > 1 && !root.expanded;
@@ -148,13 +153,31 @@ export component MessageRow inherits Rectangle {
         padding-left: 6px;
         spacing: 6px;
         Rectangle {
-            width: 10px;
-            Rectangle {
+            width: 18px;
+            if !root.selecting: Rectangle {
+                x: 5px;
                 y: 6px;
                 width: 8px;
                 height: 8px;
                 border-radius: 4px;
                 background: msg.seen ? transparent : Theme.unread-dot;
+            }
+            if root.selecting: Rectangle {
+                y: 2px;
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border-width: 2px;
+                border-color: Theme.accent;
+                background: msg.checked ? Theme.accent : transparent;
+                if msg.checked: Path {
+                    width: 12px;
+                    height: 12px;
+                    commands: "M 2 6 L 5 9 L 10 3";
+                    stroke: white;
+                    stroke-width: 2px;
+                    fill: transparent;
+                }
             }
         }
         VerticalLayout {
@@ -262,7 +285,37 @@ export component MessageRow inherits Rectangle {
     touch := TouchArea {
         y: 0;
         height: root.head;
-        clicked => root.clicked();
+        clicked => {
+            // The release that ends a long press is not a click.
+            if !root.long-pressed {
+                root.clicked();
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.long-pressed = false;
+            }
+        }
+    }
+    Timer {
+        interval: 500ms;
+        running: touch.pressed && !root.long-pressed;
+        triggered => {
+            root.long-pressed = true;
+            root.check-toggled();
+        }
+    }
+    // The left edge ticks the row, like an avatar in other mail apps.
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: 30px;
+        height: root.head;
+        accessible-role: checkbox;
+        accessible-label: "Select " + msg.sender + ": " + msg.subject;
+        accessible-checked: msg.checked;
+        accessible-action-default => { root.check-toggled(); }
+        clicked => root.check-toggled();
     }
     if root.expanded: VerticalLayout {
         y: root.head;

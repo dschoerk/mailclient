@@ -19,7 +19,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   open plus the 40 newest per sync. Works offline from the cache.
 - Push via IMAP IDLE on the inbox, polling every 5 minutes as a fallback; a system
   notification for new unread mail while the app runs (Linux desktop and Android).
-- Read, flag, mark read/unread, archive, delete. Changes apply instantly and are
+- Read, flag, mark read/unread, archive, delete, also for several conversations at once
+  (tick them at the row's left edge, by long press on phones, or with `x`). Changes apply instantly and are
   queued for the server, so they also work offline.
 - Full-text search (SQLite FTS5) over subject, sender and downloaded bodies.
 - Compose, reply, reply all and forward (including attachments) as plain text, with
@@ -29,7 +30,7 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Save attachments; `mailto:` links open the composer; other links open in the
   system browser.
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,
-  `#`/Delete delete, `u` read/unread, `s` flag, `c` compose, `/` search, Esc clear search,
+  `#`/Delete delete, `u` read/unread, `s` flag, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search,
   Ctrl+Enter send.
 - Open a message file without an account: `mailclient message.eml`.
 

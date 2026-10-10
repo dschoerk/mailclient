@@ -462,6 +462,62 @@ fn user_stories() {
         .await;
         record("US6 archive and delete", r);
 
+        // US20: several conversations ticked and changed at once.
+        let r = async {
+            for subject in ["Bulk one", "Bulk two", "Bulk three"] {
+                deliver(&account, ("Erin", "erin@example.org"), subject, "One of several.");
+            }
+            wait_for("bulk messages listed", || ["Bulk one", "Bulk two", "Bulk three"].iter().all(|s| subjects(&w).iter().any(|x| x == s))).await?;
+            let tick = |subject: &str| -> Outcome {
+                element(&w, &format!("Select Erin: {subject}"), &[AccessibleRole::Checkbox])?.invoke_accessible_default_action();
+                Ok(())
+            };
+            let row = |subject: &str| w.get_messages().iter().find(|m| m.subject == subject);
+            tick("Bulk one")?;
+            tick("Bulk two")?;
+            ensure(w.get_checked_count() == 2, format!("{} ticked", w.get_checked_count()))?;
+            ensure(row("Bulk one").is_some_and(|m| m.checked) && row("Bulk three").is_some_and(|m| !m.checked), "tick marks")?;
+
+            click(&w, "Mark selected read")?;
+            ensure(w.get_checked_count() == 0, "ticks kept after the action")?;
+            ensure(row("Bulk one").is_some_and(|m| m.seen) && row("Bulk two").is_some_and(|m| m.seen), "not read in the list")?;
+            ensure(row("Bulk three").is_some_and(|m| !m.seen), "unticked message changed")?;
+            tick("Bulk one")?;
+            tick("Bulk two")?;
+            click(&w, "Flag selected")?;
+            wait_for("read and flagged on server", || {
+                ["Bulk one", "Bulk two"].iter().all(|s| on_server(&account, "INBOX", s).is_some_and(|m| m.seen && m.flagged))
+            })
+            .await?;
+            tick("Bulk one")?;
+            tick("Bulk two")?;
+            click(&w, "Unflag selected")?;
+            ensure(row("Bulk one").is_some_and(|m| !m.flagged), "still flagged in the list")?;
+
+            tick("Bulk one")?;
+            tick("Bulk two")?;
+            tick("Bulk two")?; // unticked again
+            ensure(w.get_checked_count() == 1, "untick")?;
+            tick("Bulk two")?;
+            click(&w, "Archive selected")?;
+            ensure(row("Bulk one").is_none() && row("Bulk two").is_none(), "archived rows still listed")?;
+            ensure(row("Bulk three").is_some(), "unticked row archived")?;
+            wait_for("in Archive on server", || {
+                on_server(&account, "Archive", "Bulk one").is_some_and(|m| !m.flagged) && on_server(&account, "Archive", "Bulk two").is_some()
+            })
+            .await?;
+
+            tick("Bulk three")?;
+            click(&w, "Clear selection")?;
+            ensure(w.get_checked_count() == 0 && row("Bulk three").is_some_and(|m| !m.checked), "Clear left ticks")?;
+            tick("Bulk three")?;
+            click(&w, "Delete selected")?;
+            ensure(row("Bulk three").is_none(), "deleted row still listed")?;
+            wait_for("in Trash on server", || on_server(&account, "Trash", "Bulk three").is_some()).await
+        }
+        .await;
+        record("US20 bulk actions", r);
+
         // US17: folders created and removed elsewhere show up after a sync, subfolders under their parent.
         let r = async {
             // GreenMail's hierarchy delimiter is ".".

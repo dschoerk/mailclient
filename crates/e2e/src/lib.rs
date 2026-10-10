@@ -193,6 +193,23 @@ impl App {
         self.click(label, role);
     }
 
+    /// Holds a finger on the element for 0.8 s (Android only: a real touch through adb).
+    pub fn long_press(&self, label: &str, role: &str) {
+        assert!(android(), "long press is a touch gesture");
+        let e = self.wait_for(label, role);
+        let props = self.call("get_element_properties", json!({"elementHandle": e})).unwrap();
+        let center = |axis: &str, extent: &str| {
+            // Zero coordinates are left out of the reply.
+            props["absolutePosition"][axis].as_f64().unwrap_or(0.0) + props["size"][extent].as_f64().unwrap() / 2.0
+        };
+        // Slint lays out in logical pixels: density / 160 physical pixels each.
+        let out = adb_command().args(["shell", "wm", "density"]).output().expect("adb not found");
+        let density: f64 = String::from_utf8_lossy(&out.stdout).rsplit(':').next().unwrap().trim().parse().unwrap();
+        let (x, y) = ((center("x", "width") * density / 160.0) as i64, (center("y", "height") * density / 160.0) as i64);
+        let (x, y) = (x.to_string(), y.to_string());
+        adb(&["shell", "input", "swipe", &x, &y, &x, &y, "800"]);
+    }
+
     /// Android's system Back key.
     pub fn back(&self) {
         assert!(android(), "Back is an Android key");
@@ -352,14 +369,18 @@ pub fn create_folders(account: &AccountConfig, folders: &[&str]) {
     })
 }
 
-/// Subjects of the messages in a server folder (empty if the folder does not exist).
-pub fn server_subjects(account: &AccountConfig, folder: &str) -> Vec<String> {
+/// The messages in a server folder (empty if the folder does not exist).
+pub fn server_messages(account: &AccountConfig, folder: &str) -> Vec<mailcore::MessageSummary> {
     block_on(async {
         let mut imap = Imap::connect(account, "x").await.unwrap();
         let messages = imap.fetch_new(folder, 0).await.unwrap_or_default();
         imap.logout().await;
-        messages.into_iter().map(|m| m.subject).collect()
+        messages
     })
+}
+
+pub fn server_subjects(account: &AccountConfig, folder: &str) -> Vec<String> {
+    server_messages(account, folder).into_iter().map(|m| m.subject).collect()
 }
 
 pub fn deliver(account: &AccountConfig, from: (&str, &str), subject: &str, body: &str) {

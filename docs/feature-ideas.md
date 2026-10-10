@@ -18,7 +18,7 @@ Status: **done** · **partial** · **missing**.
 | Unified inbox across accounts | missing | Most common item in every 2026 guide. Needs multi-account support first. |
 | Fast account switching | missing | K-9 wish list: switch like browser tabs, unread/starred counts per account. |
 | Threaded conversation view | done | On the Thunderbird for Android roadmap; high in the Jolla poll. |
-| Bulk select and actions | missing | Mark or delete many messages at once. |
+| Bulk select and actions | done | Tick rows (long press on phones); read, flag, archive, delete (US20). |
 | Rules / filters, labels | missing | |
 | Customisable swipe actions (mobile) | missing | Archive, delete, snooze, flag. |
 
@@ -46,7 +46,7 @@ Status: **done** · **partial** · **missing**.
 The biggest gaps among baseline features, roughly in order of user impact per effort:
 
 1. ~~Threaded view~~ (done).
-2. Bulk select and actions: reuses the existing single-message actions.
+2. ~~Bulk select and actions~~ (done).
 3. ~~Multiple accounts, then the unified inbox~~ (done).
 4. ~~Notifications for new mail (desktop and Android)~~ (done while the app runs; Android
    background push still missing).

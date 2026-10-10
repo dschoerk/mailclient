@@ -73,6 +73,13 @@ export component AppWindow inherits Window {
     callback reply-all();
     callback forward();
     callback edit-draft();
+    /// Ticks or unticks a list row.
+    callback toggle-checked(int);
+    /// "seen", "flag", "archive", "delete" or "clear", on the ticked rows.
+    callback bulk-action(string);
+    in property <int> checked-count;
+    in property <bool> checked-all-seen;
+    in property <bool> checked-all-flagged;
     callback archive();
     callback delete();
     callback toggle-seen();
@@ -166,24 +173,33 @@ export component AppWindow inherits Window {
                 root.forward();
                 return accept;
             }
+            // With rows ticked, these act on them.
             if event.text == "e" {
-                root.archive();
+                if root.checked-count > 0 { root.bulk-action("archive"); } else { root.archive(); }
                 return accept;
             }
             if event.text == "#" || event.text == Key.Delete {
-                root.delete();
+                if root.checked-count > 0 { root.bulk-action("delete"); } else { root.delete(); }
                 return accept;
             }
             if event.text == "u" {
-                root.toggle-seen();
+                if root.checked-count > 0 { root.bulk-action("seen"); } else { root.toggle-seen(); }
                 return accept;
             }
             if event.text == "s" {
-                root.toggle-flag();
+                if root.checked-count > 0 { root.bulk-action("flag"); } else { root.toggle-flag(); }
+                return accept;
+            }
+            if event.text == "x" && root.current-message >= 0 {
+                root.toggle-checked(root.current-message);
                 return accept;
             }
             if event.text == "/" {
                 search-box.focus();
+                return accept;
+            }
+            if event.text == Key.Back && root.checked-count > 0 && !root.has-message && !root.show-folders {
+                root.bulk-action("clear");
                 return accept;
             }
             // Android Back: leave the message or folder pane; unhandled at the top level, so Android closes the app.
@@ -193,6 +209,10 @@ export component AppWindow inherits Window {
                 } else {
                     root.show-folders = false;
                 }
+                return accept;
+            }
+            if event.text == Key.Escape && root.checked-count > 0 {
+                root.bulk-action("clear");
                 return accept;
             }
             if event.text == Key.Escape {
@@ -256,7 +276,7 @@ export component AppWindow inherits Window {
                                 clicked => root.refresh();
                             }
                         }
-                        HorizontalLayout {
+                        if root.checked-count == 0: HorizontalLayout {
                             padding-left: 12px;
                             padding-bottom: 6px;
                             Text {
@@ -264,6 +284,50 @@ export component AppWindow inherits Window {
                                 font-weight: 600;
                                 font-size: 15px;
                                 overflow: elide;
+                            }
+                        }
+                        // Actions on the ticked rows replace the title while any are ticked.
+                        if root.checked-count > 0: HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 2px;
+                            ToolButton {
+                                text: "Clear selection";
+                                icon: @image-url("icons/x.svg");
+                                show-text: false;
+                                clicked => root.bulk-action("clear");
+                            }
+                            Text {
+                                text: root.checked-count + " selected";
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            ToolButton {
+                                text: root.checked-all-seen ? "Mark selected unread" : "Mark selected read";
+                                icon: root.checked-all-seen ? @image-url("icons/mail.svg") : @image-url("icons/mail-open.svg");
+                                show-text: false;
+                                clicked => root.bulk-action("seen");
+                            }
+                            ToolButton {
+                                text: root.checked-all-flagged ? "Unflag selected" : "Flag selected";
+                                icon: @image-url("icons/star.svg");
+                                icon-color: root.checked-all-flagged ? Theme.flag : Palette.foreground;
+                                show-text: false;
+                                clicked => root.bulk-action("flag");
+                            }
+                            ToolButton {
+                                text: "Archive selected";
+                                icon: @image-url("icons/archive.svg");
+                                show-text: false;
+                                clicked => root.bulk-action("archive");
+                            }
+                            ToolButton {
+                                text: "Delete selected";
+                                icon: @image-url("icons/trash.svg");
+                                show-text: false;
+                                clicked => root.bulk-action("delete");
                             }
                         }
                         Divider {
@@ -275,8 +339,18 @@ export component AppWindow inherits Window {
                                 selected: i == root.current-message;
                                 thread: root.conversation;
                                 thread-current: root.current-in-conversation;
+                                selecting: root.checked-count > 0;
                                 clicked => {
-                                    root.message-selected(i);
+                                    // Phones: while ticking, a tap ticks too.
+                                    if root.narrow && root.checked-count > 0 {
+                                        root.toggle-checked(i);
+                                    } else {
+                                        root.message-selected(i);
+                                    }
+                                    keys.focus();
+                                }
+                                check-toggled => {
+                                    root.toggle-checked(i);
                                     keys.focus();
                                 }
                                 thread-clicked(j) => {

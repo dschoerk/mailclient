@@ -10,7 +10,7 @@ use mailcore::config::{self, AccountConfig, Auth, Security};
 use mailcore::engine::{self, Command, Engine, Event};
 use mailcore::mime::{self, Body, Draft, ReplyKind};
 use mailcore::store::{Folder, MessageSummary, PendingOp, Role, Store};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::compose::Composer;
 use crate::format;
@@ -65,6 +65,8 @@ struct State {
     /// The conversation of each row, oldest first.
     conversations: Vec<Vec<MessageSummary>>,
     selected: Option<Key>,
+    /// Ticked rows, by one of their messages (a row's newest message changes when replies arrive).
+    checked: HashSet<Key>,
     body: Option<Body>,
     search: String,
     remote_allowed: HashSet<Key>,
@@ -82,6 +84,10 @@ impl State {
 
     fn is_inbox(&self, account: usize, name: &str) -> bool {
         self.folder(account, name).is_some_and(|f| f.role == Role::Inbox)
+    }
+
+    fn is_checked(&self, account: usize, conversation: &[MessageSummary]) -> bool {
+        conversation.iter().any(|m| self.checked.contains(&(account, m.folder.clone(), m.uid)))
     }
 
     /// The list row whose conversation holds the selected message.
@@ -209,6 +215,8 @@ impl Controller {
         on!(on_reply_all, |c| c.reply(ReplyKind::ReplyAll));
         on!(on_forward, |c| c.reply(ReplyKind::Forward));
         on!(on_edit_draft, |c| c.edit_draft());
+        on!(on_toggle_checked, |c, index| c.toggle_checked(index as usize));
+        on!(on_bulk_action, |c, action| c.bulk(&action));
         on!(on_archive, |c| c.remove_selected(true));
         on!(on_delete, |c| c.remove_selected(false));
         on!(on_toggle_seen, |c| c.toggle_selected(false));

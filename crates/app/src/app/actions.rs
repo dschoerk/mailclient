@@ -55,6 +55,87 @@ impl Controller {
         }
     }
 
+    // ---- acting on several conversations ----
+
+    /// The ticked rows: account, newest listed message, conversation.
+    fn checked_rows(&self) -> Vec<(usize, MessageSummary, Vec<MessageSummary>)> {
+        let state = self.state.borrow();
+        state
+            .messages
+            .iter()
+            .zip(&state.conversations)
+            .filter(|((a, _), c)| state.is_checked(*a, c))
+            .map(|((a, m), c)| (*a, m.clone(), c.clone()))
+            .collect()
+    }
+
+    pub(super) fn update_checked_summary(&self) {
+        let rows = self.checked_rows();
+        let window = self.window();
+        window.set_checked_count(rows.len() as i32);
+        window.set_checked_all_seen(rows.iter().all(|(_, _, c)| c.iter().all(|m| m.seen)));
+        window.set_checked_all_flagged(rows.iter().all(|(_, _, c)| c.iter().any(|m| m.flagged)));
+    }
+
+    pub(super) fn toggle_checked(&self, index: usize) {
+        {
+            let mut state = self.state.borrow_mut();
+            let Some((account, m)) = state.messages.get(index).cloned() else { return };
+            let conversation = state.conversations[index].clone();
+            if state.is_checked(account, &conversation) {
+                for c in &conversation {
+                    state.checked.remove(&(account, c.folder.clone(), c.uid));
+                }
+            } else {
+                state.checked.insert((account, m.folder, m.uid));
+            }
+        }
+        self.reload_messages();
+    }
+
+    /// `action`: "seen" and "flag" toggle (set unless all ticked rows have it), "archive",
+    /// "delete", "clear". The ticking ends with the action.
+    pub(super) fn bulk(&self, action: &str) {
+        let rows = self.checked_rows();
+        self.state.borrow_mut().checked.clear();
+        let all_seen = rows.iter().all(|(_, _, c)| c.iter().all(|m| m.seen));
+        let all_flagged = rows.iter().all(|(_, _, c)| c.iter().any(|m| m.flagged));
+        // Batched per account and change, so the list reloads once per batch.
+        let mut batches: Vec<(usize, PendingOp, Vec<MessageSummary>)> = Vec::new();
+        for (account, row, conversation) in rows {
+            let (op, targets) = match action {
+                // Like opening: the whole conversation.
+                "seen" => (PendingOp::SetSeen(!all_seen), conversation),
+                "flag" if all_flagged => (PendingOp::SetFlagged(false), conversation.into_iter().filter(|m| m.flagged).collect()),
+                "flag" => (PendingOp::SetFlagged(true), vec![row]),
+                // Like the reader's Archive and Delete: the conversation's messages in the listed folder.
+                "archive" | "delete" => {
+                    let op = {
+                        let state = self.state.borrow();
+                        let Some(store) = state.accounts.get(account).map(|a| &a.store) else { continue };
+                        if action == "archive" { engine::archive_op(store, &row.folder) } else { engine::delete_op(store, &row.folder) }
+                    };
+                    match op {
+                        Ok(op) => (op, conversation.into_iter().filter(|m| m.folder == row.folder).collect()),
+                        Err(e) => {
+                            self.show_error(&e);
+                            continue;
+                        }
+                    }
+                }
+                _ => continue,
+            };
+            match batches.iter_mut().find(|(a, o, _)| *a == account && *o == op) {
+                Some((_, _, list)) => list.extend(targets),
+                None => batches.push((account, op, targets)),
+            }
+        }
+        for (account, op, targets) in batches {
+            self.apply(account, &targets, op);
+        }
+        self.reload_messages();
+    }
+
     // ---- composing ----
 
     pub(super) fn reply(&self, kind: ReplyKind) {
