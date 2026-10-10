@@ -70,7 +70,10 @@ cargo test --workspace
 
 ### Android
 
-Builds without Servo for now (HTML is shown as text). Toolchain: JDK 21, Android SDK with
+Builds without Servo: HTML mail is shown in the system WebView instead, with the same rules
+(scripts off, content served from memory under a CSP, remote loads blocked until "Load images").
+Its Java side (`crates/app/java/`) is compiled to dex by `build.rs`, which needs `JAVA_HOME` and
+`ANDROID_HOME`, and loaded at runtime, so the APK stays a NativeActivity. Toolchain: JDK 21, Android SDK with
 `platforms;android-35`, `build-tools;35.0.0`, `ndk;28.2.13676358`, Rust targets
 `x86_64-linux-android`/`aarch64-linux-android`, and `cargo install cargo-apk`.
 
@@ -91,7 +94,7 @@ copy the test CA into the app (debug builds only):
 then set up `corpus@localhost` with IMAP `localhost:3993`, SMTP `localhost:3465`.
 If the emulator crashes in its GL translator, start it with `-gpu swiftshader_indirect`.
 
-Not yet on Android: HTML view (Servo), attaching/saving files, push while the app is in
+Not yet on Android: attaching/saving files, push while the app is in
 the background.
 
 Outlook.com and Microsoft 365 need OAuth sign-in, which requires a one-time Microsoft app

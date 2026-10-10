@@ -12,8 +12,8 @@ GreenMail server; the rest are checked by hand. Results: [Test results](#test-re
 |---|---|---|
 | US1 | As a user I set up my account so the app can reach my mail. | Server settings are guessed from the address (**auto**). Login is verified before anything is saved (**auto**). The password goes to the system keyring (Android: Keystore), not to a file. |
 | US2 | As a user I browse folders and messages. | Folders appear with the inbox first (**auto**). The inbox lists messages newest first with sender, subject, preview and unread marker (**auto**). On phones one pane is shown at a time. |
-| US3 | As a user I read a message. | Opening shows subject, sender, recipients, date and body (**auto**), and marks it read (**auto**). HTML is shown without running scripts (desktop: Servo; Android: as text for now). |
-| US4 | As a user I load remote images only when I choose to. | Remote images are blocked and a banner offers loading them; after "Load images" they show (desktop only). |
+| US3 | As a user I read a message. | Opening shows subject, sender, recipients, date and body (**auto**), and marks it read (**auto**). HTML is shown without running scripts (desktop: Servo; Android: system WebView). |
+| US4 | As a user I load remote images only when I choose to. | Remote images are blocked and a banner offers loading them; after "Load images" they show (**auto**: e2e `html_mail`, a local server counts the requests). |
 | US5 | As a user I mark messages read/unread and flag them. | The change shows immediately (**auto**) and reaches the server (**auto**). |
 | US6 | As a user I archive or delete a message. | It leaves the list immediately and the next message is selected (**auto**); on the server it is in Archive or Trash (**auto**). |
 | US7 | As a user I search my mail. | Typing filters across folders by subject, sender and downloaded text (**auto**); clearing the search restores the folder. |
@@ -42,8 +42,8 @@ state checked over IMAP after each step.
 |---|---|---|---|
 | US1 Set up account | pass (auto) | pass | Wrong port shows the error and saves nothing; password in Secret Service / Android Keystore. |
 | US2 Browse | pass (auto) | pass | Phones: one pane at a time, Folders button, system Back. |
-| US3 Read | pass (auto) | pass | Read flag reaches the server. HTML: Servo on desktop, text on Android. |
-| US4 Remote images | pass (manual) | n/a | Desktop only (Servo). Blocked by default, banner shown. |
+| US3 Read | pass (auto) | pass | Read flag reaches the server. HTML: Servo on desktop, WebView on Android. |
+| US4 Remote images | pass (e2e) | pass (e2e) | 2026-10-10. No request before "Load images", the image after it, never the message's script. |
 | US5 Unread / flag | pass (auto) | pass | Both reach the server. |
 | US6 Archive / delete | pass (auto) | pass | Land in Archive / Trash on the server. |
 | US7 Search | pass (auto) | pass | |

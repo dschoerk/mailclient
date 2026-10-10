@@ -383,6 +383,55 @@ pub fn server_subjects(account: &AccountConfig, folder: &str) -> Vec<String> {
     server_messages(account, folder).into_iter().map(|m| m.subject).collect()
 }
 
+/// Delivers a ready-made message (e.g. HTML) to the account.
+pub fn deliver_raw(account: &AccountConfig, raw: &str) {
+    block_on(mailcore::smtp::send(account, "x", raw.as_bytes(), std::slice::from_ref(&account.email))).unwrap();
+}
+
+/// Counts HTTP requests on a local port: stands in for a tracking pixel's server.
+/// On Android the device reaches it as localhost through `adb reverse`.
+pub struct PixelServer {
+    pub port: u16,
+    paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl PixelServer {
+    pub fn start() -> PixelServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if android() {
+            adb(&["reverse", &format!("tcp:{port}"), &format!("tcp:{port}")]);
+        }
+        let paths = std::sync::Arc::<std::sync::Mutex<Vec<String>>>::default();
+        let log = paths.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                // "GET /path HTTP/1.1"
+                let request = String::from_utf8_lossy(&buf[..n]);
+                log.lock().unwrap().push(request.split_whitespace().nth(1).unwrap_or_default().to_string());
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        PixelServer { port, paths }
+    }
+
+    /// Paths requested so far.
+    pub fn requests(&self) -> Vec<String> {
+        self.paths.lock().unwrap().clone()
+    }
+}
+
+/// A screenshot of the whole device screen, native views included (Android only).
+pub fn device_screenshot(name: &str) {
+    let out = adb_command().args(["exec-out", "screencap", "-p"]).output().expect("adb not found");
+    let path = workspace_dir().join("target/e2e").join(format!("{name}.png"));
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    std::fs::write(&path, out.stdout).unwrap();
+    eprintln!("screenshot: {}", path.display());
+}
+
 pub fn deliver(account: &AccountConfig, from: (&str, &str), subject: &str, body: &str) {
     let draft = Draft {
         from_name: from.0.into(),

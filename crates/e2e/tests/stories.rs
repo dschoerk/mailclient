@@ -1,7 +1,7 @@
 //! User stories (docs/user-stories.md) against the real app. Needs scripts/test-mailserver.sh and
 //! an app built with the MCP server; see README, "End-to-end tests".
 
-use e2e::{App, Notifications, android, create_folders, deliver, init_server, server_subjects, test_account, test_ca};
+use e2e::{App, Notifications, PixelServer, android, deliver_raw, create_folders, deliver, init_server, server_subjects, test_account, test_ca};
 
 #[test]
 #[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
@@ -115,4 +115,38 @@ fn bulk_actions() {
     let mut archived = server_subjects(&account, "Archive");
     archived.sort();
     assert_eq!(archived, ["Bulk one", "Bulk two"]);
+}
+
+/// US4 and HTML mail: rendered (Servo on the desktop, WebView on Android) with remote
+/// content blocked until "Load images"; a counting server stands in for the tracker.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn html_mail() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    let pixel = PixelServer::start();
+    let raw = format!(
+        "From: Newsletter <news@example.org>\r\nTo: {}\r\nSubject: HTML news\r\nMIME-Version: 1.0\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\r\n\
+         <html><body><h1>Big headline</h1><p>Rendered <b>as HTML</b>.</p>\
+         <script>new Image().src = 'http://localhost:{port}/script';</script>\
+         <img src=\"http://localhost:{port}/pixel.gif\" width=1 height=1></body></html>\r\n",
+        account.email,
+        port = pixel.port
+    );
+    deliver_raw(&account, &raw);
+    let app = App::launch();
+    app.set_up(&account);
+    app.click("Newsletter: HTML news", "ListItem");
+    app.wait_for("Load images", "Button");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(pixel.requests(), Vec::<String>::new(), "remote content loaded before the user allowed it");
+    // The WebView is a window of its own, outside Slint's tree and the MCP screenshot.
+    if android() { e2e::device_screenshot("html_mail") } else { app.screenshot("html_mail"); }
+    app.click("Load images", "Button");
+    // Also proves the page was rendered: the image request comes from the parsed message.
+    app.wait_until("remote image requested after Load images", || pixel.requests().iter().any(|p| p == "/pixel.gif"));
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(!pixel.requests().iter().any(|p| p == "/script"), "a script in the message ran");
 }

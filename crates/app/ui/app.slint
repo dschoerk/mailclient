@@ -22,6 +22,23 @@ export component AppWindow inherits Window {
     in property <string> setup-error;
     in property <bool> setup-busy;
     in property <bool> use-webview;
+    /// Android: a native WebView is laid over the reader area (html-x … html-visible).
+    in property <bool> html-overlay;
+    callback html-area-changed();
+    out property <length> html-x: html-area.absolute-position.x;
+    out property <length> html-y: html-area.absolute-position.y;
+    out property <length> html-width: html-area.width;
+    out property <length> html-height: html-area.height;
+    // Anything drawn over the reader (drawer, setup) must hide the native view, which is always on top.
+    out property <bool> html-visible: root.html-overlay && root.has-message && !root.composing && !root.needs-setup
+        && !(root.narrow && root.show-folders);
+    changed html-x => { root.html-area-changed(); }
+    changed html-y => { root.html-area-changed(); }
+    changed html-width => { root.html-area-changed(); }
+    changed html-height => { root.html-area-changed(); }
+    changed html-visible => { root.html-area-changed(); }
+    /// The floating buttons would sit under the native HTML view: use the thumb bar then.
+    property <bool> floating: root.floating-buttons && !root.html-overlay;
     in property <string> account-label;
 
     in property <[FolderItem]> folders;
@@ -578,7 +595,7 @@ export component AppWindow inherits Window {
                             height: 1px;
                             visible: root.has-message && !root.composing;
                         }
-                        Rectangle {
+                        html-area := Rectangle {
                             vertical-stretch: root.has-message && !root.composing ? 1 : 0;
                             // The hidden webview's rendered page would otherwise claim its height and squash the composer.
                             preferred-height: 0px;
@@ -589,7 +606,7 @@ export component AppWindow inherits Window {
                                 height: 100%;
                                 visible: root.has-message && !root.composing;
                             }
-                            if !root.use-webview && root.has-message && !root.composing: reader-scroll := ScrollView {
+                            if !root.use-webview && !root.html-overlay && root.has-message && !root.composing: reader-scroll := ScrollView {
                                 VerticalLayout {
                                     width: reader-scroll.visible-width;
                                     padding: 14px;
@@ -634,7 +651,7 @@ export component AppWindow inherits Window {
                                 height: 32px;
                             }
                             // Floating variant of the thumb bar: stacked in the thumb's corner, Next lowest.
-                            if root.narrow && root.has-message && !root.composing && root.floating-buttons: VerticalLayout {
+                            if root.narrow && root.has-message && !root.composing && root.floating: VerticalLayout {
                                 // Unsized children fill their parent; keep the column at its natural size.
                                 width: self.preferred-width;
                                 height: self.preferred-height;
@@ -660,10 +677,10 @@ export component AppWindow inherits Window {
                         }
                         // ---- thumb bar (phones) ----
                         // Mirrored by hand, with Next nearest the edge where the thumb rests.
-                        if root.narrow && root.has-message && !root.composing && !root.floating-buttons: Divider {
+                        if root.narrow && root.has-message && !root.composing && !root.floating: Divider {
                             height: 1px;
                         }
-                        if root.narrow && root.has-message && !root.composing && !root.floating-buttons: HorizontalLayout {
+                        if root.narrow && root.has-message && !root.composing && !root.floating: HorizontalLayout {
                             padding: 6px;
                             spacing: 8px;
                             Rectangle {

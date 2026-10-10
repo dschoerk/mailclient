@@ -75,6 +75,8 @@ target_sdk_version = 35
 
 [package.metadata.android.application]
 label = "Mail"
+# Remote images in mail are often plain http; the HTML view loads them only once the user allows it.
+uses_cleartext_traffic = true
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
