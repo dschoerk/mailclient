@@ -117,6 +117,19 @@ fn send_sync_flag_delete_idle() {
         ["notes.txt"]
     );
 
+    // Server search finds it by body text.
+    engine.send(Command::Search("first body".into()));
+    let Event::SearchHits { hits, .. } = wait_event(&|e| matches!(e, Event::SearchHits { .. })) else { unreachable!() };
+    assert_eq!(hits, [("INBOX".to_string(), msg.uid)]);
+
+    // Pretend the synced window starts after it: fetching older mail brings it back.
+    store.delete_messages("INBOX", &[msg.uid]).unwrap();
+    store.set_synced_from("INBOX", msg.uid + 1).unwrap();
+    engine.send(Command::FetchOlder("INBOX".into()));
+    wait_event(&|e| matches!(e, Event::MessagesChanged(_)));
+    assert_eq!(store.message("INBOX", msg.uid).unwrap().map(|m| m.subject), Some("Hello GreenMail".into()));
+    assert_eq!(store.synced_from("INBOX").unwrap(), Some(msg.uid));
+
     // Direct server view, to check what the engine pushed.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -126,7 +139,7 @@ fn send_sync_flag_delete_idle() {
         rt.block_on(async {
             let mut imap = Imap::connect(&account, "any").await.unwrap();
             let state = imap.select("INBOX").await.unwrap();
-            let flags = imap.fetch_flags("INBOX", uid, uid).await.unwrap();
+            let flags = imap.fetch_flags("INBOX", &[(uid, uid)]).await.unwrap();
             imap.logout().await;
             (state.exists, flags)
         })

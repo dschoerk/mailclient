@@ -22,8 +22,14 @@ use crate::store::{MessageSummary, PendingOp, Role, Store};
 
 /// Messages fetched when a folder is synced for the first time.
 const INITIAL_WINDOW: u32 = 500;
+/// Messages fetched per request for older mail (scrolling to the end of a list).
+const OLDER_BATCH: u32 = 500;
 /// Bodies downloaded ahead of time per sync, for offline reading and search.
 const PREFETCH_BODIES: usize = 40;
+/// Bodies kept per folder, newest first; older ones keep their search text and download again when opened.
+const KEEP_BODIES: usize = 2000;
+/// Server search hits per folder, newest first, whose headers get cached.
+const SEARCH_HITS: usize = 200;
 /// Bodies per FETCH: each batch is held in memory whole, and attachments can be large.
 const BODY_BATCH: usize = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -35,6 +41,10 @@ pub enum Command {
     SyncAll,
     /// Make `folder` the active folder and sync it.
     OpenFolder(String),
+    /// Fetch the headers of messages older than any synced in `folder`.
+    FetchOlder(String),
+    /// Search the server; answered with [`Event::SearchHits`].
+    Search(String),
     /// Download a message body that is not cached yet.
     FetchBody { folder: String, uid: u32 },
     /// Push locally queued changes to the server.
@@ -64,6 +74,8 @@ pub enum Event {
     /// Unread messages that arrived in the inbox since the last sync (not on the first sync).
     NewMail(Vec<MessageSummary>),
     BodyReady { folder: String, uid: u32 },
+    /// (folder, uid) of the messages a server search for `query` found, all cached now.
+    SearchHits { query: String, hits: Vec<(String, u32)> },
     Sent(u64),
     /// A send or a draft save failed.
     SendFailed(u64, String),
@@ -177,20 +189,35 @@ impl<B: Backend> Worker<B> {
 
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Command>) {
         let mut poll = tokio::time::interval(POLL_INTERVAL);
+        // A command taken from the queue while collapsing a burst, handled next.
+        let mut queued = None;
         loop {
-            let command = tokio::select! {
-                c = rx.recv() => match c {
-                    Some(c) => c,
-                    None => break,
+            let mut command = match queued.take() {
+                Some(c) => c,
+                None => tokio::select! {
+                    c = rx.recv() => match c {
+                        Some(c) => c,
+                        None => break,
+                    },
+                    _ = poll.tick() => Command::SyncAll,
                 },
-                _ = poll.tick() => Command::SyncAll,
             };
             if matches!(command, Command::Stop) {
                 break;
             }
-            // Collapse bursts of syncs (e.g. IDLE notifications plus a poll tick).
-            if matches!(command, Command::SyncAll) {
-                while let Ok(Command::SyncAll) = rx.try_recv() {}
+            // Collapse bursts: syncs (IDLE notifications plus a poll tick), and searches typed
+            // faster than the server answers, where the last one wins.
+            if matches!(command, Command::SyncAll | Command::Search(_)) {
+                while let Ok(next) = rx.try_recv() {
+                    match (&command, next) {
+                        (Command::SyncAll, Command::SyncAll) => {}
+                        (Command::Search(_), next @ Command::Search(_)) => command = next,
+                        (_, next) => {
+                            queued = Some(next);
+                            break;
+                        }
+                    }
+                }
             }
             let draft_id = match &command {
                 Command::SaveDraft { id, .. } => Some(*id),
@@ -266,6 +293,20 @@ impl<B: Backend> Worker<B> {
                 self.sync_folder(&folder).await?;
                 self.emit(Event::Status(String::new()));
             }
+            Command::FetchOlder(folder) => {
+                // Not synced yet: the first sync fetches the newest messages.
+                let Some(from) = self.store.synced_from(&folder)? else { return Ok(()) };
+                self.emit(Event::Status(format!("Fetching older messages in {folder}…")));
+                let older = self.conn().await?.fetch_older(&folder, from, OLDER_BATCH).await?;
+                if let Some(oldest) = older.iter().map(|m| m.uid).min() {
+                    self.store.upsert_messages(&older)?;
+                    self.store.set_synced_from(&folder, oldest)?;
+                    self.emit(Event::MessagesChanged(folder));
+                    self.emit(Event::FoldersChanged);
+                }
+                self.emit(Event::Status(String::new()));
+            }
+            Command::Search(query) => self.search(query).await?,
             Command::FetchBody { folder, uid } => {
                 self.download_bodies(&folder, &[uid]).await?;
                 self.emit(Event::BodyReady { folder, uid });
@@ -379,8 +420,13 @@ impl<B: Backend> Worker<B> {
             changed = true;
         }
 
-        match (self.store.min_uid(folder)?, self.store.max_uid(folder)?) {
-            (Some(min), Some(max)) => {
+        // An arrival, flag change or expunge moves one of the two (an expunge may only lower the count).
+        let mark = state.highest_modseq.map(|m| (m, state.exists));
+        match self.store.synced_from(folder)? {
+            Some(_) if mark.is_some() && self.store.sync_mark(folder)? == mark => {}
+            Some(from) => {
+                let cached = self.store.uids(folder)?;
+                let max = cached.iter().copied().max().unwrap_or(from.saturating_sub(1));
                 let new = self.conn().await?.fetch_new(folder, max).await?;
                 self.store.upsert_messages(&new)?;
                 changed |= !new.is_empty();
@@ -388,19 +434,17 @@ impl<B: Backend> Worker<B> {
                 if !unread.is_empty() && self.store.folder_role(folder)? == Role::Inbox {
                     self.emit(Event::NewMail(unread));
                 }
-                let flags = self.conn().await?.fetch_flags(folder, min, max).await?;
+                // The synced window, plus search hits below it one by one.
+                let mut ranges = vec![(from, max.max(from))];
+                ranges.extend(cached.iter().filter(|uid| **uid < from).map(|uid| (*uid, *uid)));
+                let flags = self.conn().await?.fetch_flags(folder, &ranges).await?;
                 let on_server: std::collections::HashSet<u32> = flags.iter().map(|f| f.0).collect();
-                let gone: Vec<u32> = self
-                    .store
-                    .uids(folder)?
-                    .into_iter()
-                    .filter(|uid| (min..=max).contains(uid) && !on_server.contains(uid))
-                    .collect();
+                let gone: Vec<u32> = cached.into_iter().filter(|uid| !on_server.contains(uid)).collect();
                 self.store.delete_messages(folder, &gone)?;
                 changed |= !gone.is_empty();
                 changed |= self.store.update_flags(folder, &flags)?;
             }
-            _ => {
+            None => {
                 let latest = self
                     .conn()
                     .await?
@@ -408,18 +452,60 @@ impl<B: Backend> Worker<B> {
                     .await?;
                 self.store.upsert_messages(&latest)?;
                 changed |= !latest.is_empty();
+                if let Some(oldest) = latest.iter().map(|m| m.uid).min() {
+                    self.store.set_synced_from(folder, oldest)?;
+                }
             }
         }
+        self.store.set_sync_mark(folder, mark)?;
         if changed {
             self.emit(Event::MessagesChanged(folder.to_string()));
             self.emit(Event::FoldersChanged);
         }
 
-        let missing = self.store.uids_missing_body(folder, PREFETCH_BODIES)?;
+        let missing = self.store.uids_missing_body(folder, PREFETCH_BODIES, KEEP_BODIES)?;
         if !missing.is_empty() {
             self.download_bodies(folder, &missing).await?;
             self.emit(Event::MessagesChanged(folder.to_string()));
         }
+        self.store.evict_bodies(folder, KEEP_BODIES)?;
+        Ok(())
+    }
+
+    /// Searches the server and caches the headers of hits not cached yet, so the
+    /// search finds mail older than the synced window and bodies not downloaded.
+    async fn search(&mut self, query: String) -> Result<()> {
+        self.emit(Event::Status("Searching the server…".into()));
+        // An all-mail folder (Gmail) holds everything; elsewhere, where most mail lives.
+        let folders = match self.store.folder_by_role(Role::All)? {
+            Some(all) => vec![all],
+            None => {
+                let mut folders = Vec::new();
+                for role in [Role::Inbox, Role::Sent, Role::Archive] {
+                    folders.extend(self.store.folder_by_role(role)?);
+                }
+                folders.extend(self.active.clone().filter(|a| !folders.contains(a)));
+                folders
+            }
+        };
+        let mut hits = Vec::new();
+        for folder in folders {
+            let mut uids = self.conn().await?.search(&folder, &query).await?;
+            uids.sort_unstable();
+            let uids = &uids[uids.len().saturating_sub(SEARCH_HITS)..];
+            let cached: std::collections::HashSet<u32> = self.store.uids(&folder)?.into_iter().collect();
+            // Mail newer than the synced window is left to the next sync, which fetches from the newest cached UID up.
+            let newest = match self.store.synced_from(&folder)? {
+                Some(_) => cached.iter().copied().max().unwrap_or(0),
+                None => u32::MAX,
+            };
+            let missing: Vec<u32> = uids.iter().copied().filter(|uid| !cached.contains(uid) && *uid <= newest).collect();
+            let headers = self.conn().await?.fetch_headers(&folder, &missing).await?;
+            self.store.upsert_messages(&headers)?;
+            hits.extend(uids.iter().map(|uid| (folder.clone(), *uid)));
+        }
+        self.emit(Event::SearchHits { query, hits });
+        self.emit(Event::Status(String::new()));
         Ok(())
     }
 
