@@ -138,6 +138,11 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 
 - Full-text search (SQLite FTS5) over subject, sender and every downloaded message body.
 - Searches the local cache, so it also works offline.
+- **Mail from one sender**: click the sender's name in an open message ("More from this
+  sender") to list all of their mail, in every folder and account. This searches for
+  `from:address`, which you can also type, alone or with other words
+  (`from:bob@example.org invoice`). It matches the sender's address exactly, so mail that
+  only mentions the address is left out.
 
 ## Keyboard shortcuts
 

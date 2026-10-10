@@ -84,6 +84,10 @@ export component AppWindow inherits Window {
     callback message-selected(int);
     callback conversation-selected(int);
     callback search(string);
+    /// The search box's text, also set from Rust ("More from this sender").
+    in-out property <string> search-text;
+    /// Searches for all mail from the open message's sender.
+    callback show-sender();
     callback refresh();
     callback compose();
     callback reply();
@@ -281,7 +285,8 @@ export component AppWindow inherits Window {
                                 }
                             }
                             search-box := LineEdit {
-                            accessible-label: "Search";
+                                accessible-label: "Search";
+                                text <=> root.search-text;
                                 placeholder-text: "Search mail  ( / )";
                                 edited(text) => root.search(text);
                                 accepted => keys.focus();
@@ -495,11 +500,26 @@ export component AppWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             HorizontalLayout {
+                                // The sender is a link to all of their mail.
                                 Text {
                                     text: root.msg-from;
                                     font-weight: 600;
                                     overflow: elide;
                                     horizontal-stretch: 1;
+                                    color: sender-touch.has-hover ? Theme.accent : Palette.foreground;
+                                    sender-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        accessible-role: button;
+                                        accessible-label: "More from this sender";
+                                        accessible-action-default => { self.clicked(); }
+                                        clicked => {
+                                            root.show-sender();
+                                            // Phones show the results in the list pane.
+                                            if root.narrow {
+                                                root.close-message();
+                                            }
+                                        }
+                                    }
                                 }
                                 Text {
                                     text: root.msg-date;

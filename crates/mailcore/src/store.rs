@@ -536,9 +536,14 @@ impl Store {
     }
 
     /// Full-text search over subject, sender and downloaded bodies across all folders.
+    /// Full-text search over subject, sender and downloaded bodies. A `from:address` word
+    /// keeps only mail from exactly that sender (any case); the other words still match text.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<MessageSummary>> {
-        let fts_query = fts_query(query);
-        if fts_query.is_empty() {
+        let (from, words): (Vec<&str>, Vec<&str>) =
+            query.split_whitespace().partition(|w| w.len() > 5 && w[..5].eq_ignore_ascii_case("from:"));
+        let from = from.last().map(|w| w[5..].to_lowercase());
+        let fts_query = fts_query(&words.join(" "));
+        if fts_query.is_empty() && from.is_none() {
             return Ok(Vec::new());
         }
         let columns = SUMMARY_COLUMNS
@@ -546,12 +551,17 @@ impl Store {
             .map(|c| format!("m.{c}"))
             .collect::<Vec<_>>()
             .join(", ");
+        let text = if fts_query.is_empty() {
+            "SELECT {columns} FROM messages m WHERE ?1 = ''"
+        } else {
+            "SELECT {columns} FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?1"
+        };
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {columns} FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
-             WHERE messages_fts MATCH ?1 ORDER BY m.date DESC LIMIT ?2"
+            "{} AND (?2 IS NULL OR lower(m.from_addr) = ?2) ORDER BY m.date DESC LIMIT ?3",
+            text.replace("{columns}", &columns)
         ))?;
         let rows = stmt
-            .query_map(params![fts_query, limit as i64], summary_from_row)?
+            .query_map(params![fts_query, from, limit as i64], summary_from_row)?
             .collect::<Result<_, _>>()?;
         Ok(rows)
     }
@@ -765,6 +775,21 @@ mod tests {
 
         store.delete_messages("INBOX", &[2]).unwrap();
         assert!(store.search("pizzeria", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_by_sender() {
+        let mut store = store_with_inbox();
+        let bob = |uid, subject: &str| MessageSummary { from_addr: "Bob@Example.org".into(), from_name: "Bob".into(), ..msg(uid, subject) };
+        store.upsert_messages(&[msg(1, "Invoice"), bob(2, "Invoice"), bob(3, "Lunch")]).unwrap();
+        // Alice's mail mentions Bob's address: a text search finds it, a sender search must not.
+        store.set_body("INBOX", 1, b"raw", "", "forwarding bob@example.org's invoice", false).unwrap();
+        let uids = |q: &str| store.search(q, 10).unwrap().iter().map(|m| m.uid).collect::<Vec<_>>();
+        assert_eq!(uids("from:bob@example.org"), [3, 2]);
+        assert_eq!(uids("FROM:BOB@example.ORG invoice"), [2]);
+        assert_eq!(uids("bob@example.org"), [3, 2, 1]);
+        assert!(uids("from:nobody@example.org").is_empty());
+        assert!(uids("from:'; DROP TABLE messages; --").is_empty());
     }
 
     #[test]

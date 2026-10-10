@@ -22,7 +22,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Read, flag, mark read/unread, archive, delete, also for several conversations at once
   (tick them at the row's left edge, by long press on phones, or with `x`). Changes apply instantly and are
   queued for the server, so they also work offline.
-- Full-text search (SQLite FTS5) over subject, sender and downloaded bodies.
+- Full-text search (SQLite FTS5) over subject, sender and downloaded bodies; `from:address`
+  limits it to one sender, and clicking the sender of an open message lists all of their mail.
 - Compose, reply, reply all and forward (including attachments) as plain text, with
   file attachments. Sent mail is filed to the Sent folder (Gmail does this itself).
 - Drafts: closing the composer (or Back on Android) saves to Drafts, plus an autosave every

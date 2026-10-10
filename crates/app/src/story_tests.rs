@@ -518,6 +518,31 @@ fn user_stories() {
         .await;
         record("US20 bulk actions", r);
 
+        // US21: all mail from the open message's sender, and only theirs.
+        let r = async {
+            deliver(&account, ("Frank", "frank@example.org"), "Garden party", "Saturday at three.");
+            deliver(&account, ("Grace", "grace@example.org"), "About Frank", "Ask frank@example.org about the party.");
+            std::thread::sleep(Duration::from_millis(1100)); // a later Date, so the order is known
+            deliver(&account, ("Frank", "frank@example.org"), "Bring a chair", "We are short on chairs.");
+            wait_for("mail from Frank and Grace", || {
+                ["Garden party", "About Frank", "Bring a chair"].iter().all(|s| subjects(&w).iter().any(|x| x == s))
+            })
+            .await?;
+            let inbox = subjects(&w);
+            click(&w, "Frank: Garden party")?;
+            wait_for("message open", || w.get_msg_subject() == "Garden party").await?;
+            click(&w, "More from this sender")?;
+            ensure(w.get_search_text() == "from:frank@example.org", format!("search box: {}", w.get_search_text()))?;
+            ensure(subjects(&w) == ["Bring a chair", "Garden party"], format!("from Frank: {:?}", subjects(&w)))?;
+            // Typed by hand, with a word: only Frank's mail about chairs.
+            type_in(&w, "Search", "from:FRANK@example.org chair")?;
+            ensure(subjects(&w) == ["Bring a chair"], format!("from Frank about chairs: {:?}", subjects(&w)))?;
+            type_in(&w, "Search", "")?;
+            ensure(subjects(&w) == inbox, format!("inbox not restored: {:?}", subjects(&w)))
+        }
+        .await;
+        record("US21 mail from the same sender", r);
+
         // US17: folders created and removed elsewhere show up after a sync, subfolders under their parent.
         let r = async {
             // GreenMail's hierarchy delimiter is ".".

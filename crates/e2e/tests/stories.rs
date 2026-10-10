@@ -317,3 +317,24 @@ fn copy_text() {
     });
     eprintln!("pasted: {last}");
 }
+
+/// US21: "More from this sender" lists the sender's mail and nothing else (phones: in the list pane).
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn mail_from_sender() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    deliver(&account, ("Frank", "frank@example.org"), "Garden party", "Saturday at three.");
+    deliver(&account, ("Grace", "grace@example.org"), "About Frank", "Ask frank@example.org about the party.");
+    deliver(&account, ("Frank", "frank@example.org"), "Bring a chair", "We are short on chairs.");
+    let app = App::launch();
+    app.set_up(&account);
+    app.click("Frank: Garden party", "ListItem");
+    app.click("More from this sender", "Button");
+    app.wait_until("Grace's mail filtered out", || !app.exists("Grace: About Frank", "ListItem"));
+    assert!(app.exists("Frank: Garden party", "ListItem") && app.exists("Frank: Bring a chair", "ListItem"));
+    let search = app.wait_for("Search", "TextInput");
+    assert_eq!(app.property(&search, "accessibleValue"), "from:frank@example.org");
+    app.screenshot("mail_from_sender");
+}

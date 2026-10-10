@@ -223,6 +223,15 @@ impl Controller {
         on!(on_message_selected, |c, index| c.select_message(index as usize));
         on!(on_conversation_selected, |c, index| c.select_in_conversation(index as usize));
         on!(on_search, |c, text| c.search(&text));
+        on!(on_show_sender, |c| {
+            let Some((_, m)) = c.selected_summary() else { return };
+            if m.from_addr.is_empty() {
+                return;
+            }
+            let query = format!("from:{}", m.from_addr);
+            c.window().set_search_text(query.as_str().into());
+            c.search(&query);
+        });
         on!(on_refresh, |c| {
             for account in &c.state.borrow().accounts {
                 account.engine.send(Command::SyncAll);

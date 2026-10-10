@@ -29,6 +29,7 @@ GreenMail server; the rest are checked by hand. Results: [Test results](#test-re
 | US18 | As a user I keep unfinished messages as drafts. | Leaving the composer (Close; Back on Android) or waiting for the autosave stores the message in Drafts, creating the folder if needed (**auto**). A draft reopens in the composer with its fields (**auto**); saving again leaves a single copy (**auto**). Sending removes it from Drafts (**auto**); Discard deletes it (**auto**); an untouched new message leaves no draft (**auto**). |
 | US19 | As a user I am told about new mail. | Unread mail arriving in the inbox while the app runs shows a system notification with sender and subject (**auto**); mail already there when the account is set up does not (**auto**). |
 | US20 | As a user I act on several conversations at once. | Rows are ticked at their left edge (phones: long press, then taps) and a bar shows how many (**auto**). Read, flag, unflag, archive and delete apply to all ticked rows and only to them, in the list at once and on the server (**auto**); the ticks clear afterwards or with Clear (**auto**). |
+| US21 | As a user I find all mail from the same sender. | "More from this sender" on the open message lists that sender's mail newest first, and mail that only mentions their address is not included (**auto**). `from:address` can be typed, also with more words (**auto**); clearing the search restores the folder (**auto**). Phones show the results in the list. |
 | US17 | As a user I see my folder tree as it is on the server. | Folders created or removed by another client appear or disappear after a sync (**auto**). Subfolders are indented under their parent, also under Inbox and the special folders, and can be opened (**auto**). |
 
 ## Test results
@@ -44,6 +45,7 @@ state checked over IMAP after each step.
 | US2 Browse | pass (auto) | pass | Phones: one pane at a time, Folders button, system Back. |
 | US3 Read | pass (auto) | pass | Read flag reaches the server. HTML: Servo on desktop, WebView on Android. |
 | US4 Remote images | pass (e2e) | pass (e2e) | 2026-10-10. No request before "Load images", the image after it, never the message's script. |
+| US21 Mail from sender | pass (auto, e2e) | pass (e2e) | 2026-10-10. `mail_from_sender`; phones switch to the list. |
 | Copy text | pass (e2e) | pass (e2e) | 2026-10-10. `copy_text`: desktop drag + Ctrl+C, Android long press + copy; pasted into the composer. The Android toolbar's Copy button was checked by hand (its window is out of the tools' reach). Desktop double-click does not select a word (Servo 0.7). |
 | HTML layouts | pass (e2e) | pass (e2e) | 2026-10-10. `newsletter_templates`: Cerberus, a responsive template and a Postmark receipt render (screenshots `target/e2e/template_*`) with no remote request before "Load images". Android `html_touch`: the WebView scrolls under a finger (header stays), hides under the composer and after Back, and follows the reader into landscape. |
 | US5 Unread / flag | pass (auto) | pass | Both reach the server. |
