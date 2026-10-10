@@ -120,6 +120,8 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
   phones also with a long press; while ticking, a tap ticks too), or with `x` on the
   current row. A bar above the list then shows the count and acts on all ticked rows:
   read/unread, flag/unflag, archive, delete, and clear (also Esc, or Back on Android).
+- **Swipe** (phones): a list row swiped right is archived, swiped left deleted. A swipe
+  shorter than about a third of the row springs back and does nothing.
 - **Archive** moves the message to the Archive folder. If there is none, it uses All Mail,
   as on Gmail.
 - **Delete** moves the message to Trash. If the message is already in Trash, or the

@@ -98,6 +98,20 @@ impl Controller {
     pub(super) fn bulk(&self, action: &str) {
         let rows = self.checked_rows();
         self.state.borrow_mut().checked.clear();
+        self.act_on(rows, action);
+    }
+
+    /// A row swiped away: archived or deleted like a ticked row, other ticks left alone.
+    pub(super) fn swiped(&self, index: usize, archive: bool) {
+        let row = {
+            let state = self.state.borrow();
+            let (Some((account, m)), Some(c)) = (state.messages.get(index), state.conversations.get(index)) else { return };
+            (*account, m.clone(), c.clone())
+        };
+        self.act_on(vec![row], if archive { "archive" } else { "delete" });
+    }
+
+    fn act_on(&self, rows: Vec<(usize, MessageSummary, Vec<MessageSummary>)>, action: &str) {
         let all_seen = rows.iter().all(|(_, _, c)| c.iter().all(|m| m.seen));
         let all_flagged = rows.iter().all(|(_, _, c)| c.iter().any(|m| m.flagged));
         // Batched per account and change, so the list reloads once per batch.

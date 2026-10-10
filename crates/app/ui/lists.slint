@@ -132,6 +132,12 @@ export component MessageRow inherits Rectangle {
     callback thread-clicked(int);
     /// Tick box tapped, or the row long-pressed.
     callback check-toggled();
+    /// Phones: swiping the row right archives it, left deletes it.
+    in property <bool> swipeable;
+    callback swiped(/* archive */ bool);
+    property <length> offset: swipe.swiping ? swipe.current-position.x - swipe.pressed-position.x : 0;
+    // Far enough that letting go acts; a short swipe springs back.
+    property <bool> armed: abs(root.offset) > root.width * 0.35;
     property <bool> long-pressed;
     property <bool> expanded: root.selected && root.thread.length > 1;
     // The mini timeline; the unfolded one replaces it.
@@ -142,194 +148,224 @@ export component MessageRow inherits Rectangle {
     accessible-label: msg.sender + ": " + msg.subject;
     accessible-action-default => { root.clicked(); }
     height: root.head + (root.expanded ? root.thread.length * 30px + 8px : 0px);
-    // Expanded, the open message is marked on the timeline instead.
-    background: root.expanded ? Palette.foreground.with-alpha(0.03)
-        : root.selected ? Theme.selection
-        : touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
-    HorizontalLayout {
-        height: root.head;
-        y: 0;
-        padding: 10px;
-        padding-left: 6px;
-        spacing: 6px;
-        Rectangle {
-            width: 18px;
-            if !root.selecting: Rectangle {
-                x: 5px;
-                y: 6px;
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
-                background: msg.seen ? transparent : Theme.unread-dot;
-            }
-            if root.selecting: Rectangle {
-                y: 2px;
-                width: 18px;
-                height: 18px;
-                border-radius: 9px;
-                border-width: 2px;
-                border-color: Theme.accent;
-                background: msg.checked ? Theme.accent : transparent;
-                if msg.checked: Path {
-                    width: 12px;
-                    height: 12px;
-                    commands: "M 2 6 L 5 9 L 10 3";
-                    stroke: white;
-                    stroke-width: 2px;
-                    fill: transparent;
-                }
+    // Revealed behind the row while it is swiped: green archives, red deletes.
+    background: root.offset > 0 ? #2e9d5b : #d93f3f;
+    if root.offset != 0: Image {
+        x: root.offset > 0 ? 20px : root.width - 20px - self.width;
+        y: (root.head - self.height) / 2;
+        width: 24px;
+        source: root.offset > 0 ? @image-url("icons/archive.svg") : @image-url("icons/trash.svg");
+        colorize: white;
+        opacity: root.armed ? 1 : 0.5;
+    }
+    swipe := SwipeGestureHandler {
+        enabled: root.swipeable;
+        handle-swipe-left: true;
+        handle-swipe-right: true;
+        // Released after `swiping` ends: measure from the positions.
+        swiped => {
+            if abs(self.current-position.x - self.pressed-position.x) > root.width * 0.35 {
+                root.swiped(self.current-position.x > self.pressed-position.x);
             }
         }
-        VerticalLayout {
-            spacing: 2px;
+        Rectangle {
+            x: root.offset;
+            width: root.width;
+            height: root.height;
+            background: Palette.background;
+            animate x { duration: swipe.swiping ? 0ms : 150ms; }
+            Rectangle {
+                // Expanded, the open message is marked on the timeline instead.
+                background: root.expanded ? Palette.foreground.with-alpha(0.03)
+                    : root.selected ? Theme.selection
+                    : touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
+            }
             HorizontalLayout {
+                height: root.head;
+                y: 0;
+                padding: 10px;
+                padding-left: 6px;
                 spacing: 6px;
-                Text {
-                    text: msg.sender;
-                    font-weight: msg.seen ? 400 : 700;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
-                if msg.count > 1: Text {
-                    text: msg.count;
-                    color: Theme.muted;
-                    font-size: 12px;
-                    accessible-label: msg.count + " messages";
-                }
-                if msg.answered: Image {
-                    source: @image-url("icons/reply.svg");
-                    colorize: Theme.muted;
-                    width: 14px;
-                    accessible-role: image;
-                    accessible-label: "replied";
-                }
-                if msg.attachments: Image {
-                    source: @image-url("icons/paperclip.svg");
-                    colorize: Theme.muted;
-                    width: 14px;
-                    accessible-role: image;
-                    accessible-label: "has attachments";
-                }
-                if msg.flagged: Image {
-                    source: @image-url("icons/star.svg");
-                    colorize: Theme.flag;
-                    width: 14px;
-                    accessible-role: image;
-                    accessible-label: "flagged";
-                }
-                Text {
-                    text: msg.date;
-                    color: Theme.muted;
-                    font-size: 12px;
-                }
-            }
-            Text {
-                text: msg.subject;
-                font-weight: msg.seen ? 400 : 600;
-                overflow: elide;
-            }
-            Text {
-                text: msg.snippet;
-                color: Theme.muted;
-                font-size: 12px;
-                overflow: elide;
-            }
-            if root.strip: HorizontalLayout {
-                height: 12px;
-                alignment: start;
-                spacing: 4px;
-                if msg.count > msg.dots.length: Text {
-                    text: "+" + (msg.count - msg.dots.length);
-                    color: Theme.muted;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                }
-                HorizontalLayout {
-                    // Hollow dots are read, filled ones unread, like the unfolded timeline.
-                    for seen[k] in msg.dots: Rectangle {
-                        width: k == 0 ? 8px : 22px;
-                        if k > 0: Rectangle {
-                            x: 0;
-                            y: (parent.height - self.height) / 2;
-                            width: parent.width - 8px;
-                            height: 2px;
-                            background: root.line-color;
+                Rectangle {
+                    width: 18px;
+                    if !root.selecting: Rectangle {
+                        x: 5px;
+                        y: 6px;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: msg.seen ? transparent : Theme.unread-dot;
+                    }
+                    if root.selecting: Rectangle {
+                        y: 2px;
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 9px;
+                        border-width: 2px;
+                        border-color: Theme.accent;
+                        background: msg.checked ? Theme.accent : transparent;
+                        if msg.checked: Path {
+                            width: 12px;
+                            height: 12px;
+                            commands: "M 2 6 L 5 9 L 10 3";
+                            stroke: white;
+                            stroke-width: 2px;
+                            fill: transparent;
                         }
-                        Rectangle {
-                            x: parent.width - 8px;
-                            y: (parent.height - self.height) / 2;
-                            width: 8px;
-                            height: 8px;
-                            border-radius: 4px;
-                            border-width: 2px;
-                            border-color: root.line-color;
-                            background: seen ? Palette.background : root.line-color;
+                    }
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: msg.sender;
+                            font-weight: msg.seen ? 400 : 700;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if msg.count > 1: Text {
+                            text: msg.count;
+                            color: Theme.muted;
+                            font-size: 12px;
+                            accessible-label: msg.count + " messages";
+                        }
+                        if msg.answered: Image {
+                            source: @image-url("icons/reply.svg");
+                            colorize: Theme.muted;
+                            width: 14px;
+                            accessible-role: image;
+                            accessible-label: "replied";
+                        }
+                        if msg.attachments: Image {
+                            source: @image-url("icons/paperclip.svg");
+                            colorize: Theme.muted;
+                            width: 14px;
+                            accessible-role: image;
+                            accessible-label: "has attachments";
+                        }
+                        if msg.flagged: Image {
+                            source: @image-url("icons/star.svg");
+                            colorize: Theme.flag;
+                            width: 14px;
+                            accessible-role: image;
+                            accessible-label: "flagged";
+                        }
+                        Text {
+                            text: msg.date;
+                            color: Theme.muted;
+                            font-size: 12px;
+                        }
+                    }
+                    Text {
+                        text: msg.subject;
+                        font-weight: msg.seen ? 400 : 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: msg.snippet;
+                        color: Theme.muted;
+                        font-size: 12px;
+                        overflow: elide;
+                    }
+                    if root.strip: HorizontalLayout {
+                        height: 12px;
+                        alignment: start;
+                        spacing: 4px;
+                        if msg.count > msg.dots.length: Text {
+                            text: "+" + (msg.count - msg.dots.length);
+                            color: Theme.muted;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        HorizontalLayout {
+                            // Hollow dots are read, filled ones unread, like the unfolded timeline.
+                            for seen[k] in msg.dots: Rectangle {
+                                width: k == 0 ? 8px : 22px;
+                                if k > 0: Rectangle {
+                                    x: 0;
+                                    y: (parent.height - self.height) / 2;
+                                    width: parent.width - 8px;
+                                    height: 2px;
+                                    background: root.line-color;
+                                }
+                                Rectangle {
+                                    x: parent.width - 8px;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    border-width: 2px;
+                                    border-color: root.line-color;
+                                    background: seen ? Palette.background : root.line-color;
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
-    }
-    // Which account the message belongs to.
-    Rectangle {
-        x: 0;
-        y: 0;
-        width: 4px;
-        height: parent.height;
-        background: msg.color;
-    }
-    Divider {
-        y: parent.height - 1px;
-        height: 1px;
-    }
-    touch := TouchArea {
-        y: 0;
-        height: root.head;
-        clicked => {
-            // The release that ends a long press is not a click.
-            if !root.long-pressed {
-                root.clicked();
+            // Which account the message belongs to.
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: 4px;
+                height: parent.height;
+                background: msg.color;
             }
-        }
-        pointer-event(event) => {
-            if event.kind == PointerEventKind.down {
-                root.long-pressed = false;
+            Divider {
+                y: parent.height - 1px;
+                height: 1px;
             }
-        }
-    }
-    Timer {
-        interval: 500ms;
-        running: touch.pressed && !root.long-pressed;
-        triggered => {
-            root.long-pressed = true;
-            root.check-toggled();
-        }
-    }
-    // The left edge ticks the row, like an avatar in other mail apps.
-    TouchArea {
-        x: 0;
-        y: 0;
-        width: 30px;
-        height: root.head;
-        accessible-role: checkbox;
-        accessible-label: "Select " + msg.sender + ": " + msg.subject;
-        accessible-checked: msg.checked;
-        accessible-action-default => { root.check-toggled(); }
-        clicked => root.check-toggled();
-    }
-    if root.expanded: VerticalLayout {
-        y: root.head;
-        height: root.height - root.head;
-        padding-left: 12px;
-        padding-right: 8px;
-        padding-bottom: 8px;
-        for item[i] in root.thread: TimelineItem {
-            item: item;
-            current: i == root.thread-current;
-            first: i == 0;
-            last: i == root.thread.length - 1;
-            line-color: root.line-color;
-            clicked => root.thread-clicked(i);
+            touch := TouchArea {
+                y: 0;
+                height: root.head;
+                clicked => {
+                    // The release that ends a long press is not a click.
+                    if !root.long-pressed {
+                        root.clicked();
+                    }
+                }
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.long-pressed = false;
+                    }
+                }
+            }
+            Timer {
+                interval: 500ms;
+                running: touch.pressed && !root.long-pressed;
+                triggered => {
+                    root.long-pressed = true;
+                    root.check-toggled();
+                }
+            }
+            // The left edge ticks the row, like an avatar in other mail apps.
+            TouchArea {
+                x: 0;
+                y: 0;
+                width: 30px;
+                height: root.head;
+                accessible-role: checkbox;
+                accessible-label: "Select " + msg.sender + ": " + msg.subject;
+                accessible-checked: msg.checked;
+                accessible-action-default => { root.check-toggled(); }
+                clicked => root.check-toggled();
+            }
+            if root.expanded: VerticalLayout {
+                y: root.head;
+                height: root.height - root.head;
+                padding-left: 12px;
+                padding-right: 8px;
+                padding-bottom: 8px;
+                for item[i] in root.thread: TimelineItem {
+                    item: item;
+                    current: i == root.thread-current;
+                    first: i == 0;
+                    last: i == root.thread.length - 1;
+                    line-color: root.line-color;
+                    clicked => root.thread-clicked(i);
+                }
+            }
         }
     }
 }

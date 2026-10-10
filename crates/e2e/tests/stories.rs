@@ -117,6 +117,34 @@ fn bulk_actions() {
     assert_eq!(archived, ["Bulk one", "Bulk two"]);
 }
 
+/// US22: on phones, a row swiped right is archived, one swiped left deleted; a short swipe does nothing.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn swipe_rows() {
+    if !android() {
+        return;
+    }
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    for subject in ["Swipe keep", "Swipe archive", "Swipe delete"] {
+        deliver(&account, ("Finn", "finn@example.org"), subject, "Swipe me.");
+    }
+    let app = App::launch();
+    app.set_up(&account);
+    app.wait_for("Finn: Swipe delete", "ListItem");
+
+    app.swipe_across("Finn: Swipe keep", "ListItem", 0.2);
+    app.swipe_across("Finn: Swipe archive", "ListItem", 0.45);
+    app.wait_until("archived on the server", || server_subjects(&account, "Archive") == ["Swipe archive"]);
+    app.swipe_across("Finn: Swipe delete", "ListItem", -0.45);
+    app.wait_until("deleted on the server", || server_subjects(&account, "Trash") == ["Swipe delete"]);
+    assert_eq!(server_subjects(&account, "INBOX"), ["Swipe keep"]);
+    assert!(app.exists("Finn: Swipe keep", "ListItem"), "short swipe removed the row");
+    assert!(!app.exists("Finn: Swipe archive", "ListItem"), "archived row still listed");
+    assert!(!app.exists("Finn: Swipe delete", "ListItem"), "deleted row still listed");
+}
+
 /// US4 and HTML mail: rendered (Servo on the desktop, WebView on Android) with remote
 /// content blocked until "Load images"; a counting server stands in for the tracker.
 #[test]

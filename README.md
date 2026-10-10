@@ -21,7 +21,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   notification for new unread mail while the app runs (Linux desktop and Android). On Android
   a foreground service keeps IDLE running in the background.
 - Read, flag, mark read/unread, archive, delete, also for several conversations at once
-  (tick them at the row's left edge, by long press on phones, or with `x`). Changes apply instantly and are
+  (tick them at the row's left edge, by long press on phones, or with `x`); on phones a row swiped
+  right is archived, swiped left deleted. Changes apply instantly and are
   queued for the server, so they also work offline.
 - Full-text search (SQLite FTS5) over subject, sender and downloaded bodies; `from:address`
   limits it to one sender, and clicking the sender of an open message lists all of their mail.

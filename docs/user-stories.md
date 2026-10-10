@@ -30,6 +30,7 @@ GreenMail server; the rest are checked by hand. Results: [Test results](#test-re
 | US19 | As a user I am told about new mail. | Unread mail arriving in the inbox while the app runs shows a system notification with sender and subject (**auto**); mail already there when the account is set up does not (**auto**). |
 | US20 | As a user I act on several conversations at once. | Rows are ticked at their left edge (phones: long press, then taps) and a bar shows how many (**auto**). Read, flag, unflag, archive and delete apply to all ticked rows and only to them, in the list at once and on the server (**auto**); the ticks clear afterwards or with Clear (**auto**). |
 | US21 | As a user I find all mail from the same sender. | "More from this sender" on the open message lists that sender's mail newest first, and mail that only mentions their address is not included (**auto**). `from:address` can be typed, also with more words (**auto**); clearing the search restores the folder (**auto**). Phones show the results in the list. |
+| US22 | As a phone user I clear my inbox with a thumb. | Swiping a list row right archives its conversation, swiping left deletes it, like Archive and Delete in the reader; the action shows behind the row while swiping, and a short swipe springs back and does nothing (**e2e**). |
 | US17 | As a user I see my folder tree as it is on the server. | Folders created or removed by another client appear or disappear after a sync (**auto**). Subfolders are indented under their parent, also under Inbox and the special folders, and can be opened (**auto**). |
 
 ## Test results
@@ -63,6 +64,7 @@ state checked over IMAP after each step.
 | US17 Folder tree | pass (auto) | not tested | Nested folders created and deleted over IMAP during the run. |
 | US20 Bulk actions | pass (auto, e2e) | pass (e2e) | 2026-10-10. Android ticks with a real long press (`adb input swipe`). |
 | US19 Notifications | pass (auto, e2e) | pass (e2e) | 2026-10-10. Desktop e2e reads the D-Bus `Notify` call, Android e2e `dumpsys notification`. |
+| US22 Swipe rows | n/a | pass (e2e) | 2026-10-10. `swipe_rows`: real finger swipes through `adb input swipe`; Archive and Trash checked on the server. |
 | US18 Drafts | pass (auto) | pass (e2e) | 2026-10-10. Android: `crates/e2e` `drafts`, leaving with the system Back key. |
 
 Bugs found by this run and fixed:
