@@ -909,6 +909,8 @@ export component AppWindow inherits Window {
                             }
                             if root.source-open && root.has-message && !root.composing: TextEdit {
                                 accessible-label: "Message source";
+                                width: 100%;
+                                height: 100%;
                                 read-only: true;
                                 wrap: no-wrap;
                                 font-size: 12px;
