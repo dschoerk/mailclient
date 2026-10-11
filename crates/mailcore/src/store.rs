@@ -836,6 +836,16 @@ impl Store {
             .optional()?)
     }
 
+    /// Where the event with this UID is stored (any instance of it), if it is.
+    pub fn event_by_uid(&self, uid: &str) -> Result<Option<StoredEvent>> {
+        Ok(self
+            .conn
+            .query_row("SELECT calendar, href, recurring FROM events WHERE uid = ?1 LIMIT 1", [uid], |r| {
+                Ok(StoredEvent { calendar: r.get(0)?, href: r.get(1)?, recurring: r.get(2)?, ..Default::default() })
+            })
+            .optional()?)
+    }
+
     /// The synced calendars, in the server's order.
     pub fn calendars(&self) -> Result<Vec<CalendarInfo>> {
         let mut stmt = self.conn.prepare("SELECT id, name, color FROM calendars ORDER BY rowid")?;

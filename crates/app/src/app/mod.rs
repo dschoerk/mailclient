@@ -157,6 +157,10 @@ struct State {
     /// The event open in the calendar's side panel, and the one the form edits (none: a new one).
     calendar_open: Option<calendar::Shown>,
     calendar_editing: Option<calendar::Shown>,
+    /// The attendees in the event form.
+    form_attendees: Vec<mailcore::ical::Attendee>,
+    /// The last calendar error of each account (by engine id), until its calendar works again.
+    calendar_errors: HashMap<u64, String>,
 }
 
 impl State {
@@ -221,6 +225,9 @@ impl Controller {
         window.set_msg_attachments(ModelRc::from(controller.attachment_model.clone()));
         window.set_conversation(ModelRc::from(controller.conversation_model.clone()));
         window.set_use_webview(cfg!(feature = "servo"));
+        // Android builds use Slint's Material style, which starts field text further in.
+        #[cfg(target_os = "android")]
+        window.global::<crate::Theme>().set_text_inset(16.0);
         window.set_html_overlay(cfg!(target_os = "android"));
         let settings = config::load_settings().unwrap_or_else(|e| {
             log::warn!("cannot read settings: {e:#}");
@@ -358,6 +365,11 @@ impl Controller {
         on!(on_calendar_today, |c| c.set_calendar_day(chrono::Local::now().date_naive()));
         on!(on_calendar_day_clicked, |c, cell| c.calendar_day_clicked(cell as usize));
         on!(on_calendar_new_event, |c| c.new_event());
+        on!(on_calendar_remove_attendee, |c, index| c.remove_attendee(index as usize));
+        {
+            let weak = Rc::downgrade(self);
+            window.on_calendar_add_attendee(move |text| weak.upgrade().is_some_and(|c| c.add_attendees(&text)));
+        }
         on!(on_calendar_save_event, |c| c.save_event());
         on!(on_calendar_refresh, |c| c.sync_calendars());
         on!(on_invite_respond, |c, answer| c.invite_respond(&answer));
@@ -432,8 +444,13 @@ impl Controller {
                 self.window().set_online(all_online);
             }
             Event::FoldersChanged => self.reload_folders(),
-            Event::NewMail(_) if !self.window().get_notifications() => {}
-            Event::NewMail(messages) => notify_new_mail(&messages),
+            Event::NewMail(messages) => {
+                // An answer to an invitation is mail too: the server's calendar may have changed.
+                self.send(account, Command::SyncCalendars);
+                if self.window().get_notifications() {
+                    notify_new_mail(&messages);
+                }
+            }
             Event::MessagesChanged(_) => {
                 let state = self.state.borrow();
                 // Any folder can add to the listed conversations (replies sit in Sent).
@@ -480,7 +497,16 @@ impl Controller {
                     self.set_status(format!("⚠ {error}"));
                 }
             }
-            Event::CalendarChanged => self.render_calendar(),
+            Event::CalendarChanged => {
+                self.state.borrow_mut().calendar_errors.remove(&id);
+                self.show_calendar_errors();
+                self.render_calendar();
+            }
+            Event::CalendarFailed(e) => {
+                self.set_status(format!("⚠ Calendar: {e}"));
+                self.state.borrow_mut().calendar_errors.insert(id, e);
+                self.show_calendar_errors();
+            }
             Event::DraftSaved(id) => {
                 let composer = self.composer.borrow().clone();
                 if let Some(composer) = composer {

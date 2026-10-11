@@ -112,7 +112,7 @@ fn ms_calendar_create_edit_delete() {
 
         let moved_title = format!("{title} (moved)");
         let moved = Event { summary: moved_title.clone(), start: start + 3600, end: start + 7200, ..stored.event.clone() };
-        assert!(calendar::update(&account, &creds, &mut store, &stored, &moved).await.unwrap().is_none(), "Exchange mails its own updates");
+        assert!(calendar::update(&account, &creds, &mut store, &stored, &moved).await.unwrap().is_empty(), "Exchange mails its own updates");
         calendar::sync(&account, &creds, &mut store).await.unwrap();
         assert!(find(&store, &title).is_none(), "old title still there");
         let stored = find(&store, &moved_title).expect("the change comes back from Outlook");
@@ -121,5 +121,46 @@ fn ms_calendar_create_edit_delete() {
         calendar::delete(&account, &creds, &mut store, &stored).await.unwrap();
         calendar::sync(&account, &creds, &mut store).await.unwrap();
         assert!(find(&store, &moved_title).is_none(), "deleted event still there");
+    });
+}
+
+/// Editing a meeting's attendees as the edit form does: one added (Exchange keeps both and
+/// invites the new one), then the first removed (Exchange keeps the second only).
+#[test]
+#[ignore = "needs an Outlook.com test account and MAILCLIENT_MS_CLIENT_ID at build time"]
+fn ms_edit_attendees() {
+    let (account, refresh) = sign_in();
+    runtime().block_on(async {
+        let creds = Credentials::with_secret(&account, refresh);
+        let mut store = Store::open_in_memory().unwrap();
+        let stamp = stamp();
+        let start = (stamp as i64 / 3600 + 50) * 3600;
+        let title = format!("mailclient attendees {stamp}");
+        let first = ical::Attendee { email: "first@example.org".into(), name: "First".into(), partstat: "NEEDS-ACTION".into() };
+        let event = Event { uid: format!("att-{stamp}@example.org"), summary: title.clone(), start, end: start + 3600, attendees: vec![first.clone()], ..Default::default() };
+        calendar::save(&account, &creds, &mut store, &ical::write("", &[event]), false).await.unwrap();
+        calendar::sync(&account, &creds, &mut store).await.unwrap();
+        let find = |store: &Store| store.events(start - 86400, start + 2 * 86400).unwrap().into_iter().find(|s| s.event.summary == title);
+        let stored = find(&store).expect("meeting synced back");
+        eprintln!("before: {:?}", stored.event.attendees);
+
+        let second = ical::Attendee { email: "second@example.org".into(), name: "Second".into(), partstat: String::new() };
+        let mut new = stored.event.clone();
+        new.attendees.push(second);
+        calendar::update(&account, &creds, &mut store, &stored, &new).await.unwrap();
+        calendar::sync(&account, &creds, &mut store).await.unwrap();
+        let after = find(&store).expect("meeting still there");
+        eprintln!("after: {:?}", after.event.attendees);
+        let emails: Vec<String> = after.event.attendees.iter().map(|a| a.email.clone()).collect();
+        assert_eq!(emails, ["first@example.org", "second@example.org"]);
+
+        let mut fewer = after.event.clone();
+        fewer.attendees.retain(|a| a.email != "first@example.org");
+        calendar::update(&account, &creds, &mut store, &after, &fewer).await.unwrap();
+        calendar::sync(&account, &creds, &mut store).await.unwrap();
+        let last = find(&store).expect("meeting still there");
+        let emails: Vec<String> = last.event.attendees.iter().map(|a| a.email.clone()).collect();
+        calendar::delete(&account, &creds, &mut store, &last).await.unwrap();
+        assert_eq!(emails, ["second@example.org"]);
     });
 }

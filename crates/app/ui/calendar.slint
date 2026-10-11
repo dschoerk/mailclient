@@ -2,8 +2,8 @@
 // and a form for new and edited events.
 
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { CalendarDay, AgendaItem, EventForm, EventBlock, DayColumn, EventDetail } from "types.slint";
-import { Theme, Divider, ToolButton, Field } from "widgets.slint";
+import { CalendarDay, AgendaItem, EventForm, EventBlock, DayColumn, EventDetail, AttendeeItem } from "types.slint";
+import { Theme, Divider, ToolButton, Field, TextField } from "widgets.slint";
 
 /// An event in a month cell or the all-day strip.
 component Chip inherits Rectangle {
@@ -233,6 +233,32 @@ component TimeGrid inherits VerticalLayout {
     }
 }
 
+/// An attendee with their answer; removable in the form.
+component AttendeeRow inherits HorizontalLayout {
+    in property <AttendeeItem> item;
+    in property <bool> removable;
+    callback remove();
+    spacing: 6px;
+    Text {
+        text: root.item.name == "" ? root.item.email : root.item.name + " <" + root.item.email + ">";
+        overflow: elide;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+    Text {
+        text: root.item.status;
+        font-size: 12px;
+        vertical-alignment: center;
+        color: root.item.status == "Accepted" ? #2e9e5b : root.item.status == "Declined" ? #d33 : root.item.status == "Tentative" ? #e8a317 : Theme.muted;
+    }
+    if root.removable: ToolButton {
+        text: "Remove " + root.item.email;
+        icon: @image-url("icons/x.svg");
+        show-text: false;
+        clicked => root.remove();
+    }
+}
+
 component AgendaRow inherits Rectangle {
     in property <AgendaItem> item;
     callback clicked();
@@ -319,10 +345,21 @@ component DetailView inherits VerticalLayout {
         color: Theme.muted;
         wrap: word-wrap;
     }
-    if root.detail.people != "": Text {
-        text: root.detail.people;
+    if root.detail.organizer != "": Text {
+        text: "Organizer: " + root.detail.organizer;
         font-size: 12px;
         wrap: word-wrap;
+    }
+    if root.detail.attendees.length > 0: VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: "Attendees";
+            font-size: 12px;
+            color: Theme.muted;
+        }
+        for attendee in root.detail.attendees: AttendeeRow {
+            item: attendee;
+        }
     }
     if root.detail.notes != "": Text {
         text: root.detail.notes;
@@ -378,6 +415,10 @@ component EventFormView inherits VerticalLayout {
     in property <bool> existing;
     /// Editing a repeating event: only its texts change.
     in property <bool> recurring;
+    in property <[AttendeeItem]> attendees;
+    /// Adds the typed address(es); false (field kept) when one is not valid.
+    callback add-attendee(string) -> bool;
+    callback remove-attendee(int);
     callback save();
     callback cancel();
     alignment: start;
@@ -432,10 +473,47 @@ component EventFormView inherits VerticalLayout {
         label: "Location";
         text <=> root.form.location;
     }
-    if !root.recurring: Field {
-        label: "Invite";
-        text <=> root.form.attendees;
-        placeholder: "name@example.org, …";
+    if !root.recurring: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Attendees";
+            width: 90px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: Theme.muted;
+        }
+        add-field := TextField {
+            label: "Add attendee";
+            placeholder: "name@example.org";
+            accepted(text) => {
+                if root.add-attendee(text) {
+                    self.text = "";
+                }
+            }
+        }
+        Button {
+            text: "Add";
+            enabled: add-field.text != "";
+            clicked => {
+                if root.add-attendee(add-field.text) {
+                    add-field.text = "";
+                }
+            }
+        }
+    }
+    if !root.recurring: VerticalLayout {
+        padding-left: 98px;
+        spacing: 2px;
+        if root.attendees.length == 0: Text {
+            text: "Nobody invited";
+            font-size: 12px;
+            color: Theme.muted;
+        }
+        for attendee[i] in root.attendees: AttendeeRow {
+            item: attendee;
+            removable: true;
+            remove => root.remove-attendee(i);
+        }
     }
     HorizontalLayout {
         spacing: 8px;
@@ -471,7 +549,7 @@ component EventFormView inherits VerticalLayout {
             clicked => root.cancel();
         }
         Button {
-            text: root.form.attendees == "" ? "Save" : root.existing ? "Save and notify" : "Send invitations";
+            text: root.attendees.length == 0 ? "Save" : root.existing ? "Save and notify" : "Send invitations";
             primary: true;
             clicked => root.save();
         }
@@ -491,6 +569,9 @@ component SidePanel inherits VerticalLayout {
     in property <[string]> from-options;
     in-out property <int> from-index;
     in property <string> error;
+    in property <[AttendeeItem]> attendees;
+    callback add-attendee(string) -> bool;
+    callback remove-attendee(int);
     callback save();
     callback event-clicked(int);
     callback edit-event();
@@ -537,6 +618,9 @@ component SidePanel inherits VerticalLayout {
             error: root.error;
             existing: root.form-existing;
             recurring: root.form-existing && root.detail.recurring;
+            attendees: root.attendees;
+            add-attendee(text) => { return root.add-attendee(text); }
+            remove-attendee(i) => root.remove-attendee(i);
             save => root.save();
             cancel => {
                 root.editing = false;
@@ -564,6 +648,11 @@ export component CalendarView inherits Rectangle {
     in property <[string]> from-options;
     in-out property <int> from-index;
     in property <string> error;
+    /// Why the calendar does not sync or did not save; empty when it works.
+    in property <string> sync-error;
+    in property <[AttendeeItem]> attendees;
+    callback add-attendee(string) -> bool;
+    callback remove-attendee(int);
     /// Phones: the side panel replaces the calendar while it is in use.
     in property <bool> narrow;
     /// Phones: room for the status and navigation bars.
@@ -644,6 +733,23 @@ export component CalendarView inherits Rectangle {
         Divider {
             height: 1px;
         }
+        if root.sync-error != "": Rectangle {
+            background: #d33.with-alpha(0.12);
+            HorizontalLayout {
+                padding: 10px;
+                spacing: 8px;
+                Text {
+                    text: "⚠";
+                    color: #d33;
+                }
+                Text {
+                    text: root.sync-error;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    accessible-role: text;
+                }
+            }
+        }
         if !root.narrow || !(root.editing || root.showing-event): HorizontalLayout {
             vertical-stretch: 1;
             if root.view == 0: MonthGrid {
@@ -675,6 +781,9 @@ export component CalendarView inherits Rectangle {
                 from-options: root.from-options;
                 from-index <=> root.from-index;
                 error: root.error;
+                attendees: root.attendees;
+                add-attendee(text) => { return root.add-attendee(text); }
+                remove-attendee(i) => root.remove-attendee(i);
                 save => root.save-event();
                 event-clicked(id) => root.event-clicked(id);
                 edit-event => root.edit-event();
@@ -694,6 +803,9 @@ export component CalendarView inherits Rectangle {
             from-options: root.from-options;
             from-index <=> root.from-index;
             error: root.error;
+            attendees: root.attendees;
+            add-attendee(text) => { return root.add-attendee(text); }
+            remove-attendee(i) => root.remove-attendee(i);
             save => root.save-event();
             event-clicked(id) => root.event-clicked(id);
             edit-event => root.edit-event();

@@ -116,9 +116,15 @@ export struct EventForm {
     end: string,
     all-day: bool,
     location: string,
-    /// Addresses to invite, comma separated.
-    attendees: string,
     notes: string,
+}
+
+/// Someone invited to the event in the form.
+export struct AttendeeItem {
+    name: string,
+    email: string,
+    /// "Accepted", "Tentative", "Declined", "No answer yet", or "Will be invited" (added in the form).
+    status: string,
 }
 
 /// An event in the week or day view.
@@ -150,8 +156,9 @@ export struct EventDetail {
     location: string,
     /// Calendar and account.
     calendar: string,
-    /// Organizer and attendees with their answers.
-    people: string,
+    /// "Name <address>"; empty when nobody organizes it.
+    organizer: string,
+    attendees: [AttendeeItem],
     notes: string,
     /// The user organizes it (or nobody does): it can be changed.
     can-edit: bool,

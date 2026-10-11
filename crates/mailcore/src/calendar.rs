@@ -151,16 +151,31 @@ async fn fetch(auth: &str, href: &str) -> Result<(String, Option<String>)> {
     Ok((r.text(), r.header("ETag").map(str::to_string)))
 }
 
+/// The mails an organizer's change needs: the new version for everyone still invited, and a
+/// cancellation for those taken off (RFC 5546 3.2.5), so they lose the meeting too.
+fn change_notices(account: &AccountConfig, before: &str, after: &str, full: bool) -> Vec<Notice> {
+    let mut notices: Vec<Notice> = notice(account, after, "REQUEST").into_iter().collect();
+    let Some(old) = ical::parse(before).events.into_iter().next().filter(|_| full) else { return notices };
+    let still = ical::parse(after).events.into_iter().next().map(|e| e.attendees).unwrap_or_default();
+    let removed: Vec<ical::Attendee> =
+        old.attendees.iter().filter(|a| !still.iter().any(|s| s.email.eq_ignore_ascii_case(&a.email))).cloned().collect();
+    if !removed.is_empty() {
+        let cancel = Event { attendees: removed, status: "CANCELLED".into(), ..old };
+        notices.extend(notice(account, &ical::patch(before, &cancel, true), "CANCEL"));
+    }
+    notices
+}
+
 /// Changes an event to `new`'s values where it lives. A repeating event changes as a whole
-/// series, and only its texts (`target.recurring`). Returns the mail its attendees need.
-pub async fn update(account: &AccountConfig, creds: &Credentials, store: &mut Store, target: &StoredEvent, new: &Event) -> Result<Option<Notice>> {
+/// series, and only its texts (`target.recurring`). Returns the mails its attendees need.
+pub async fn update(account: &AccountConfig, creds: &Credentials, store: &mut Store, target: &StoredEvent, new: &Event) -> Result<Vec<Notice>> {
     let full = !target.recurring;
     if target.calendar == LOCAL_CALENDAR {
         let text = store.local_ics(&target.event.uid)?.ok_or_else(|| anyhow!("the event is no longer on this device"))?;
         let patched = ical::patch(&text, new, full);
         let (from, to) = window();
         store.add_local_events(&patched, &ical::expand(&ical::parse(&patched).events, from, to))?;
-        return Ok(notice(account, &patched, "REQUEST"));
+        return Ok(change_notices(account, &text, &patched, full));
     }
     match source(account, creds).await? {
         None => bail!("this account has no calendar server any more"),
@@ -174,7 +189,8 @@ pub async fn update(account: &AccountConfig, creds: &Credentials, store: &mut St
             if !r.ok() {
                 bail!("saving the event failed: {}", failure(&r));
             }
-            Ok(None)
+            // Exchange mails attendees added, removed and kept.
+            Ok(Vec::new())
         }
         Some(Source::CalDav { auth, .. }) => {
             let (text, etag) = fetch(&auth, &target.href).await?;
@@ -186,14 +202,14 @@ pub async fn update(account: &AccountConfig, creds: &Credentials, store: &mut St
             match r.status {
                 412 => bail!("the event was changed elsewhere; try again after the next sync"),
                 _ if !r.ok() => bail!("saving the event failed: {}", failure(&r)),
-                _ => Ok(notice(account, &patched, "REQUEST")),
+                _ => Ok(change_notices(account, &text, &patched, full)),
             }
         }
     }
 }
 
 /// Deletes an event (a whole series for a repeating one). Returns the cancellation its attendees need.
-pub async fn delete(account: &AccountConfig, creds: &Credentials, store: &mut Store, target: &StoredEvent) -> Result<Option<Notice>> {
+pub async fn delete(account: &AccountConfig, creds: &Credentials, store: &mut Store, target: &StoredEvent) -> Result<Vec<Notice>> {
     let cancelled = |text: &str| {
         let mut e = ical::parse(text).events.into_iter().next().unwrap_or_default();
         e.status = "CANCELLED".into();
@@ -202,7 +218,7 @@ pub async fn delete(account: &AccountConfig, creds: &Credentials, store: &mut St
     if target.calendar == LOCAL_CALENDAR {
         let text = store.local_ics(&target.event.uid)?;
         store.remove_local_events(&target.event.uid)?;
-        return Ok(text.as_deref().and_then(cancelled));
+        return Ok(text.as_deref().and_then(cancelled).into_iter().collect());
     }
     match source(account, creds).await? {
         None => bail!("this account has no calendar server any more"),
@@ -212,7 +228,7 @@ pub async fn delete(account: &AccountConfig, creds: &Credentials, store: &mut St
             if !r.ok() && r.status != 404 {
                 bail!("deleting the event failed: {}", failure(&r));
             }
-            Ok(None)
+            Ok(Vec::new())
         }
         Some(Source::CalDav { auth, .. }) => {
             let (text, _) = fetch(&auth, &target.href).await?;
@@ -220,9 +236,41 @@ pub async fn delete(account: &AccountConfig, creds: &Credentials, store: &mut St
             if !r.ok() && r.status != 404 {
                 bail!("deleting the event failed: {}", failure(&r));
             }
-            Ok(cancelled(&text))
+            Ok(cancelled(&text).into_iter().collect())
         }
     }
+}
+
+/// Records the answers in a REPLY mail (`ics`) on the organizer's copy of the event: on this
+/// device, or on a CalDAV server (which leaves mailed answers to the client, see SCHEDULE-AGENT).
+/// Google and Exchange record answers from mail themselves. Returns whether anything changed.
+pub async fn apply_reply(account: &AccountConfig, creds: &Credentials, store: &mut Store, ics: &str) -> Result<bool> {
+    let reply = ical::parse(ics);
+    if reply.method != "REPLY" || account.auth != Auth::Password {
+        return Ok(false);
+    }
+    let mut changed = false;
+    for e in &reply.events {
+        let Some(target) = store.event_by_uid(&e.uid)? else { continue };
+        let answer = |text: &str| e.attendees.iter().fold(text.to_string(), |t, a| ical::set_partstat(&t, &e.uid, &a.email, &a.partstat));
+        if target.calendar == LOCAL_CALENDAR {
+            let Some(text) = store.local_ics(&e.uid)? else { continue };
+            let answered = answer(&text);
+            let (from, to) = window();
+            store.add_local_events(&answered, &ical::expand(&ical::parse(&answered).events, from, to))?;
+            changed = true;
+        } else if let Some(Source::CalDav { auth, .. }) = source(account, creds).await? {
+            let (text, etag) = fetch(&auth, &target.href).await?;
+            let mut headers = vec![("Authorization", auth.as_str()), ("Content-Type", "text/calendar; charset=utf-8")];
+            headers.extend(etag.as_deref().map(|e| ("If-Match", e)));
+            let r = http::request("PUT", &target.href, &headers, answer(&text).as_bytes()).await?;
+            if !r.ok() {
+                bail!("recording the answer failed: {}", failure(&r));
+            }
+            changed = true;
+        }
+    }
+    Ok(changed)
 }
 
 fn failure(r: &Response) -> String {

@@ -24,14 +24,16 @@ requires Google's verification plus a yearly CASA security assessment.
 
 ## Build with the client
 
-Google treats a desktop client's secret as public: it ships in every binary. Both values are
-compiled in from env vars:
+Both values are compiled in from env vars. They live in the committed `oauth_secrets.toml` at the repo root
+(see [oauth-microsoft.md](oauth-microsoft.md#build-with-the-client-id)), or export them for one shell:
 
 ```sh
 export MAILCLIENT_GOOGLE_CLIENT_ID=$(jq -r .installed.client_id client_secret_*.json)
 export MAILCLIENT_GOOGLE_CLIENT_SECRET=$(jq -r .installed.client_secret client_secret_*.json)
 cargo run
 ```
+
+The secret ends up readable in every shipped binary, but stays out of the repo all the same.
 
 ## Live test
 

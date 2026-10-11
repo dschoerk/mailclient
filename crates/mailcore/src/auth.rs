@@ -14,8 +14,8 @@ use url::form_urlencoded;
 
 use crate::config::{AccountConfig, Auth};
 
-/// An OAuth2 identity provider. Client IDs (and Google's secret, which Google treats as
-/// public for desktop apps) are baked in at build time from env vars.
+/// An OAuth2 identity provider. Client IDs and Google's secret are baked in at build time from
+/// env vars (or the committed oauth_secrets.toml, see build.rs); they ship in the binary anyway.
 struct Provider {
     name: &'static str,
     client_id: Option<&'static str>,
@@ -34,7 +34,6 @@ struct Provider {
 
 const MICROSOFT: Provider = Provider {
     name: "Microsoft",
-    // shortcut: replace with the literal ID once the app is registered; it is public, not a secret.
     client_id: option_env!("MAILCLIENT_MS_CLIENT_ID"),
     client_secret: None,
     id_var: "MAILCLIENT_MS_CLIENT_ID",

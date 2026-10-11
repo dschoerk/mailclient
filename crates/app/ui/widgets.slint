@@ -7,6 +7,11 @@ export global Theme {
     out property <brush> unread-dot: #2f6fde;
     out property <brush> flag: #e8a317;
     out property <brush> muted: Palette.foreground.with-alpha(0.6);
+    /// Hint text in empty fields: clearly weaker than anything typed.
+    out property <brush> placeholder: Palette.foreground.with-alpha(0.35);
+    /// Where the widget style starts a field's text: Fluent (desktop) 12px; set to Material's
+    /// 16px on Android at startup.
+    in-out property <length> text-inset: 12px;
     out property <brush> divider: Palette.border;
     out property <brush> selection: Palette.selection-background;
     out property <brush> sidebar: Palette.alternate-background;
@@ -97,6 +102,50 @@ export component FloatButton inherits Rectangle {
     }
 }
 
+/// A LineEdit with a quieter placeholder. The styles' own (Fluent's is 79% of the text color)
+/// reads like a real value, and no style lets it be changed, so it is drawn here instead.
+export component TextField inherits Rectangle {
+    in-out property <string> text <=> edit.text;
+    in property <string> placeholder;
+    /// The accessible label, which tests and screen readers find the field by.
+    in property <string> label;
+    in property <InputType> input-type: InputType.text;
+    in property <bool> read-only;
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback accepted(string);
+    forward-focus: edit;
+    min-width: edit.min-width;
+    min-height: edit.min-height;
+    preferred-width: edit.preferred-width;
+    preferred-height: edit.preferred-height;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    edit := LineEdit {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        accessible-label: root.label;
+        accessible-placeholder-text: root.placeholder;
+        input-type: root.input-type;
+        read-only: root.read-only;
+        enabled: root.enabled;
+        edited(text) => root.edited(text);
+        accepted(text) => root.accepted(text);
+    }
+    if root.text == "": Text {
+        x: Theme.text-inset;
+        width: parent.width - 2 * Theme.text-inset;
+        height: parent.height;
+        text: root.placeholder;
+        font-size: edit.font-size;
+        color: Theme.placeholder;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 export component Field inherits HorizontalLayout {
     in property <string> label;
     in-out property <string> text;
@@ -112,10 +161,10 @@ export component Field inherits HorizontalLayout {
         horizontal-alignment: right;
         color: Theme.muted;
     }
-    LineEdit {
-        accessible-label: root.label;
+    TextField {
+        label: root.label;
         text <=> root.text;
-        placeholder-text: root.placeholder;
+        placeholder: root.placeholder;
         input-type: root.input-type;
         read-only: root.read-only;
         edited(t) => root.edited(t);

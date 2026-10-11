@@ -90,6 +90,8 @@ pub enum Event {
     SendFailed(u64, String),
     DraftSaved(u64),
     CalendarChanged,
+    /// A calendar sync or change failed; the next success clears it.
+    CalendarFailed(String),
 }
 
 pub struct Engine {
@@ -245,12 +247,17 @@ impl<B: Backend> Worker<B> {
             if matches!(command, Command::Stop) {
                 break;
             }
+            // The variant only: drafts and events are private.
+            let name = format!("{command:?}").split([' ', '(', '{']).next().unwrap_or_default().to_string();
+            let started = std::time::Instant::now();
+            log::debug!("engine: {name} started");
             // HTTP, not the IMAP session: a failure says nothing about the mail connection.
             if matches!(command, Command::SyncCalendars | Command::SaveEvent { .. } | Command::UpdateEvent { .. } | Command::DeleteEvent { .. }) {
                 if let Err(e) = self.calendar(command).await {
                     log::warn!("calendar: {e:#}");
-                    self.emit(Event::Error(format!("Calendar: {e:#}")));
+                    self.emit(Event::CalendarFailed(format!("{e:#}")));
                 }
+                log::debug!("engine: {name} done in {:?}", started.elapsed());
                 continue;
             }
             // Collapse bursts: syncs (IDLE notifications plus a poll tick), and searches typed
@@ -282,6 +289,7 @@ impl<B: Backend> Worker<B> {
                     result = self.handle(command).await;
                 }
             }
+            log::debug!("engine: {name} done in {:?}", started.elapsed());
             if let Err(e) = result {
                 log::warn!("engine: {e:#}");
                 if let Some(id) = draft_id {
@@ -392,19 +400,19 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn calendar(&mut self, command: Command) -> Result<()> {
-        let notice = match &command {
+        let notices = match &command {
             Command::SaveEvent { ics, invitation } => {
                 crate::calendar::save(&self.account, &self.creds, &mut self.store, ics, *invitation).await?;
-                None
+                Vec::new()
             }
             Command::UpdateEvent { target, new } => crate::calendar::update(&self.account, &self.creds, &mut self.store, target, new).await?,
             Command::DeleteEvent { target } => crate::calendar::delete(&self.account, &self.creds, &mut self.store, target).await?,
-            _ => None,
+            _ => Vec::new(),
         };
         if !matches!(command, Command::SyncCalendars) {
             self.emit(Event::CalendarChanged);
         }
-        if let Some(notice) = notice {
+        for notice in notices {
             let quoted = |a: &crate::ical::Attendee| match a.name.as_str() {
                 "" => a.email.clone(),
                 name => format!("\"{}\" <{}>", name.replace('"', ""), a.email),
@@ -597,10 +605,12 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn download_bodies(&mut self, folder: &str, uids: &[u32]) -> Result<()> {
+        let mut replies = Vec::new();
         for batch in uids.chunks(BODY_BATCH) {
             let bodies = self.conn().await?.fetch_bodies(folder, batch).await?;
             for (uid, raw) in bodies {
                 let body = mime::body_from_raw(&raw);
+                replies.extend(body.calendar.clone().filter(|c| crate::ical::parse(c).method == "REPLY"));
                 self.store.set_body(
                     folder,
                     uid,
@@ -610,6 +620,21 @@ impl<B: Backend> Worker<B> {
                     !body.attachments.is_empty(),
                 )?;
             }
+        }
+        // Answers to the user's invitations, for calendars that do not read mail themselves.
+        let mut answered = false;
+        for ics in replies {
+            match crate::calendar::apply_reply(&self.account, &self.creds, &mut self.store, &ics).await {
+                Ok(changed) => answered |= changed,
+                // A calendar problem must not stop the mail sync.
+                Err(e) => log::warn!("recording an answer: {e:#}"),
+            }
+        }
+        if answered {
+            if let Err(e) = crate::calendar::sync(&self.account, &self.creds, &mut self.store).await {
+                log::warn!("calendar: {e:#}");
+            }
+            self.emit(Event::CalendarChanged);
         }
         Ok(())
     }

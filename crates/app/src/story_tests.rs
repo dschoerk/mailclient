@@ -732,7 +732,21 @@ fn user_stories() {
             type_in(&w, "Title", "Design sync")?;
             type_in(&w, "Starts", "10:00")?;
             type_in(&w, "Ends", "11:00")?;
-            type_in(&w, "Invite", &user2)?;
+            // The attendee list: refuses non-addresses, skips duplicates and the organizer, removes.
+            let add = |text: &str| -> Outcome {
+                type_in(&w, "Add attendee", text)?;
+                click(&w, "Add")
+            };
+            let invited = || w.get_event_attendees().iter().map(|a| a.email.to_string()).collect::<Vec<_>>();
+            add("not an address")?;
+            ensure(w.get_event_error().contains("not an email address") && invited().is_empty(), format!("error {:?}, list {:?}", w.get_event_error(), invited()))?;
+            add(&format!("Second Story <{user2}>, {user}, extra@example.org"))?;
+            add(&user2)?;
+            ensure(invited() == [user2.clone(), "extra@example.org".to_string()], format!("list {:?}", invited()))?;
+            ensure(w.get_event_attendees().row_data(0).is_some_and(|a| a.name == "Second Story" && a.status == "Will be invited"), "name or status wrong")?;
+            click(&w, "Remove extra@example.org")?;
+            ensure(invited() == [user2.clone()], format!("after removing: {:?}", invited()))?;
+            ensure(w.get_event_error().is_empty(), format!("error left: {}", w.get_event_error()))?;
             click(&w, "Send invitations")?;
             ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
             wait_for("event in the organizer's calendar", || w.get_calendar_agenda().iter().any(|a| a.title == "Design sync")).await?;
@@ -775,14 +789,23 @@ fn user_stories() {
             };
             open_mine("Design sync")?;
             ensure(w.get_calendar_showing_event(), "event not opened")?;
-            ensure(w.get_event_detail().people.contains(&user2), format!("people: {}", w.get_event_detail().people))?;
+            // The attendee's acceptance arrived by mail and is recorded on the organizer's event.
+            let listed = || w.get_event_detail().attendees.iter().map(|a| (a.email.to_string(), a.status.to_string())).collect::<Vec<_>>();
+            wait_for("the answer recorded", || listed() == [(user2.clone(), "Accepted".to_string())]).await
+                .map_err(|e| format!("{e}; detail attendees: {:?}", listed()))?;
+            ensure(w.get_event_detail().organizer.contains(&user), format!("organizer: {}", w.get_event_detail().organizer))?;
             click(&w, "Edit")?;
+            ensure(w.get_event_attendees().iter().any(|a| a.email == user2.as_str()), "attendees not in the edit form")?;
             type_in(&w, "Title", "Design sync (moved)")?;
             type_in(&w, "Starts", "14:00")?;
             type_in(&w, "Ends", "15:00")?;
             click(&w, "Save and notify")?;
             ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
             wait_for("moved event listed", || w.get_calendar_agenda().iter().any(|a| a.title == "Design sync (moved)" && a.time == "14:00 – 15:00")).await?;
+            // The panel returns to the event, showing the saved change.
+            ensure(w.get_calendar_showing_event(), "edited event not shown")?;
+            wait_for("details updated", || w.get_event_detail().title == "Design sync (moved)" && w.get_event_detail().when.contains("14:00")).await
+                .map_err(|e| format!("{e}; detail: {:?}, {:?}", w.get_event_detail().title, w.get_event_detail().when))?;
             wait_for("update at the attendee", || !server_bodies(&second, "INBOX", "Updated invitation: Design sync (moved)").is_empty()).await?;
             let update = server_bodies(&second, "INBOX", "Updated invitation: Design sync (moved)").remove(0);
             let update = mailcore::ical::parse(update.calendar.as_deref().ok_or("update has no calendar part")?);
@@ -800,14 +823,56 @@ fn user_stories() {
             ensure(w.get_calendar_columns().row_count() == 1, "day view is not one column")?;
             w.invoke_calendar_set_view(0);
 
-            // Deleting asks first, then cancels it for the attendee.
+            // Editing the attendees: a third person is added and invited, the second is taken off
+            // and gets a cancellation; the event lists the third only.
+            let third = test_account(&format!("third-{user}"));
+            open_mine("Design sync (moved)")?;
+            click(&w, "Edit")?;
+            type_in(&w, "Add attendee", &format!("Third Story <{}>", third.email))?;
+            click(&w, "Add")?;
+            click(&w, &format!("Remove {user2}"))?;
+            let invited: Vec<String> = w.get_event_attendees().iter().map(|a| a.email.to_string()).collect();
+            ensure(invited == [third.email.clone()], format!("form attendees: {invited:?}"))?;
+            click(&w, "Save and notify")?;
+            ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
+            wait_for("new attendee invited", || !server_bodies(&third, "INBOX", "Updated invitation: Design sync (moved)").is_empty()).await?;
+            let invitation = server_bodies(&third, "INBOX", "Updated invitation: Design sync (moved)").remove(0);
+            let invitation = mailcore::ical::parse(invitation.calendar.as_deref().ok_or("invitation has no calendar part")?);
+            ensure(invitation.method == "REQUEST", format!("method {:?}", invitation.method))?;
+            wait_for("removed attendee cancelled", || !server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
+            let cancel = server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").remove(0);
+            let cancel = mailcore::ical::parse(cancel.calendar.as_deref().ok_or("cancellation has no calendar part")?);
+            let cancelled: Vec<&str> = cancel.events[0].attendees.iter().map(|a| a.email.as_str()).collect();
+            ensure(cancel.method == "CANCEL" && cancelled == [user2.as_str()], format!("cancellation: {:?} for {cancelled:?}", cancel.method))?;
+            let listed = || w.get_event_detail().attendees.iter().map(|a| a.email.to_string()).collect::<Vec<_>>();
+            wait_for("event lists the third only", || listed() == [third.email.clone()]).await
+                .map_err(|e| format!("{e}; detail attendees: {:?}", listed()))?;
+
+            // Deleting asks first, then cancels it for the attendee (now the third).
             open_mine("Design sync (moved)")?;
             click(&w, "Delete this event")?;
             ensure(w.get_calendar_confirm_delete(), "no confirmation step")?;
             click(&w, "Delete event")?;
             wait_for("deleted event gone", || !w.get_calendar_agenda().iter().any(|a| a.title == "Design sync (moved)")).await?;
-            wait_for("cancellation at the attendee", || !server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
+            wait_for("cancellation at the attendee", || !server_bodies(&third, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
             w.set_show_calendar(false);
+
+            // A calendar that cannot be reached says so on the calendar page, until it works again.
+            let set_calendar_url = |url: &str| -> Outcome {
+                click(&w, "Settings")?;
+                click(&w, "Edit")?;
+                type_in(&w, "Calendar", url)?;
+                click(&w, "Save")
+            };
+            set_calendar_url("http://localhost:9/")?;
+            wait_for("account saved", || !w.get_needs_setup()).await?;
+            click(&w, "Close")?;
+            wait_for("calendar error shown", || w.get_calendar_error().contains("localhost")).await
+                .map_err(|e| format!("{e}; banner: {:?}", w.get_calendar_error()))?;
+            set_calendar_url("")?;
+            wait_for("account saved", || !w.get_needs_setup()).await?;
+            click(&w, "Close")?;
+            wait_for("calendar error cleared", || w.get_calendar_error().is_empty()).await?;
 
             // Outlook writes names as "Last, First": the answer must still reach the organizer.
             let jane = test_account(&format!("jane-{user}"));

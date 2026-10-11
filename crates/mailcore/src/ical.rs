@@ -689,6 +689,53 @@ pub fn patch(text: &str, new: &Event, full: bool) -> String {
     out
 }
 
+/// The calendar text with `email`'s answer in the VEVENTs of `uid` set to `partstat`: what an
+/// organizer's calendar records when a REPLY arrives. Nothing else changes, SEQUENCE included.
+pub fn set_partstat(text: &str, uid: &str, email: &str, partstat: &str) -> String {
+    let mut out = String::new();
+    // The VEVENT being read, as (nesting level, line); alarms inside it are level 1.
+    let mut event: Option<Vec<(usize, String)>> = None;
+    let mut level = 0;
+    for line in unfold(text) {
+        let prop = parse_line(&line);
+        let (name, value) = prop.as_ref().map_or(("", ""), |p| (p.name.as_str(), p.value.trim()));
+        match event.as_mut() {
+            None if name == "BEGIN" && value.eq_ignore_ascii_case("VEVENT") => event = Some(vec![(0, line)]),
+            None => fold(&line, &mut out),
+            Some(lines) if name == "END" && level == 0 => {
+                lines.push((0, line));
+                let lines = event.take().unwrap();
+                let ours = lines.iter().any(|(l, x)| *l == 0 && parse_line(x).is_some_and(|p| p.name == "UID" && p.value.trim() == uid));
+                for (l, x) in lines {
+                    match parse_line(&x) {
+                        Some(mut p) if ours && l == 0 && p.name == "ATTENDEE" && parse_person(&p).email.eq_ignore_ascii_case(email) => {
+                            p.params.retain(|(k, _)| k != "PARTSTAT" && k != "RSVP");
+                            p.params.push(("PARTSTAT".into(), partstat.into()));
+                            let params: String = p
+                                .params
+                                .iter()
+                                .map(|(k, v)| if v.contains([',', ';', ':']) { format!(";{k}=\"{v}\"") } else { format!(";{k}={v}") })
+                                .collect();
+                            fold(&format!("{}{params}:{}", p.name, p.value), &mut out);
+                        }
+                        _ => fold(&x, &mut out),
+                    }
+                }
+            }
+            Some(lines) => {
+                if name == "END" {
+                    level -= 1;
+                }
+                lines.push((level, line));
+                if name == "BEGIN" {
+                    level += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The calendar text with `method` (REQUEST, CANCEL), for mailing it.
 pub fn with_method(text: &str, method: &str) -> String {
     let text = without_method(text);
@@ -796,6 +843,21 @@ DTSTART:20261101T150000Z\nDURATION:PT45M\nUID:b2@google.com\nSUMMARY:Call\nEND:V
         let mailed = with_method(&series, "CANCEL");
         assert_eq!(parse(&mailed).method, "CANCEL");
         assert!(mailed.starts_with("BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\n"));
+    }
+
+    #[test]
+    fn records_an_answer() {
+        let text = without_method(OUTLOOK).replace("STATUS:CONFIRMED\r\n", "STATUS:CONFIRMED\r\nBEGIN:VALARM\r\nACTION:EMAIL\r\nATTENDEE:mailto:max@example.org\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\n");
+        let answered = set_partstat(&text, "040000008200E00074C5B7101A82E008", "MAX@example.org", "ACCEPTED");
+        let e = parse(&answered).events.remove(0);
+        assert_eq!((e.attendees[0].email.as_str(), e.attendees[0].partstat.as_str(), e.attendees[0].name.as_str()), ("max@example.org", "ACCEPTED", "Max"));
+        assert_eq!(e.sequence, 2, "an answer is no new version");
+        let flat = answered.replace("\r\n ", "");
+        // Only the event's attendee, not the alarm's recipient; the organizer's quoted name survives.
+        assert!(flat.contains("ATTENDEE:mailto:max@example.org\r\nTRIGGER"), "{flat}");
+        assert!(flat.contains("ORGANIZER;CN=\"Doe, Jane\":mailto:jane@example.com"), "{flat}");
+        // Another event's UID: nothing changes.
+        assert_eq!(parse(&set_partstat(&text, "other", "max@example.org", "DECLINED")).events[0].attendees[0].partstat, "NEEDS-ACTION");
     }
 
     #[test]

@@ -110,8 +110,8 @@ fn google_calendar_create_edit_delete() {
 
         let moved_title = format!("{title} (moved)");
         let moved = Event { summary: moved_title.clone(), start: start + 3600, end: start + 7200, ..stored.event.clone() };
-        let notice = calendar::update(&account, &creds, &mut store, &stored, &moved).await.unwrap();
-        assert!(notice.is_none(), "nobody was invited");
+        let notices = calendar::update(&account, &creds, &mut store, &stored, &moved).await.unwrap();
+        assert!(notices.is_empty(), "nobody was invited");
         calendar::sync(&account, &creds, &mut store).await.unwrap();
         assert!(find(&store, &title).is_none(), "old title still there");
         let stored = find(&store, &moved_title).expect("the change comes back from Google");
