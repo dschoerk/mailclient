@@ -21,7 +21,7 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   open plus the 40 newest per sync. Works offline from the cache.
 - Push via IMAP IDLE on the inbox, polling every 5 minutes as a fallback; a system
   notification for new unread mail while the app runs (Linux desktop and Android). On Android
-  a foreground service keeps IDLE running in the background.
+  a background job checks the inboxes about every 15 minutes while the app is closed.
 - Read, flag, mark read/unread, archive, delete, also for several conversations at once
   (tick them at the row's left edge, by long press on phones, or with `x`); on phones a row swiped
   right is archived, swiped left deleted. Changes apply instantly and are
@@ -33,7 +33,10 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Drafts: closing the composer (or Back on Android) saves to Drafts, plus an autosave every
   15 s; reopen with "Edit draft". Sending or discarding removes the draft.
 - Save attachments; `mailto:` links open the composer; other links open in the
-  system browser.
+  system browser. Optionally every link shows the site it goes to, in red when its text
+  names another site.
+- View a message's raw source (Ctrl+U), save it as an `.eml` file or a PDF, and print it
+  (Ctrl+P; the desktop's print dialog, or Android's, which also saves PDFs).
 - Calendar (desktop): month, week and day views of all accounts' calendars, synced every 15
   minutes. Events open in a side panel with their attendees' answers, and can be created, edited
   and deleted; edits keep what other apps stored (alarms, time zones), and attendees of events
@@ -48,7 +51,7 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   accounts let Exchange send them).
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,
   `#`/Delete delete, `u` read/unread, `s` flag, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search,
-  Ctrl+Enter send.
+  Ctrl+U view source, Ctrl+P print, Ctrl+Enter send.
 - Open a message file without an account: `mailclient message.eml`.
 
 ## Security model for HTML mail
@@ -90,8 +93,8 @@ cargo test --workspace
 Builds without Servo: HTML mail is shown in the system WebView instead, with the same rules
 (scripts off, content served from memory under a CSP, remote loads blocked until "Load images").
 The APK carries a little Java (`crates/app/java/`): the activity (a NativeActivity subclass that adds
-the system file pickers), the WebView, and the foreground service that keeps push running in the
-background. cargo-apk cannot add Java code or declare a service, so `scripts/build-android.sh` runs
+the system file pickers), the WebView, and the background job that checks for new mail every 15
+minutes. cargo-apk cannot add Java code or declare a service, so `scripts/build-android.sh` runs
 `cargo apk build` and then packs the APK again with `crates/app/android/AndroidManifest.xml` and the
 compiled classes, signed with the debug key. Toolchain: JDK 21, Android SDK with
 `platforms;android-35`, `build-tools;35.0.0`, `ndk;28.2.13676358`, Rust targets

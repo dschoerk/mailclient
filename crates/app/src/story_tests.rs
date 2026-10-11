@@ -719,7 +719,7 @@ fn user_stories() {
         .await;
         record("US16 conversation between accounts", r);
 
-        // US23: invitations between the accounts and from an Outlook-style organizer; answers go back by mail.
+        // US26: invitations between the accounts and from an Outlook-style organizer; answers go back by mail.
         let r = async {
             let user2 = format!("second-{user}");
             let second = test_account(&user2);
@@ -844,7 +844,7 @@ fn user_stories() {
             wait_for("answer at the organizer", || !server_bodies(&jane, "INBOX", "Declined: Budget").is_empty()).await
         }
         .await;
-        record("US23 calendar invitations", r);
+        record("US26 calendar invitations", r);
 
         // Settings: preferences are saved, accounts can be edited and removed.
         let r = async {

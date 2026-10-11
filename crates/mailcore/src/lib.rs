@@ -10,6 +10,7 @@ pub mod http;
 pub mod ical;
 pub mod imap;
 pub mod mime;
+pub mod pdf;
 pub mod smtp;
 pub mod store;
 pub mod thread;

@@ -20,6 +20,8 @@ export component Divider inherits Rectangle {
 /// always the accessible name, so screen readers and tests see words, not pictures.
 export component ToolButton inherits Rectangle {
     in property <string> text;
+    /// Shown instead of `text` where room is short; `text` stays the accessible name.
+    in property <string> short-text;
     in property <image> icon;
     in property <bool> show-text: true;
     in property <brush> icon-color: Palette.foreground;
@@ -50,7 +52,7 @@ export component ToolButton inherits Rectangle {
             width: 18px;
         }
         if root.show-text || root.icon.width == 0: Text {
-            text: root.text;
+            text: root.short-text != "" ? root.short-text : root.text;
             color: root.enabled ? Palette.foreground : Theme.muted;
             vertical-alignment: center;
         }

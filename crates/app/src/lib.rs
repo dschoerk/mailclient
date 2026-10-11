@@ -86,6 +86,37 @@ fn reply_body_is_not_squashed_by_hidden_webview() {
     assert!(body.size().height > 300.0, "reply body squashed to {}px", body.size().height);
 }
 
+/// The tools row offers the message tools; the source view replaces the body with the raw message and closes again.
+#[cfg(test)]
+#[test]
+fn shows_message_source() {
+    use slint::ComponentHandle;
+    i_slint_backend_testing::init_no_event_loop();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.eml");
+    std::fs::write(&path, "From: a@example.org\r\nSubject: Source test\r\nX-Probe: 42\r\n\r\nHello\r\n").unwrap();
+    let w = AppWindow::new().unwrap();
+    app::Controller::install(&w, Some(path)).unwrap();
+    w.show().unwrap();
+    let find = |label: &str| i_slint_backend_testing::ElementHandle::find_by_accessible_label(&w, label).next();
+    let source = || find("Message source");
+    assert!(source().is_none());
+    // The tools row opens from the toolbar.
+    assert!(find("Print").is_none());
+    find("More tools").expect("More tools button").invoke_accessible_default_action();
+    for tool in ["View source", "Save as .eml", "Save as PDF", "Print"] {
+        assert!(find(tool).is_some(), "{tool} in the tools row");
+    }
+    w.invoke_view_source();
+    assert!(w.get_source_open());
+    assert!(w.get_msg_source().contains("X-Probe: 42"), "{}", w.get_msg_source());
+    assert!(source().is_some(), "source view shown");
+    w.invoke_view_source();
+    assert!(!w.get_source_open());
+    assert!(source().is_none());
+    app::Controller::shutdown();
+}
+
 /// Debugging aid: saves a picture of the window a few seconds after start and exits.
 #[cfg(feature = "servo")]
 fn schedule_snapshot(window: &AppWindow, path: std::path::PathBuf) {

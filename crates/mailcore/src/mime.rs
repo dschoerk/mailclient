@@ -430,6 +430,197 @@ pub fn render_conversation(messages: &[(String, Option<&Body>)], current: usize)
     document(&content)
 }
 
+/// Inline style of a link-target badge. Inline and `!important`, so the message's own CSS cannot
+/// restyle or hide it with a class rule.
+///
+/// shortcut: hostile CSS can still cover the badge (e.g. a positioned element on top); a
+/// tamper-proof display would need the badge drawn outside the document.
+const LINK_TARGET_STYLE: &str = "display:inline !important; visibility:visible !important; opacity:1 !important; \
+    position:static !important; font:11px/1.4 sans-serif !important; color:#1d1d1f !important; \
+    background:#eef1f6 !important; border:1px solid #c9d2e3 !important; border-radius:3px; \
+    padding:0 4px !important; margin:0 0 0 4px !important; white-space:nowrap; text-decoration:none !important;";
+const LINK_MISMATCH_STYLE: &str =
+    "color:#a01818 !important; background:#fde8e8 !important; border-color:#e5a0a0 !important;";
+
+/// Shows where each web link in a sanitized HTML fragment really goes: a badge with the target's
+/// host after the link, red with ⚠ when the link text names another site (`paypal.com` linking to
+/// `paypal.com.evil.io`). Links whose text already shows their target get none. Hosts are shown
+/// as the URL parser normalizes them, so look-alike Unicode domains appear as `xn--…`.
+///
+/// Expects [`sanitize_html`] output: html5ever's serialization (lowercase tags, attribute values
+/// double-quoted with `"` escaped), no nested links.
+pub fn mark_link_targets(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 256);
+    let mut rest = html;
+    loop {
+        let next_link = rest.find("<a ");
+        let next_style = rest.find("<style");
+        let (start, is_style) = match (next_link, next_style) {
+            (Some(l), Some(s)) if s < l => (s, true),
+            (Some(l), _) => (l, false),
+            (None, Some(s)) => (s, true),
+            (None, None) => break,
+        };
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        // Style sheets are raw text: something looking like a tag in there is none.
+        if is_style {
+            let end = rest.find("</style>").map_or(rest.len(), |e| e + "</style>".len());
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
+        let Some((tag_len, href)) = parse_start_tag(rest) else {
+            out.push_str(rest);
+            return out;
+        };
+        let (inner_end, close) = match rest[tag_len..].find("</a>") {
+            Some(c) => (tag_len + c, tag_len + c + "</a>".len()),
+            None => (rest.len(), rest.len()),
+        };
+        let inner = &rest[tag_len..inner_end];
+        out.push_str(&rest[..close]);
+        if let Some(badge) = href.and_then(|href| link_target_badge(&href, inner)) {
+            out.push_str(&badge);
+        }
+        rest = &rest[close..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Length of the `<a …>` start tag at the beginning of `html` and its decoded `href`.
+fn parse_start_tag(html: &str) -> Option<(usize, Option<String>)> {
+    let bytes = html.as_bytes();
+    let mut i = "<a".len();
+    let mut href = None;
+    loop {
+        while bytes.get(i)?.is_ascii_whitespace() {
+            i += 1;
+        }
+        match bytes[i] {
+            b'>' => return Some((i + 1, href)),
+            b'/' => i += 1,
+            _ => {
+                let name_start = i;
+                while !matches!(bytes.get(i)?, b'=' | b'>' | b'/') && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                let name = &html[name_start..i];
+                if bytes[i] != b'=' {
+                    continue;
+                }
+                i += 1;
+                let value = if bytes.get(i) == Some(&b'"') {
+                    let len = html[i + 1..].find('"')?;
+                    i += len + 2;
+                    &html[i - len - 1..i - 1]
+                } else {
+                    let start = i;
+                    while !matches!(bytes.get(i)?, b'>') && !bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    &html[start..i]
+                };
+                if name.eq_ignore_ascii_case("href") {
+                    href = Some(html_escape::decode_html_entities(value).into_owned());
+                }
+            }
+        }
+    }
+}
+
+fn link_target_badge(href: &str, inner_html: &str) -> Option<String> {
+    let url = url::Url::parse(href.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    let text = visible_text(inner_html);
+    let mismatch = match host_named_by(&text) {
+        Some(named) if same_site(&named, host) => return None,
+        Some(_) => true,
+        None => false,
+    };
+    let style = if mismatch { format!("{LINK_TARGET_STYLE} {LINK_MISMATCH_STYLE}") } else { LINK_TARGET_STYLE.into() };
+    Some(format!(
+        "<span class=\"link-target{}\" style=\"{style}\" title=\"{}\">{}{}</span>",
+        if mismatch { " mismatch" } else { "" },
+        html_escape::encode_double_quoted_attribute(url.as_str()),
+        if mismatch { "⚠ " } else { "" },
+        html_escape::encode_text(host),
+    ))
+}
+
+/// The text a link shows: its HTML without tags, entities decoded, whitespace collapsed.
+fn visible_text(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    html_escape::decode_html_entities(&text).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The host a link text names, if it reads like a web address (`https://…`, `www.…`, `example.org/x`).
+fn host_named_by(text: &str) -> Option<String> {
+    let text = text.trim().trim_end_matches(['.', ',', ';', ':', ')']);
+    if text.is_empty() || text.contains(char::is_whitespace) {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    let candidate = if lower.starts_with("http://") || lower.starts_with("https://") {
+        text.to_string()
+    } else {
+        // A bare domain needs a dot and an alphabetic top-level label: not "1.5" or "e.g".
+        let domain = lower.split(['/', '?', '#']).next().unwrap_or_default();
+        let tld = domain.rsplit('.').next().unwrap_or_default();
+        if !domain.contains('.') || tld.chars().count() < 2 || !tld.chars().all(char::is_alphabetic) || domain.contains('@') {
+            return None;
+        }
+        format!("http://{text}")
+    };
+    url::Url::parse(&candidate).ok()?.host_str().map(str::to_string)
+}
+
+/// `actual` is the site the text `named`, or one of its subdomains; a leading `www.` doesn't count.
+fn same_site(named: &str, actual: &str) -> bool {
+    let named = named.strip_prefix("www.").unwrap_or(named);
+    let actual = actual.strip_prefix("www.").unwrap_or(actual);
+    actual == named || actual.ends_with(&format!(".{named}"))
+}
+
+/// The message as text for a source view, cut after `limit` bytes (at a line end where possible)
+/// with a note saying how much is missing.
+pub fn source_text(raw: &[u8], limit: usize) -> String {
+    if raw.len() <= limit {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    let cut = raw[..limit].iter().rposition(|&b| b == b'\n').map_or(limit, |i| i + 1);
+    format!(
+        "{}\n[… {} more bytes not shown. Save the message as .eml to see all of it.]",
+        String::from_utf8_lossy(&raw[..cut]),
+        raw.len() - cut
+    )
+}
+
+/// A file name for saving a message as `extension`: its subject without characters file systems reject.
+pub fn message_file_name(subject: &str, extension: &str) -> String {
+    let name: String = subject
+        .chars()
+        .map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
+        .collect();
+    let name = name.trim().trim_matches('.');
+    let name: String = name.chars().take(100).collect();
+    let name = name.trim_end();
+    format!("{}.{extension}", if name.is_empty() { "message" } else { name })
+}
+
 /// Run by the app (never by the page, whose scripts the CSP sandbox blocks) after the user scrolled a
 /// conversation: marks the message under the reading line as current and returns its index, or -1 when
 /// there is nothing to follow. The line moves from the viewport's top to its bottom as the page scrolls
@@ -1006,5 +1197,71 @@ iVBORw0KGgo=\r\n\
         assert!(doc.contains(
             "<section id=\"m1\" class=\"message current\"><h2>Me</h2><p class=\"loading\">"
         ));
+    }
+
+    #[test]
+    fn marks_link_targets() {
+        let (html, _) = sanitize_html(
+            "<style>a{color:red} /* <a href=\"https://css.example\">x</a> */</style>\
+             <p><a href=\"https://tracker.example/c?u=1&amp;v=2\">Click <b>here</b></a> \
+             <a href=\"https://paypal.com.evil.io/login\">www.paypal.com</a> \
+             <a href=\"https://www.example.org/path\">example.org</a> \
+             <a href=\"https://news.example.org/x\">https://example.org</a> \
+             <a href=\"https://xn--pypal-4ve.com/\">see offer</a> \
+             <a href=\"mailto:a@example.org\">mail us</a> <a>no href</a></p>",
+        );
+        let marked = mark_link_targets(&html);
+        let badges: Vec<&str> = marked
+            .split("<span class=\"link-target")
+            .skip(1)
+            .map(|b| &b[b.find('>').unwrap() + 1..b.find("</span>").unwrap()])
+            .collect();
+        assert_eq!(
+            badges,
+            ["tracker.example", "⚠ paypal.com.evil.io", "xn--pypal-4ve.com"],
+            "{marked}"
+        );
+        assert!(marked.contains("link-target mismatch"), "{marked}");
+        assert!(marked.contains("title=\"https://tracker.example/c?u=1&amp;v=2\""), "{marked}");
+        // The style sheet is left alone; nothing else is changed but the badges.
+        assert!(marked.contains("/* <a href=\"https://css.example\">x</a> */"), "{marked}");
+        let without: String = marked
+            .split("<span class=\"link-target")
+            .enumerate()
+            .map(|(i, part)| if i == 0 { part } else { &part[part.find("</span>").unwrap() + 7..] })
+            .collect();
+        assert_eq!(without, html);
+    }
+
+    #[test]
+    fn link_target_helpers() {
+        assert_eq!(host_named_by("WWW.PayPal.com/login").as_deref(), Some("www.paypal.com"));
+        assert_eq!(host_named_by("https://a.example/x").as_deref(), Some("a.example"));
+        assert_eq!(host_named_by("version 1.5"), None);
+        assert_eq!(host_named_by("1.5"), None);
+        assert_eq!(host_named_by("e.g."), None);
+        assert_eq!(host_named_by("me@example.org"), None);
+        assert!(same_site("example.org", "www.example.org"));
+        assert!(same_site("www.example.org", "mail.example.org"));
+        assert!(!same_site("example.org", "example.org.evil.io"));
+        assert!(!same_site("example.org", "badexample.org"));
+        // Unterminated markup never loops or panics.
+        for broken in ["<a href=\"https://x.example\">ü", "<a href=", "<a href=x", "<a  ", "<a x=y>"] {
+            mark_link_targets(broken);
+        }
+        assert!(mark_link_targets("<a href=https://x.example>t</a>").contains(">x.example</span>"));
+    }
+
+    #[test]
+    fn source_text_and_file_names() {
+        assert_eq!(source_text(b"a\r\nb", 100), "a\r\nb");
+        let cut = source_text(b"line one\nline two\nline three", 12);
+        assert!(cut.starts_with("line one\n\n[…"), "{cut}");
+        assert!(cut.contains("19 more bytes"), "{cut}");
+        assert_eq!(message_file_name("Re: a/b? <c>", "eml"), "Re_ a_b_ _c_.eml");
+        assert_eq!(message_file_name("notes.eml draft", "pdf"), "notes.eml draft.pdf");
+        assert_eq!(message_file_name("  ..  ", "eml"), "message.eml");
+        assert_eq!(message_file_name("", "pdf"), "message.pdf");
+        assert_eq!(message_file_name(&"x".repeat(300), "eml").len(), 104);
     }
 }

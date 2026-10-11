@@ -63,6 +63,31 @@ pub(crate) fn scrolled_to_later(index: i32) {
     });
 }
 
+#[cfg_attr(not(target_os = "android"), allow(unused_imports))]
+pub(crate) use setup::db_path;
+
+/// Notification for mail that just arrived.
+pub(crate) fn notify_new_mail(messages: &[MessageSummary]) {
+    let (title, body) = match messages {
+        [m] => (format::person(&m.from_name, &m.from_addr), m.subject.clone()),
+        _ => (
+            format!("{} new messages", messages.len()),
+            messages.iter().map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"),
+        ),
+    };
+    crate::platform::notify(&title, &body);
+}
+
+/// Syncs every account now, from any thread (Android: the app came back to the front).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn sync_now() {
+    with_controller(|c| {
+        for account in &c.state.borrow().accounts {
+            account.engine.send(Command::SyncAll);
+        }
+    });
+}
+
 /// Runs `f` on the UI thread with the controller, from any thread.
 fn with_controller(f: impl FnOnce(&Rc<Controller>) + Send + 'static) {
     let _ = slint::invoke_from_event_loop(move || {
@@ -109,6 +134,10 @@ struct State {
     checked: HashSet<Key>,
     body: Option<Body>,
     search: String,
+    /// Messages the server search for `search` found, cached by the engines.
+    search_hits: Vec<Key>,
+    /// The list and its length when older mail was last requested, so scrolling asks once per batch.
+    older_requested: Option<(Row, usize)>,
     remote_allowed: HashSet<Key>,
     /// Bodies requested from the engine and not there yet.
     fetching: HashSet<Key>,
@@ -162,6 +191,8 @@ pub struct Controller {
     composer: RefCell<Option<Rc<Composer>>>,
     next_send_id: std::cell::Cell<u64>,
     next_account_id: std::cell::Cell<u64>,
+    /// Holds off the server search until typing pauses.
+    search_timer: slint::Timer,
     #[cfg(feature = "servo")]
     viewer: RefCell<Option<Rc<crate::webview::MailView>>>,
 }
@@ -179,6 +210,7 @@ impl Controller {
             composer: RefCell::new(None),
             next_send_id: std::cell::Cell::new(1),
             next_account_id: std::cell::Cell::new(1),
+            search_timer: slint::Timer::default(),
             #[cfg(feature = "servo")]
             viewer: RefCell::new(None),
         });
@@ -199,6 +231,7 @@ impl Controller {
         window.set_theme(settings.theme as i32);
         window.set_notifications(!settings.mute_notifications);
         window.set_always_load_images(settings.load_remote_images);
+        window.set_show_link_targets(settings.show_link_targets);
         controller.connect_callbacks(window);
         #[cfg(feature = "servo")]
         controller.init_webview(window);
@@ -271,6 +304,7 @@ impl Controller {
         on!(on_message_selected, |c, index| c.select_message(index as usize));
         on!(on_conversation_selected, |c, index| c.select_in_conversation(index as usize));
         on!(on_search, |c, text| c.search(&text));
+        on!(on_load_older, |c| c.load_older());
         on!(on_show_sender, |c| {
             let Some((_, m)) = c.selected_summary() else { return };
             if m.from_addr.is_empty() {
@@ -327,6 +361,10 @@ impl Controller {
         on!(on_calendar_save_event, |c| c.save_event());
         on!(on_calendar_refresh, |c| c.sync_calendars());
         on!(on_invite_respond, |c, answer| c.invite_respond(&answer));
+        on!(on_view_source, |c| c.toggle_source());
+        on!(on_save_eml, |c| c.save_eml());
+        on!(on_save_pdf, |c| c.save_pdf());
+        on!(on_print, |c| c.print());
         on!(on_settings_changed, |c| {
             let w = c.window();
             let settings = config::Settings {
@@ -339,9 +377,14 @@ impl Controller {
                 },
                 mute_notifications: !w.get_notifications(),
                 load_remote_images: w.get_always_load_images(),
+                show_link_targets: w.get_show_link_targets(),
             };
             if let Err(e) = config::save_settings(settings) {
                 c.show_error(&e);
+            }
+            // Link targets and remote images change how the open message is drawn.
+            if w.get_has_message() {
+                c.render_selected();
             }
         });
     }
@@ -390,16 +433,7 @@ impl Controller {
             }
             Event::FoldersChanged => self.reload_folders(),
             Event::NewMail(_) if !self.window().get_notifications() => {}
-            Event::NewMail(messages) => {
-                let (title, body) = match messages.as_slice() {
-                    [m] => (format::person(&m.from_name, &m.from_addr), m.subject.clone()),
-                    _ => (
-                        format!("{} new messages", messages.len()),
-                        messages.iter().map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"),
-                    ),
-                };
-                crate::platform::notify(&title, &body);
-            }
+            Event::NewMail(messages) => notify_new_mail(&messages),
             Event::MessagesChanged(_) => {
                 let state = self.state.borrow();
                 // Any folder can add to the listed conversations (replies sit in Sent).
@@ -411,6 +445,12 @@ impl Controller {
                     };
                 drop(state);
                 if relevant {
+                    self.reload_messages();
+                }
+            }
+            Event::SearchHits { query, hits } => {
+                if query == self.state.borrow().search {
+                    self.state.borrow_mut().search_hits.extend(hits.into_iter().map(|(f, uid)| (account, f, uid)));
                     self.reload_messages();
                 }
             }

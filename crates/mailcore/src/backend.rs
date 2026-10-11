@@ -17,6 +17,8 @@ use crate::store::{MessageSummary, PendingOp, Role};
 pub struct FolderState {
     pub exists: u32,
     pub uid_validity: Option<u32>,
+    /// HIGHESTMODSEQ (RFC 7162), when the server tracks changes.
+    pub highest_modseq: Option<u64>,
 }
 
 /// One authenticated session with the server. The engine keeps one for commands
@@ -51,13 +53,30 @@ pub trait Backend: Sized + Send + 'static {
         count: u32,
     ) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
 
-    /// (uid, seen, flagged, answered) of all messages with UID in `from..=to`.
+    /// Headers of the `count` messages just before UID `before`.
+    fn fetch_older(
+        &mut self,
+        folder: &str,
+        before: u32,
+        count: u32,
+    ) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
+
+    /// Headers of these messages.
+    fn fetch_headers(
+        &mut self,
+        folder: &str,
+        uids: &[u32],
+    ) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
+
+    /// (uid, seen, flagged, answered) of all messages with UID in one of the inclusive `ranges`.
     fn fetch_flags(
         &mut self,
         folder: &str,
-        from: u32,
-        to: u32,
+        ranges: &[(u32, u32)],
     ) -> impl Future<Output = Result<Vec<(u32, bool, bool, bool)>>> + Send;
+
+    /// UIDs of the messages in `folder` matching the search box's text (words, `from:address`).
+    fn search(&mut self, folder: &str, query: &str) -> impl Future<Output = Result<Vec<u32>>> + Send;
 
     /// Full RFC 822 source of messages, without marking them read.
     fn fetch_bodies(

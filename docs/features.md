@@ -63,11 +63,11 @@ What the mail client can do today. For ideas that are not built yet see
   when you open them.
 - **New mail** is pushed on the inbox through IMAP IDLE. If that fails, the client checks
   every 5 minutes. The "Sync" button checks right away.
-- **Push on Android in the background**: a foreground service ("Waiting for new mail", a
-  silent notification in the shade) keeps the app running, and IDLE with it. Back on the
-  main screen sends the app to the background instead of closing it. Swiping it away from
-  Recents stops push until the app is opened again. Battery savers and Doze can still
-  delay mail.
+- **New mail on Android in the background**: no push, to save battery. A background job
+  checks the inboxes about every 15 minutes, when Android allows it (Doze batches and
+  delays it), and notifies about new mail. Coming back to the app syncs right away; while
+  it is open, IDLE pushes as on the desktop. The check keeps running after the app is
+  swiped away and after a reboot.
 - **Notifications**: new unread mail arriving in an inbox while the app runs shows a system
   notification (sender and subject; a count for several). Linux desktops get it through the
   freedesktop notification service; Android asks for the permission on first start, and
@@ -99,11 +99,29 @@ What the mail client can do today. For ideas that are not built yet see
 - **Remote images** are blocked by default. A banner offers "Load images" for the open
   message.
 - **Links**: `mailto:` links open the composer, and other links open in your web browser.
+- **Where links go** (Settings → "Show where links go", off by default): every link in HTML
+  mail gets a small label with the site it opens. When the link text names a different site
+  (text `www.paypal.com`, link to `paypal.com.evil.io`) the label turns red with a ⚠.
+  Look-alike Unicode domains show in their `xn--…` form.
 - **Copying text**: select text in a message and copy it: drag with the mouse and Ctrl+C on
   the desktop; long press, then Copy, on Android.
 - **Attachments** are listed with their name and size, and can be saved to disk.
 - **Open a single file**: `mailclient message.eml` opens a message file. No account is
   needed.
+- **More tools** (the ⋯ button in the reader) opens a row with the tools below.
+- **View source** (Ctrl+U): shows the message exactly as it came from the
+  server, all headers included, in place of the body. It follows the selection, so `j`/`k`
+  step through sources; Esc or the button again closes it. Very large messages are cut
+  after 512 KB.
+- **Save as .eml**: saves the whole message as a file, named after its
+  subject, for other mail programs, bug reports or archiving.
+- **Save as PDF**: subject, sender, recipients, date, the message text and the names of
+  its attachments on A4 pages, in a system font embedded in the file (text stays
+  selectable). The PDF holds the text version of the message: HTML layout and images
+  are not reproduced.
+- **Print** (Ctrl+P): on the Linux desktop the system print dialog (xdg-desktop-portal)
+  prints that PDF; without a portal the PDF opens in your PDF viewer to print from there.
+  On Android the system print dialog prints the message as shown, and also offers Save as PDF.
 
 ### Safety of HTML mail
 
@@ -175,7 +193,9 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 | `s` | Flag / unflag |
 | `x` | Tick the current conversation; `e`, `#`, `u`, `s` then act on all ticked ones |
 | `/` | Search |
-| Esc | Clear the search |
+| Ctrl+U | View source / back to the message |
+| Ctrl+P | Print |
+| Esc | Close the source view, else clear the search |
 | Ctrl+Enter | Send (in the compose window) |
 | Back (Android) | Close the message or the folder panel |
 

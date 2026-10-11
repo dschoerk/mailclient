@@ -4,6 +4,8 @@ use super::*;
 
 /// Most messages shown in one folder list.
 const LIST_LIMIT: usize = 5000;
+/// Typing pause after which the search box also searches the servers.
+const SERVER_SEARCH_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
 /// Messages shown in a list row's mini timeline; longer conversations show "+N" before them.
 const MAX_DOTS: usize = 12;
 
@@ -139,8 +141,28 @@ impl Controller {
     }
 
     pub(super) fn search(&self, text: &str) {
-        self.state.borrow_mut().search = text.trim().to_string();
-        let searching = !text.trim().is_empty();
+        let query = text.trim().to_string();
+        {
+            let mut state = self.state.borrow_mut();
+            if state.search == query {
+                return;
+            }
+            state.search = query.clone();
+            state.search_hits.clear();
+        }
+        let searching = !query.is_empty();
+        if searching {
+            self.search_timer.start(slint::TimerMode::SingleShot, SERVER_SEARCH_DELAY, move || {
+                let query = query.clone();
+                with_controller(move |c| {
+                    for account in 0..c.state.borrow().accounts.len() {
+                        c.send(account, Command::Search(query.clone()));
+                    }
+                });
+            });
+        } else {
+            self.search_timer.stop();
+        }
         let window = self.window();
         window.set_searching(searching);
         if searching {
@@ -151,6 +173,32 @@ impl Controller {
         self.reload_messages();
     }
 
+    /// Asks the engines for mail older than the list shows, when it is scrolled to its end.
+    pub(super) fn load_older(&self) {
+        let targets: Vec<(usize, String)> = {
+            let mut state = self.state.borrow_mut();
+            let Some(current) = state.current.clone().filter(|_| state.search.is_empty()) else { return };
+            let requested = Some((current.clone(), state.messages.len()));
+            if state.older_requested == requested {
+                return;
+            }
+            state.older_requested = requested;
+            match current {
+                Row::Folder(a, folder) => vec![(a, folder)],
+                Row::Unified => state
+                    .accounts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, a)| a.folders.iter().find(|f| f.role == Role::Inbox).map(|f| (i, f.name.clone())))
+                    .collect(),
+                Row::Account(_) => Vec::new(),
+            }
+        };
+        for (account, folder) in targets {
+            self.send(account, Command::FetchOlder(folder));
+        }
+    }
+
     pub(super) fn reload_messages(&self) {
         let rows = {
             let state = self.state.borrow();
@@ -159,7 +207,17 @@ impl Controller {
             for (i, account) in state.accounts.iter().enumerate() {
                 let store = &account.store;
                 let found = if !state.search.is_empty() {
-                    store.search(&state.search, limit)
+                    store.search(&state.search, limit).and_then(|mut found| {
+                        for (_, folder, uid) in state.search_hits.iter().filter(|h| h.0 == i) {
+                            if !found.iter().any(|m| m.folder == *folder && m.uid == *uid)
+                                && let Some(m) = store.message(folder, *uid)?
+                            {
+                                found.push(m);
+                            }
+                        }
+                        found.sort_by_key(|m| Reverse(m.date));
+                        Ok(found)
+                    })
                 } else {
                     match &state.current {
                         Some(Row::Folder(a, folder)) if *a == i => store.messages(folder, limit),
