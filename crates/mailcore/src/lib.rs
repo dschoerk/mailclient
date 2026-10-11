@@ -2,9 +2,12 @@
 //! and the sync engine with its built-in IMAP/SMTP backend.
 
 pub mod auth;
+pub mod calendar;
 pub mod backend;
 pub mod config;
 pub mod engine;
+pub mod http;
+pub mod ical;
 pub mod imap;
 pub mod mime;
 pub mod smtp;

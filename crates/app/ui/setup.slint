@@ -113,6 +113,12 @@ export component SetupView inherits Rectangle {
                         checked <=> data.oauth;
                     }
                 }
+                // Google and Microsoft accounts find their calendars through the sign-in.
+                if !data.oauth: Field {
+                    label: "Calendar";
+                    text <=> data.caldav-url;
+                    placeholder: "CalDAV server (optional)";
+                }
                 if root.error != "": Text {
                     text: root.error;
                     color: #d33;

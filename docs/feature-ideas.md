@@ -34,7 +34,7 @@ Status: **done** · **partial** · **missing**.
 | Attachments: save all, shown at the top of long threads | partial | Single attachments can be added and saved, on Android through the system pickers (US12). |
 | Raw source and full headers | missing | Power-user request (Vivaldi wish list). |
 | Contacts: add sender, autocomplete, vCard import/export, CardDAV | missing | "Add sender to contacts" was #2 in the Jolla poll. |
-| Calendar (CalDAV), invites | missing | Users are split on built-in vs separate app. |
+| Calendar (CalDAV), invites | partial | Desktop month, week and day views; CalDAV, Google and Microsoft calendars; events opened, created, edited and deleted; invitations sent and answered by mail. Missing: reminders, repeats in the form, a mobile view (planned as a separate app). |
 | PGP / S/MIME | missing | Expected by technical users. |
 | Per-account colours | missing | Thunderbird top-20. |
 | Desktop integration (GNOME notifications, tray, default mail handler) | partial | `mailto:` handled inside the app; system integration missing. |

@@ -34,6 +34,8 @@ pub struct Body {
     pub inline_parts: HashMap<String, (String, Vec<u8>)>,
     /// True if the HTML references remote resources (which are blocked by default).
     pub has_remote_content: bool,
+    /// The iCalendar text of an invitation, reply or cancellation.
+    pub calendar: Option<String>,
 }
 
 fn first_addr(addr: Option<&Address>) -> (String, String) {
@@ -187,6 +189,15 @@ pub fn body_from_raw(raw: &[u8]) -> Body {
         None => html_source.map(html_to_text).unwrap_or_default(),
     };
 
+    // The inline text/calendar part carries the iTIP method; a .ics attachment is the fallback.
+    let is_type = |p: &mail_parser::MessagePart, t: &str, s: &str| {
+        p.content_type().is_some_and(|ct| ct.ctype().eq_ignore_ascii_case(t) && ct.subtype().is_some_and(|x| x.eq_ignore_ascii_case(s)))
+    };
+    let calendar = [("text", "calendar"), ("application", "ics")]
+        .iter()
+        .find_map(|(t, s)| msg.parts.iter().find(|p| is_type(p, t, s)))
+        .map(|p| String::from_utf8_lossy(p.contents()).into_owned());
+
     let mut attachments = Vec::new();
     let mut inline_parts = HashMap::new();
     for (index, part) in msg.attachments().enumerate() {
@@ -205,8 +216,8 @@ pub fn body_from_raw(raw: &[u8]) -> Body {
                 .and_then(|m| m.subject())
                 .map(|s| format!("{s}.eml"))
         });
-        // Inline images without a filename are part of the HTML, not something to save.
-        if name.is_none() && part.content_id().is_some() {
+        // Inline images without a filename are part of the HTML, not something to save; nor is an invitation's calendar part.
+        if name.is_none() && (part.content_id().is_some() || is_type(part, "text", "calendar")) {
             continue;
         }
         attachments.push(Attachment {
@@ -232,6 +243,7 @@ pub fn body_from_raw(raw: &[u8]) -> Body {
         attachments,
         inline_parts,
         has_remote_content,
+        calendar,
     }
 }
 
@@ -481,6 +493,8 @@ pub struct Draft {
     /// Kept across saves, so a newer copy of a draft can replace the older one in Drafts.
     pub message_id: String,
     pub attachments: Vec<std::path::PathBuf>,
+    /// iTIP method and VCALENDAR text, sent as an invitation, reply or cancellation.
+    pub calendar: Option<(String, String)>,
 }
 
 /// Splits "A <a@x>, b@y" into (name, address) pairs.
@@ -538,6 +552,8 @@ pub fn build_draft(draft: &Draft) -> Result<BuiltMessage> {
 fn build(draft: &Draft, is_draft: bool) -> Result<BuiltMessage> {
     use mail_builder::MessageBuilder;
     use mail_builder::headers::address::Address as MbAddress;
+    use mail_builder::headers::content_type::ContentType;
+    use mail_builder::mime::MimePart;
 
     let to = parse_address_list(&draft.to);
     let cc = parse_address_list(&draft.cc);
@@ -572,8 +588,7 @@ fn build(draft: &Draft, is_draft: bool) -> Result<BuiltMessage> {
     let mut builder = MessageBuilder::new()
         .from((draft.from_name.clone(), draft.from_addr.clone()))
         .to(to_mb(&to))
-        .subject(draft.subject.clone())
-        .text_body(draft.body.clone());
+        .subject(draft.subject.clone());
     if !cc.is_empty() {
         builder = builder.cc(to_mb(&cc));
     }
@@ -594,15 +609,29 @@ fn build(draft: &Draft, is_draft: bool) -> Result<BuiltMessage> {
     if let Some(id) = strip(&draft.message_id).pop() {
         builder = builder.message_id(id);
     }
+    let mut files = Vec::new();
     for path in &draft.attachments {
         let data = std::fs::read(path).map_err(|e| anyhow!("reading {}: {e}", path.display()))?;
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "attachment".into());
-        builder = builder.attachment(guess_mime(&name), name, data);
+        files.push(MimePart::new(guess_mime(&name), data).attachment(name));
     }
-    let raw = builder.write_to_vec()?;
+    let text = MimePart::new("text/plain", draft.body.clone());
+    let body = match &draft.calendar {
+        None if files.is_empty() => text,
+        None => MimePart::new("multipart/mixed", [vec![text], files].concat()),
+        // Gmail's layout: Gmail, Outlook and Apple Mail show the inline part as an invitation with
+        // answer buttons; the .ics attachment is for clients that only offer files.
+        Some((method, ics)) => {
+            let content_type = ContentType::new("text/calendar").attribute("method", method.clone()).attribute("charset", "utf-8");
+            let alternative = MimePart::new("multipart/alternative", vec![text, MimePart::new(content_type, ics.clone())]);
+            let file = MimePart::new("application/ics", ics.clone().into_bytes()).attachment("invite.ics");
+            MimePart::new("multipart/mixed", [vec![alternative], files, vec![file]].concat())
+        }
+    };
+    let raw = builder.body(body).write_to_vec()?;
     Ok(BuiltMessage { raw, recipients })
 }
 
@@ -737,6 +766,30 @@ pub fn reply_draft(kind: ReplyKind, original: &MessageSummary, body_text: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invitations_go_out_and_come_back() {
+        let ics = crate::ical::write("REQUEST", &[crate::ical::Event { uid: "u1".into(), summary: "Lunch".into(), start: 1_800_000_000, end: 1_800_003_600, ..Default::default() }]);
+        let draft = Draft {
+            from_addr: "me@example.org".into(),
+            to: "max@example.org".into(),
+            subject: "Invitation: Lunch".into(),
+            body: "Lunch on Friday".into(),
+            calendar: Some(("REQUEST".into(), ics.clone())),
+            ..Default::default()
+        };
+        let raw = build_message(&draft).unwrap().raw;
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains("multipart/alternative") && text.contains("Content-Type: text/calendar; method=\"REQUEST\"; charset=\"utf-8\""), "{text}");
+        let body = body_from_raw(&raw);
+        assert_eq!(body.text.trim(), "Lunch on Friday");
+        assert_eq!(crate::ical::parse(body.calendar.as_deref().unwrap()).method, "REQUEST");
+        // Only the .ics file is listed for saving.
+        let names: Vec<&str> = body.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["invite.ics"]);
+        // A plain message has no calendar.
+        assert!(body_from_raw(&build_message(&Draft { calendar: None, ..draft }).unwrap().raw).calendar.is_none());
+    }
 
     const HTML_MAIL: &[u8] = b"From: Alice <alice@example.org>\r\n\
 To: Bob <bob@example.org>, carol@example.org\r\n\

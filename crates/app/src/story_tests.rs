@@ -81,6 +81,10 @@ fn server(account: &AccountConfig, folder: &str) -> Vec<MessageSummary> {
 
 /// Plain-text bodies of the messages with this subject in a server folder.
 fn server_texts(account: &AccountConfig, folder: &str, subject: &str) -> Vec<String> {
+    server_bodies(account, folder, subject).into_iter().map(|b| b.text).collect()
+}
+
+fn server_bodies(account: &AccountConfig, folder: &str, subject: &str) -> Vec<mime::Body> {
     let uids: Vec<u32> = server(account, folder).into_iter().filter(|m| m.subject == subject).map(|m| m.uid).collect();
     let (account, folder) = (account.clone(), folder.to_string());
     std::thread::spawn(move || {
@@ -89,7 +93,7 @@ fn server_texts(account: &AccountConfig, folder: &str, subject: &str) -> Vec<Str
             let mut imap = Imap::connect(&account, "x").await.unwrap();
             let bodies = if uids.is_empty() { Vec::new() } else { imap.fetch_bodies(&folder, &uids).await.unwrap() };
             imap.logout().await;
-            bodies.iter().map(|(_, raw)| mime::body_from_raw(raw).text).collect()
+            bodies.iter().map(|(_, raw)| mime::body_from_raw(raw)).collect()
         })
     })
     .join()
@@ -162,6 +166,7 @@ fn test_account(email: &str) -> AccountConfig {
         smtp_port: 3465,
         smtp_security: Security::Tls,
         auth: mailcore::Auth::Password,
+        caldav_url: String::new(),
     }
 }
 
@@ -713,6 +718,133 @@ fn user_stories() {
         }
         .await;
         record("US16 conversation between accounts", r);
+
+        // US23: invitations between the accounts and from an Outlook-style organizer; answers go back by mail.
+        let r = async {
+            let user2 = format!("second-{user}");
+            let second = test_account(&user2);
+            let me = user.split('@').next().unwrap();
+            w.window().set_size(slint::LogicalSize::new(1280., 800.));
+            click(&w, "Folder All inboxes")?;
+            click(&w, "Calendar")?;
+            ensure(w.get_show_calendar(), "calendar not shown")?;
+            click(&w, "New event")?; // from the first account
+            type_in(&w, "Title", "Design sync")?;
+            type_in(&w, "Starts", "10:00")?;
+            type_in(&w, "Ends", "11:00")?;
+            type_in(&w, "Invite", &user2)?;
+            click(&w, "Send invitations")?;
+            ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
+            wait_for("event in the organizer's calendar", || w.get_calendar_agenda().iter().any(|a| a.title == "Design sync")).await?;
+            w.set_show_calendar(false);
+
+            wait_for("invitation arrives", || subjects(&w).iter().any(|s| s == "Invitation: Design sync")).await?;
+            click(&w, &format!("{me}: Invitation: Design sync"))?;
+            wait_for("invitation card", || w.get_invite_kind() == "REQUEST").await?;
+            ensure(w.get_invite_title() == "Design sync", format!("card title {:?}", w.get_invite_title()))?;
+            ensure(w.get_invite_when().contains("10:00 – 11:00"), format!("card time {:?}", w.get_invite_when()))?;
+            click(&w, "Accept")?; // as the second account
+            ensure(w.get_invite_detail().contains("You answered: Accepted"), format!("card detail {:?}", w.get_invite_detail()))?;
+
+            // The organizer gets a REPLY that names the attendee as accepted.
+            wait_for("answer on the server", || !server_bodies(&account, "INBOX", "Accepted: Design sync").is_empty()).await?;
+            let answer = server_bodies(&account, "INBOX", "Accepted: Design sync").remove(0);
+            let reply = mailcore::ical::parse(answer.calendar.as_deref().ok_or("answer has no calendar part")?);
+            ensure(reply.method == "REPLY", format!("method {:?}", reply.method))?;
+            let who: Vec<(String, String)> = reply.events[0].attendees.iter().map(|a| (a.email.clone(), a.partstat.clone())).collect();
+            ensure(who == [(user2.clone(), "ACCEPTED".to_string())], format!("attendees {who:?}"))?;
+            wait_for("answer listed", || subjects(&w).iter().any(|s| s == "Accepted: Design sync")).await?;
+            click(&w, &format!("{}: Accepted: Design sync", user2.split('@').next().unwrap()))?;
+            wait_for("reply card", || w.get_invite_kind() == "REPLY").await?;
+            ensure(w.get_invite_detail().contains("Accepted"), format!("reply detail {:?}", w.get_invite_detail()))?;
+
+            // Both accounts keep the event on the device (no calendar server).
+            click(&w, "Calendar")?;
+            click(&w, "Today")?;
+            wait_for("event in both calendars", || w.get_calendar_agenda().iter().filter(|a| a.title == "Design sync").count() == 2).await?;
+
+            // The organizer opens their copy (the attendee's is read-only) and moves it.
+            let open_mine = |title: &str| {
+                for item in w.get_calendar_agenda().iter().filter(|a| a.title == title) {
+                    w.invoke_calendar_event_clicked(item.id);
+                    if w.get_event_detail().can_edit {
+                        return Ok(());
+                    }
+                }
+                Err(format!("no editable {title:?}"))
+            };
+            open_mine("Design sync")?;
+            ensure(w.get_calendar_showing_event(), "event not opened")?;
+            ensure(w.get_event_detail().people.contains(&user2), format!("people: {}", w.get_event_detail().people))?;
+            click(&w, "Edit")?;
+            type_in(&w, "Title", "Design sync (moved)")?;
+            type_in(&w, "Starts", "14:00")?;
+            type_in(&w, "Ends", "15:00")?;
+            click(&w, "Save and notify")?;
+            ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
+            wait_for("moved event listed", || w.get_calendar_agenda().iter().any(|a| a.title == "Design sync (moved)" && a.time == "14:00 – 15:00")).await?;
+            wait_for("update at the attendee", || !server_bodies(&second, "INBOX", "Updated invitation: Design sync (moved)").is_empty()).await?;
+            let update = server_bodies(&second, "INBOX", "Updated invitation: Design sync (moved)").remove(0);
+            let update = mailcore::ical::parse(update.calendar.as_deref().ok_or("update has no calendar part")?);
+            ensure(update.method == "REQUEST" && update.events[0].sequence == 1, format!("update: {:?} seq {}", update.method, update.events[0].sequence))?;
+
+            // Week and day views show it at 14:00.
+            w.invoke_calendar_set_view(1);
+            let columns: Vec<crate::DayColumn> = w.get_calendar_columns().iter().collect();
+            ensure(columns.len() == 7, format!("{} columns in the week", columns.len()))?;
+            ensure(
+                columns.iter().any(|c| c.blocks.iter().any(|b| b.title == "Design sync (moved)" && b.start == 14 * 60 && b.length == 60)),
+                "moved event not in the week at 14:00",
+            )?;
+            w.invoke_calendar_set_view(2);
+            ensure(w.get_calendar_columns().row_count() == 1, "day view is not one column")?;
+            w.invoke_calendar_set_view(0);
+
+            // Deleting asks first, then cancels it for the attendee.
+            open_mine("Design sync (moved)")?;
+            click(&w, "Delete this event")?;
+            ensure(w.get_calendar_confirm_delete(), "no confirmation step")?;
+            click(&w, "Delete event")?;
+            wait_for("deleted event gone", || !w.get_calendar_agenda().iter().any(|a| a.title == "Design sync (moved)")).await?;
+            wait_for("cancellation at the attendee", || !server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
+            w.set_show_calendar(false);
+
+            // Outlook writes names as "Last, First": the answer must still reach the organizer.
+            let jane = test_account(&format!("jane-{user}"));
+            let invite = mailcore::ical::Event {
+                uid: format!("budget-{user}"),
+                summary: "Budget".into(),
+                start: chrono::Utc::now().timestamp() + 86400,
+                end: chrono::Utc::now().timestamp() + 90000,
+                organizer: Some(mailcore::ical::Attendee { email: jane.email.clone(), name: "Doe, Jane".into(), partstat: String::new() }),
+                attendees: vec![mailcore::ical::Attendee { email: user2.clone(), name: String::new(), partstat: "NEEDS-ACTION".into() }],
+                ..Default::default()
+            };
+            let draft = Draft {
+                from_name: "Doe, Jane".into(),
+                from_addr: jane.email.clone(),
+                to: user2.clone(),
+                subject: "Budget".into(),
+                body: "Numbers.".into(),
+                calendar: Some(("REQUEST".into(), mailcore::ical::write("REQUEST", &[invite]))),
+                ..Default::default()
+            };
+            let built = mime::build_message(&draft).unwrap();
+            let sender = second.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                rt.block_on(mailcore::smtp::send(&sender, "x", &built.raw, &built.recipients)).unwrap();
+            })
+            .join()
+            .unwrap();
+            wait_for("Outlook invitation arrives", || subjects(&w).iter().any(|s| s == "Budget")).await?;
+            click(&w, "Doe, Jane: Budget")?;
+            wait_for("invitation card", || w.get_invite_kind() == "REQUEST" && w.get_invite_title() == "Budget").await?;
+            click(&w, "Decline")?;
+            wait_for("answer at the organizer", || !server_bodies(&jane, "INBOX", "Declined: Budget").is_empty()).await
+        }
+        .await;
+        record("US23 calendar invitations", r);
 
         // Settings: preferences are saved, accounts can be edited and removed.
         let r = async {

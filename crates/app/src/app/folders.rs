@@ -11,7 +11,7 @@ const MAX_DOTS: usize = 12;
 const ACCOUNT_COLORS: [u32; 8] = [0x2f6fde, 0xe8730c, 0x2e9e5b, 0x8e44ad, 0xd64545, 0x1a9ba1, 0xd6457f, 0x9a6b3f];
 
 /// Color of account `index` out of `count`; none with a single account, where there is nothing to tell apart.
-fn account_color(index: usize, count: usize) -> slint::Color {
+pub(super) fn account_color(index: usize, count: usize) -> slint::Color {
     if count < 2 {
         return slint::Color::from_argb_encoded(0);
     }

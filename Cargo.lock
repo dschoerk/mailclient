@@ -4983,6 +4983,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "ring",
+ "roxmltree 0.21.1",
  "rusqlite",
  "rustls",
  "serde",

@@ -1,14 +1,15 @@
 import { Button, LineEdit, ListView, ScrollView, CheckBox, Palette, Spinner } from "std-widgets.slint";
 import { Webview } from "../src/webview/webview.slint";
-import { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem } from "types.slint";
+import { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem, CalendarDay, AgendaItem, EventForm, DayColumn, EventDetail } from "types.slint";
 import { Theme, Divider, ToolButton, FloatButton } from "widgets.slint";
 import { FolderRow, MessageRow, TimelineItem } from "lists.slint";
 import { SetupView } from "setup.slint";
 import { SettingsView } from "settings.slint";
 import { ComposeView } from "compose.slint";
+import { CalendarView } from "calendar.slint";
 
 export { WebviewLogic } from "../src/webview/webview.slint";
-export { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem } from "types.slint";
+export { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem, CalendarChip, CalendarDay, AgendaItem, EventForm, EventBlock, DayColumn, EventDetail } from "types.slint";
 
 export component AppWindow inherits Window {
     title: "Mail";
@@ -36,7 +37,7 @@ export component AppWindow inherits Window {
     out property <length> html-height: html-area.height;
     // Anything drawn over the reader (drawer, setup) must hide the native view, which is always on top.
     out property <bool> html-visible: root.html-overlay && root.has-message && !root.composing && !root.needs-setup
-        && !root.show-settings && !(root.narrow && root.show-folders);
+        && !root.show-settings && !root.show-calendar && !(root.narrow && root.show-folders);
     changed html-x => { root.html-area-changed(); }
     changed html-y => { root.html-area-changed(); }
     changed html-width => { root.html-area-changed(); }
@@ -145,6 +146,45 @@ export component AppWindow inherits Window {
     callback close-message();
     callback settings-changed();
 
+    // ---- calendar ----
+    in-out property <bool> show-calendar;
+    /// 0 month, 1 week, 2 day.
+    in-out property <int> calendar-view;
+    in property <string> calendar-period-label;
+    in property <[CalendarDay]> calendar-days;
+    in property <[DayColumn]> calendar-columns;
+    in property <int> calendar-selected;
+    in property <string> calendar-day-label;
+    in property <[AgendaItem]> calendar-agenda;
+    in-out property <bool> calendar-editing;
+    in-out property <bool> calendar-showing-event;
+    in property <EventDetail> event-detail;
+    in-out property <bool> calendar-confirm-delete;
+    in-out property <EventForm> event-form;
+    in property <bool> event-form-existing;
+    in property <[string]> event-from-options;
+    in-out property <int> event-from-index;
+    in property <string> event-error;
+    callback open-calendar();
+    callback calendar-set-view(int);
+    callback calendar-shift(int);
+    callback calendar-today();
+    callback calendar-day-clicked(int);
+    callback calendar-event-clicked(int);
+    callback calendar-edit-event();
+    callback calendar-delete-event();
+    callback calendar-new-event();
+    callback calendar-save-event();
+    callback calendar-refresh();
+    /// The open message's invitation: REQUEST, REPLY, CANCEL or PUBLISH; empty without one.
+    in property <string> invite-kind;
+    in property <string> invite-title;
+    in property <string> invite-when;
+    in property <string> invite-where;
+    in property <string> invite-detail;
+    /// ACCEPTED, TENTATIVE, DECLINED, ADD (a plain event file) or REMOVE (a cancellation).
+    callback invite-respond(string);
+
     // ---- composing (inline; phones show it as its own page) ----
     in property <bool> composing;
     in-out property <string> compose-to;
@@ -207,6 +247,19 @@ export component AppWindow inherits Window {
             if root.show-settings {
                 if event.text == Key.Back || event.text == Key.Escape {
                     root.show-settings = false;
+                    return accept;
+                }
+                return reject;
+            }
+            if root.show-calendar {
+                if event.text == Key.Back || event.text == Key.Escape {
+                    if root.calendar-editing {
+                        root.calendar-editing = false;
+                    } else if root.calendar-showing-event {
+                        root.calendar-showing-event = false;
+                    } else {
+                        root.show-calendar = false;
+                    }
                     return accept;
                 }
                 return reject;
@@ -608,6 +661,74 @@ export component AppWindow inherits Window {
                                 font-size: 12px;
                                 overflow: elide;
                             }
+                            if root.invite-kind != "": Rectangle {
+                                border-radius: 6px;
+                                background: Palette.foreground.with-alpha(0.06);
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 4px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Image {
+                                            source: @image-url("icons/calendar.svg");
+                                            colorize: Theme.accent;
+                                            width: 16px;
+                                        }
+                                        Text {
+                                            text: root.invite-title;
+                                            font-weight: 600;
+                                            wrap: word-wrap;
+                                            horizontal-stretch: 1;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.invite-when;
+                                        wrap: word-wrap;
+                                    }
+                                    if root.invite-where != "": Text {
+                                        text: root.invite-where;
+                                        color: Theme.muted;
+                                        wrap: word-wrap;
+                                    }
+                                    if root.invite-detail != "": Text {
+                                        text: root.invite-detail;
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    if root.invite-kind == "REQUEST": HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 6px;
+                                        Button {
+                                            text: "Accept";
+                                            primary: true;
+                                            clicked => root.invite-respond("ACCEPTED");
+                                        }
+                                        Button {
+                                            text: "Maybe";
+                                            clicked => root.invite-respond("TENTATIVE");
+                                        }
+                                        Button {
+                                            text: "Decline";
+                                            clicked => root.invite-respond("DECLINED");
+                                        }
+                                    }
+                                    if root.invite-kind == "PUBLISH": HorizontalLayout {
+                                        alignment: start;
+                                        Button {
+                                            text: "Add to calendar";
+                                            clicked => root.invite-respond("ADD");
+                                        }
+                                    }
+                                    if root.invite-kind == "CANCEL": HorizontalLayout {
+                                        alignment: start;
+                                        Button {
+                                            text: "Remove from calendar";
+                                            clicked => root.invite-respond("REMOVE");
+                                        }
+                                    }
+                                }
+                            }
                             // Phones hide the list, so the conversation's timeline moves into the reader.
                             if root.narrow && root.conversation.length > 1: ListView {
                                 height: min(root.conversation.length, 4) * 30px;
@@ -905,6 +1026,14 @@ export component AppWindow inherits Window {
                             root.compose();
                         }
                     }
+                    if root.has-account: ToolButton {
+                        text: "Calendar";
+                        icon: @image-url("icons/calendar.svg");
+                        clicked => {
+                            root.show-folders = false;
+                            root.open-calendar();
+                        }
+                    }
                     ListView {
                         for folder[i] in root.folders: FolderRow {
                             folder: folder;
@@ -954,6 +1083,47 @@ export component AppWindow inherits Window {
         remove-account(i) => root.remove-account(i);
         close => {
             root.show-settings = false;
+            keys.focus();
+        }
+    }
+
+    if root.show-calendar: CalendarView {
+        // Fixed geometry: the page must not size the window, which decides `narrow`.
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        view <=> root.calendar-view;
+        period-label: root.calendar-period-label;
+        days: root.calendar-days;
+        columns: root.calendar-columns;
+        selected: root.calendar-selected;
+        day-label: root.calendar-day-label;
+        agenda: root.calendar-agenda;
+        editing <=> root.calendar-editing;
+        showing-event <=> root.calendar-showing-event;
+        detail: root.event-detail;
+        confirm-delete <=> root.calendar-confirm-delete;
+        form <=> root.event-form;
+        form-existing: root.event-form-existing;
+        from-options: root.event-from-options;
+        from-index <=> root.event-from-index;
+        error: root.event-error;
+        narrow: root.narrow;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        set-view(v) => root.calendar-set-view(v);
+        shift(n) => root.calendar-shift(n);
+        today => root.calendar-today();
+        day-clicked(i) => root.calendar-day-clicked(i);
+        event-clicked(id) => root.calendar-event-clicked(id);
+        edit-event => root.calendar-edit-event();
+        delete-event => root.calendar-delete-event();
+        new-event => root.calendar-new-event();
+        save-event => root.calendar-save-event();
+        refresh => root.calendar-refresh();
+        close => {
+            root.show-calendar = false;
             keys.focus();
         }
     }

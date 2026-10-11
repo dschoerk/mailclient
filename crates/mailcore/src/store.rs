@@ -6,6 +6,8 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::ical::{Attendee, Event};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
     Inbox,
@@ -264,8 +266,48 @@ impl Store {
                  uid INTEGER NOT NULL,
                  kind TEXT NOT NULL,
                  arg TEXT NOT NULL DEFAULT ''
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS calendars (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL DEFAULT '',
+                 color TEXT NOT NULL DEFAULT ''
+             );
+             -- One row per instance: repeating events are expanded when stored.
+             CREATE TABLE IF NOT EXISTS events (
+                 calendar TEXT NOT NULL,
+                 uid TEXT NOT NULL,
+                 start INTEGER NOT NULL,
+                 end INTEGER NOT NULL,
+                 all_day INTEGER NOT NULL DEFAULT 0,
+                 summary TEXT NOT NULL DEFAULT '',
+                 location TEXT NOT NULL DEFAULT '',
+                 description TEXT NOT NULL DEFAULT '',
+                 organizer TEXT NOT NULL DEFAULT '',
+                 organizer_name TEXT NOT NULL DEFAULT '',
+                 -- Where it lives: a CalDAV resource URL or a Graph event id; empty on the device.
+                 href TEXT NOT NULL DEFAULT '',
+                 recurring INTEGER NOT NULL DEFAULT 0,
+                 -- One line per attendee: partstat, address, name, tab-separated.
+                 attendees TEXT NOT NULL DEFAULT '',
+                 -- Device-only events: the VCALENDAR they were saved as, for editing.
+                 ics TEXT NOT NULL DEFAULT ''
+             );
+             CREATE INDEX IF NOT EXISTS events_by_start ON events(start);",
         )?;
+        // Caches from before a column existed get it; "duplicate column" means it is there.
+        for column in [
+            "href TEXT NOT NULL DEFAULT ''",
+            "recurring INTEGER NOT NULL DEFAULT 0",
+            "attendees TEXT NOT NULL DEFAULT ''",
+            "ics TEXT NOT NULL DEFAULT ''",
+        ] {
+            match conn.execute(&format!("ALTER TABLE events ADD COLUMN {column}"), []) {
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                result => {
+                    result?;
+                }
+            }
+        }
         Ok(Store { conn })
     }
 
@@ -688,6 +730,142 @@ impl Store {
             .execute("DELETE FROM pending_ops WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    // ---- calendar ----
+
+    /// Replaces everything synced from the server; [`LOCAL_CALENDAR`] stays.
+    pub fn replace_synced_events(&mut self, calendars: &[CalendarInfo], events: &[StoredEvent]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM calendars", [])?;
+        tx.execute("DELETE FROM events WHERE calendar != ?1", [LOCAL_CALENDAR])?;
+        for c in calendars {
+            tx.execute("INSERT OR REPLACE INTO calendars (id, name, color) VALUES (?1, ?2, ?3)", params![c.id, c.name, c.color])?;
+        }
+        insert_events(&tx, events, "")?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Keeps the instances of the VCALENDAR `ics` on this device, for accounts without a calendar
+    /// server; replaces older copies by UID.
+    pub fn add_local_events(&mut self, ics: &str, instances: &[Event]) -> Result<()> {
+        let recurring = crate::ical::parse(ics).events.iter().any(|e| e.rrule.is_some() || e.recurrence_id.is_some());
+        let tx = self.conn.transaction()?;
+        for e in instances {
+            tx.execute("DELETE FROM events WHERE calendar = ?1 AND uid = ?2", params![LOCAL_CALENDAR, e.uid])?;
+        }
+        let rows: Vec<StoredEvent> = instances
+            .iter()
+            .map(|e| StoredEvent { calendar: LOCAL_CALENDAR.into(), recurring, event: e.clone(), ..Default::default() })
+            .collect();
+        insert_events(&tx, &rows, ics)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_local_events(&mut self, uid: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM events WHERE calendar = ?1 AND uid = ?2", params![LOCAL_CALENDAR, uid])?;
+        Ok(())
+    }
+
+    /// The VCALENDAR a device-only event was saved as.
+    pub fn local_ics(&self, uid: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT ics FROM events WHERE calendar = ?1 AND uid = ?2 AND ics != '' LIMIT 1", params![LOCAL_CALENDAR, uid], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// The synced calendars, in the server's order.
+    pub fn calendars(&self) -> Result<Vec<CalendarInfo>> {
+        let mut stmt = self.conn.prepare("SELECT id, name, color FROM calendars ORDER BY rowid")?;
+        let rows = stmt.query_map([], |r| Ok(CalendarInfo { id: r.get(0)?, name: r.get(1)?, color: r.get(2)? }))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Instances overlapping `from..to`, by start.
+    pub fn events(&self, from: i64, to: i64) -> Result<Vec<StoredEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT uid, start, end, all_day, summary, location, description, organizer, organizer_name,
+                    COALESCE(c.color, ''), calendar, href, recurring, COALESCE(c.name, ''), attendees
+             FROM events LEFT JOIN calendars c ON c.id = events.calendar
+             WHERE start < ?2 AND (end > ?1 OR (end = start AND start >= ?1)) ORDER BY start",
+        )?;
+        let rows = stmt.query_map(params![from, to], |r| {
+            let organizer: String = r.get(7)?;
+            let attendees: String = r.get(14)?;
+            Ok(StoredEvent {
+                color: r.get(9)?,
+                calendar: r.get(10)?,
+                href: r.get(11)?,
+                recurring: r.get(12)?,
+                calendar_name: r.get(13)?,
+                event: Event {
+                    uid: r.get(0)?,
+                    start: r.get(1)?,
+                    end: r.get(2)?,
+                    all_day: r.get(3)?,
+                    summary: r.get(4)?,
+                    location: r.get(5)?,
+                    description: r.get(6)?,
+                    organizer: (!organizer.is_empty())
+                        .then(|| Ok::<_, rusqlite::Error>(Attendee { email: organizer, name: r.get(8)?, partstat: String::new() }))
+                        .transpose()?,
+                    attendees: attendees
+                        .lines()
+                        .filter_map(|l| {
+                            let mut f = l.splitn(3, '\t');
+                            let (partstat, email, name) = (f.next()?, f.next()?, f.next().unwrap_or(""));
+                            Some(Attendee { email: email.into(), name: name.into(), partstat: partstat.into() })
+                        })
+                        .collect(),
+                    ..Default::default()
+                },
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+}
+
+/// An event instance as stored: where it lives, and what it is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StoredEvent {
+    /// [`CalendarInfo::id`], or [`LOCAL_CALENDAR`].
+    pub calendar: String,
+    /// The CalDAV resource URL or Graph event id (of the series, for a repeating event's instance).
+    pub href: String,
+    /// One instance of a repeating event: changes apply to the whole series.
+    pub recurring: bool,
+    /// Calendar color (`#rrggbb…`) and name, empty when unknown; filled when reading.
+    pub color: String,
+    pub calendar_name: String,
+    pub event: Event,
+}
+
+/// The calendar of events kept only on this device.
+pub const LOCAL_CALENDAR: &str = "local";
+
+/// A calendar on the server: its URL (CalDAV) or id (Microsoft Graph).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CalendarInfo {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+}
+
+fn insert_events(tx: &rusqlite::Transaction, events: &[StoredEvent], ics: &str) -> Result<()> {
+    let mut insert = tx.prepare(
+        "INSERT INTO events (calendar, uid, start, end, all_day, summary, location, description, organizer, organizer_name, href, recurring, ics, attendees)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+    )?;
+    for s in events {
+        let e = &s.event;
+        let (org, org_name) = e.organizer.as_ref().map_or(("", ""), |o| (o.email.as_str(), o.name.as_str()));
+        let clean = |s: &str| s.replace(['\t', '\n'], " ");
+        let attendees: Vec<String> = e.attendees.iter().map(|a| format!("{}\t{}\t{}", a.partstat, clean(&a.email), clean(&a.name))).collect();
+        insert.execute(params![s.calendar, e.uid, e.start, e.end, e.all_day, e.summary, e.location, e.description, org, org_name, s.href, s.recurring, ics, attendees.join("\n")])?;
+    }
+    Ok(())
 }
 
 /// Turns user input into an FTS5 query: every word must match as a prefix.
@@ -708,6 +886,46 @@ fn fts_query(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adds_columns_to_older_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.sqlite");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE events (calendar TEXT NOT NULL, uid TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, all_day INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', organizer TEXT NOT NULL DEFAULT '', organizer_name TEXT NOT NULL DEFAULT '');
+                 INSERT INTO events (calendar, uid, start, end, summary) VALUES ('local', 'kept', 100, 200, 'Kept');")
+            .unwrap();
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.events(0, 1000).unwrap()[0].event.summary, "Kept");
+        // Opening again finds the columns there.
+        drop(store);
+        Store::open(&path).unwrap();
+    }
+
+    #[test]
+    fn calendar_sync_keeps_local_events() {
+        let mut store = Store::open_in_memory().unwrap();
+        let max = Attendee { email: "max@example.org".into(), name: "Doe, Max".into(), partstat: "ACCEPTED".into() };
+        let ev = |uid: &str, start: i64| Event { uid: uid.into(), summary: uid.into(), start, end: start + 3600, attendees: vec![max.clone()], ..Default::default() };
+        let synced = |uid: &str, start: i64| StoredEvent { calendar: "https://dav/cal/".into(), href: format!("https://dav/cal/{uid}.ics"), event: ev(uid, start), ..Default::default() };
+        store.add_local_events("BEGIN:VCALENDAR", &[ev("accepted", 1000)]).unwrap();
+        let cal = CalendarInfo { id: "https://dav/cal/".into(), name: "Work".into(), color: "#ff0000".into() };
+        store.replace_synced_events(&[cal.clone()], &[synced("a", 5000), synced("b", 90_000)]).unwrap();
+        store.replace_synced_events(&[cal.clone()], &[synced("a", 5000)]).unwrap();
+        let found: Vec<(String, String, String)> =
+            store.events(0, 10_000).unwrap().into_iter().map(|s| (s.color, s.href, s.event.uid)).collect();
+        assert_eq!(found, [("".into(), "".into(), "accepted".into()), ("#ff0000".into(), "https://dav/cal/a.ics".into(), "a".into())]);
+        assert_eq!(store.events(0, 10_000).unwrap()[1].calendar_name, "Work");
+        assert_eq!(store.events(0, 10_000).unwrap()[1].event.attendees, [max.clone()]);
+        assert_eq!(store.calendars().unwrap(), [cal]);
+        // A newer copy of a local event replaces the old one.
+        store.add_local_events("BEGIN:VCALENDAR\r\nX", &[ev("accepted", 2000)]).unwrap();
+        assert_eq!(store.events(0, 10_000).unwrap()[0].event.start, 2000);
+        assert_eq!(store.local_ics("accepted").unwrap().as_deref(), Some("BEGIN:VCALENDAR\r\nX"));
+        store.remove_local_events("accepted").unwrap();
+        assert_eq!(store.events(0, 10_000).unwrap().len(), 1);
+    }
 
     fn msg(uid: u32, subject: &str) -> MessageSummary {
         MessageSummary {

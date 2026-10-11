@@ -136,6 +136,7 @@ impl Controller {
     pub(super) fn clear_reader(&self) {
         let window = self.window();
         window.set_has_message(false);
+        window.set_invite_kind("".into());
         window.set_msg_loading(false);
         self.attachment_model.set_vec(Vec::new());
         self.conversation_model.set_vec(Vec::new());
@@ -211,6 +212,7 @@ impl Controller {
         }
         if raws[current].is_none() {
             window.set_msg_loading(true);
+            window.set_invite_kind("".into());
             window.set_msg_text("".into());
             window.set_msg_parts(ModelRc::default());
             window.set_msg_remote_blocked(false);
@@ -289,6 +291,7 @@ impl Controller {
                 });
             }
         }
+        self.show_invite(account, &body);
         self.state.borrow_mut().body = Some(body);
     }
 

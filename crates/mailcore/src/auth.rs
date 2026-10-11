@@ -24,7 +24,10 @@ struct Provider {
     authorize: &'static str,
     token_host: &'static str,
     token_path: &'static str,
+    /// Scopes of the access token for IMAP and SMTP.
     scopes: &'static str,
+    /// Scopes of the access token for the calendar API; asked for at sign-in too.
+    calendar_scopes: &'static str,
     /// Extra authorize parameters.
     extra: &'static [(&'static str, &'static str)],
 }
@@ -39,6 +42,8 @@ const MICROSOFT: Provider = Provider {
     token_host: "login.microsoftonline.com",
     token_path: "/common/oauth2/v2.0/token",
     scopes: "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
+    // A Microsoft access token is for one resource: Graph gets its own, from the same refresh token.
+    calendar_scopes: "offline_access https://graph.microsoft.com/Calendars.ReadWrite",
     extra: &[("response_mode", "query")],
 };
 
@@ -51,6 +56,8 @@ const GOOGLE: Provider = Provider {
     token_host: "oauth2.googleapis.com",
     token_path: "/token",
     scopes: "https://mail.google.com/",
+    // Requested separately on refresh, so sign-ins from before the calendar keep working for mail.
+    calendar_scopes: "https://www.googleapis.com/auth/calendar",
     // Without these Google returns no refresh token.
     extra: &[("access_type", "offline"), ("prompt", "consent")],
 };
@@ -86,6 +93,13 @@ impl Provider {
         form.extend_from_slice(grant);
         token_request(self.token_host, self.token_path, &form).await
     }
+
+    /// Everything the user is asked to allow at sign-in.
+    fn consent_scopes(&self) -> String {
+        let mut scopes: Vec<&str> = self.scopes.split(' ').collect();
+        scopes.extend(self.calendar_scopes.split(' ').filter(|s| !self.scopes.split(' ').any(|m| m == *s)));
+        scopes.join(" ")
+    }
 }
 
 pub struct Tokens {
@@ -95,34 +109,45 @@ pub struct Tokens {
     pub expires_in: Duration,
 }
 
-/// What the engine's connections log in with. Caches the OAuth access token and
+/// What the engine's connections log in with. Caches the OAuth access tokens (by scopes) and
 /// keeps the stored refresh token current.
 pub struct Credentials {
     account: AccountConfig,
-    state: tokio::sync::Mutex<(String, Option<(String, Instant)>)>,
+    state: tokio::sync::Mutex<(String, Vec<(&'static str, String, Instant)>)>,
 }
 
 impl Credentials {
     /// Reads the password or refresh token from the keyring.
     pub fn load(account: &AccountConfig) -> Result<Credentials> {
-        Ok(Credentials {
-            account: account.clone(),
-            state: tokio::sync::Mutex::new((account.password()?, None)),
-        })
+        Ok(Credentials::with_secret(account, account.password()?))
     }
 
-    /// The password, or an access token valid for at least another minute.
+    /// With a password or refresh token at hand instead of in the keyring (tests with several accounts).
+    pub fn with_secret(account: &AccountConfig, secret: String) -> Credentials {
+        Credentials { account: account.clone(), state: tokio::sync::Mutex::new((secret, Vec::new())) }
+    }
+
+    /// The password, or an access token for mail valid for at least another minute.
     pub async fn secret(&self) -> Result<String> {
-        let mut state = self.state.lock().await;
-        if self.account.auth == Auth::Password {
-            return Ok(state.0.clone());
+        match self.account.auth {
+            Auth::Password => Ok(self.state.lock().await.0.clone()),
+            auth => self.token(provider(auth)?.scopes).await,
         }
-        if let Some((token, until)) = &state.1
-            && Instant::now() < *until
-        {
+    }
+
+    /// An access token for the provider's calendar API (Google CalDAV, Microsoft Graph).
+    pub async fn calendar_token(&self) -> Result<String> {
+        self.token(provider(self.account.auth)?.calendar_scopes)
+            .await
+            .context("no calendar access: open Settings, edit the account and save to sign in again")
+    }
+
+    async fn token(&self, scopes: &'static str) -> Result<String> {
+        let mut state = self.state.lock().await;
+        if let Some((_, token, _)) = state.1.iter().find(|(s, _, until)| *s == scopes && Instant::now() < *until) {
             return Ok(token.clone());
         }
-        let tokens = refresh(self.account.auth, &state.0)
+        let tokens = refresh_for(self.account.auth, &state.0, scopes)
             .await
             .context("sign-in expired: open Settings, edit the account and save to sign in again")?;
         if let Some(new) = tokens.refresh {
@@ -131,7 +156,8 @@ impl Credentials {
             state.0 = new;
         }
         let until = Instant::now() + tokens.expires_in.saturating_sub(Duration::from_secs(60));
-        state.1 = Some((tokens.access.clone(), until));
+        state.1.retain(|(s, _, _)| *s != scopes);
+        state.1.push((scopes, tokens.access.clone(), until));
         Ok(tokens.access)
     }
 }
@@ -171,7 +197,7 @@ impl SignIn {
             .append_pair("response_type", "code")
             .append_pair("redirect_uri", &redirect_uri)
             .extend_pairs(provider.extra)
-            .append_pair("scope", provider.scopes)
+            .append_pair("scope", &provider.consent_scopes())
             .append_pair("state", &state)
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
@@ -237,14 +263,14 @@ impl SignIn {
     }
 }
 
+/// A new access token for mail.
 pub async fn refresh(auth: Auth, refresh_token: &str) -> Result<Tokens> {
-    let provider = provider(auth)?;
-    provider
-        .token_request(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("scope", provider.scopes),
-        ])
+    refresh_for(auth, refresh_token, provider(auth)?.scopes).await
+}
+
+async fn refresh_for(auth: Auth, refresh_token: &str, scopes: &str) -> Result<Tokens> {
+    provider(auth)?
+        .token_request(&[("grant_type", "refresh_token"), ("refresh_token", refresh_token), ("scope", scopes)])
         .await
 }
 
@@ -314,44 +340,23 @@ struct TokenResponse {
     error_description: Option<String>,
 }
 
-/// POSTs a form to the token endpoint. HTTP/1.0 keeps the response un-chunked and
-/// closed after the body, so no HTTP client library is needed for this one call.
+/// POSTs a form to the token endpoint.
 async fn token_request(host: &str, path: &str, form: &[(&str, &str)]) -> Result<Tokens> {
     let body = form_urlencoded::Serializer::new(String::new())
         .extend_pairs(form)
         .finish();
-    let request = format!(
-        "POST {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    let response = tokio::time::timeout(Duration::from_secs(30), async {
-        let tcp = TcpStream::connect((host, 443)).await?;
-        let name = rustls::pki_types::ServerName::try_from(host.to_string())?;
-        let mut tls = crate::imap::tls_connector()?.connect(name, tcp).await?;
-        tls.write_all(request.as_bytes()).await?;
-        let mut response = Vec::new();
-        match tls.read_to_end(&mut response).await {
-            // Google closes without TLS close_notify; a truncated body fails the JSON parse below.
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !response.is_empty() => {}
-            r => {
-                r?;
-            }
-        }
-        anyhow::Ok(response)
-    })
-    .await
-    .map_err(|_| anyhow!("timed out contacting {host}"))?
-    .with_context(|| format!("contacting {host}"))?;
-    parse_token_response(&response)
+    let response = crate::http::request(
+        "POST",
+        &format!("https://{host}{path}"),
+        &[("Content-Type", "application/x-www-form-urlencoded")],
+        body.as_bytes(),
+    )
+    .await?;
+    parse_token_response(&response.body)
 }
 
-fn parse_token_response(response: &[u8]) -> Result<Tokens> {
-    let split = response
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| anyhow!("malformed token response"))?;
-    let parsed: TokenResponse =
-        serde_json::from_slice(&response[split + 4..]).context("parsing token response")?;
+fn parse_token_response(body: &[u8]) -> Result<Tokens> {
+    let parsed: TokenResponse = serde_json::from_slice(body).context("parsing token response")?;
     match parsed {
         TokenResponse {
             access_token: Some(access),
@@ -406,13 +411,13 @@ mod tests {
 
     #[test]
     fn token_responses() {
-        let ok = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"access_token\":\"A\",\"refresh_token\":\"R\",\"expires_in\":3599}";
+        let ok = b"{\"access_token\":\"A\",\"refresh_token\":\"R\",\"expires_in\":3599}";
         let tokens = parse_token_response(ok).unwrap();
         assert_eq!(
             (tokens.access.as_str(), tokens.refresh.as_deref()),
             ("A", Some("R"))
         );
-        let bad = b"HTTP/1.1 400 Bad Request\r\n\r\n{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70000: expired\"}";
+        let bad = b"{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70000: expired\"}";
         assert_eq!(
             parse_token_response(bad).err().unwrap().to_string(),
             "AADSTS70000: expired"

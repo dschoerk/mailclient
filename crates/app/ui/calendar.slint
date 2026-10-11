@@ -1,0 +1,703 @@
+// The calendar page: month, week and day views, the selected day's events or the opened event,
+// and a form for new and edited events.
+
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { CalendarDay, AgendaItem, EventForm, EventBlock, DayColumn, EventDetail } from "types.slint";
+import { Theme, Divider, ToolButton, Field } from "widgets.slint";
+
+/// An event in a month cell or the all-day strip.
+component Chip inherits Rectangle {
+    in property <string> time;
+    in property <string> title;
+    in property <color> tint;
+    callback clicked();
+    height: 17px;
+    border-radius: 3px;
+    background: root.tint.with-alpha(touch.has-hover ? 0.3 : 0.18);
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 4px;
+        if root.time != "": Text {
+            text: root.time;
+            font-size: 11px;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.title;
+            font-size: 11px;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.title;
+        accessible-action-default => { self.clicked(); }
+        clicked => root.clicked();
+    }
+}
+
+component DayCell inherits Rectangle {
+    in property <CalendarDay> day;
+    in property <bool> selected;
+    callback clicked();
+    callback event-clicked(int);
+    border-width: 0.5px;
+    border-color: Theme.divider;
+    background: root.selected ? Theme.accent.with-alpha(0.12) : transparent;
+    clip: true;
+    // Under the chips, which open their event.
+    TouchArea {
+        accessible-role: button;
+        accessible-label: "Day " + root.day.day;
+        accessible-action-default => { self.clicked(); }
+        clicked => root.clicked();
+    }
+    VerticalLayout {
+        padding: 4px;
+        spacing: 2px;
+        alignment: start;
+        HorizontalLayout {
+            alignment: start;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: root.day.today ? Theme.accent : transparent;
+                Text {
+                    text: root.day.day;
+                    font-size: 12px;
+                    font-weight: root.day.today ? 700 : 400;
+                    color: root.day.today ? white : root.day.in-month ? Palette.foreground : Theme.muted;
+                }
+            }
+        }
+        for chip in root.day.chips: Chip {
+            time: chip.time;
+            title: chip.title;
+            tint: chip.color;
+            clicked => root.event-clicked(chip.id);
+        }
+        if root.day.more > 0: Text {
+            text: "+" + root.day.more + " more";
+            font-size: 11px;
+            color: Theme.muted;
+        }
+    }
+}
+
+component MonthGrid inherits VerticalLayout {
+    in property <[CalendarDay]> days;
+    in property <int> selected;
+    callback day-clicked(int);
+    callback event-clicked(int);
+    HorizontalLayout {
+        height: 24px;
+        for name in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]: Text {
+            text: name;
+            horizontal-stretch: 1;
+            preferred-width: 1px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.muted;
+        }
+    }
+    for week in 6: HorizontalLayout {
+        vertical-stretch: 1;
+        for weekday in 7: DayCell {
+            // Equal columns, whatever their content: the same preferred width, stretched alike.
+            horizontal-stretch: 1;
+            preferred-width: 1px;
+            min-width: 0px;
+            day: root.days[week * 7 + weekday];
+            selected: week * 7 + weekday == root.selected;
+            clicked => root.day-clicked(week * 7 + weekday);
+            event-clicked(id) => root.event-clicked(id);
+        }
+    }
+}
+
+/// The week or day view: one column per day over the hours, all-day events above.
+component TimeGrid inherits VerticalLayout {
+    in property <[DayColumn]> columns;
+    callback day-clicked(int);
+    callback event-clicked(int);
+    property <length> hour: 48px;
+    property <length> gutter: 48px;
+    HorizontalLayout {
+        Rectangle {
+            width: root.gutter;
+        }
+        for column[i] in root.columns: VerticalLayout {
+            horizontal-stretch: 1;
+            preferred-width: 1px;
+            min-width: 0px;
+            padding: 2px;
+            spacing: 2px;
+            Rectangle {
+                height: 26px;
+                Text {
+                    text: column.label;
+                    font-size: 13px;
+                    font-weight: column.today ? 700 : 400;
+                    color: column.today ? Theme.accent : Palette.foreground;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: column.label;
+                    accessible-action-default => { self.clicked(); }
+                    clicked => root.day-clicked(i);
+                }
+            }
+            for block in column.all-day: Chip {
+                title: block.title;
+                tint: block.color;
+                clicked => root.event-clicked(block.id);
+            }
+        }
+    }
+    Divider {
+        height: 1px;
+    }
+    hours := ScrollView {
+        vertical-stretch: 1;
+        content-height: 24 * root.hour;
+        // Office hours in view first.
+        init => { self.content-y = -7 * root.hour; }
+        Rectangle {
+            width: hours.visible-width;
+            height: 24 * root.hour;
+            for h in 24: Rectangle {
+                x: root.gutter;
+                y: h * root.hour;
+                width: parent.width - root.gutter;
+                height: 1px;
+                background: Theme.divider;
+            }
+            for h in 24: Text {
+                x: 6px;
+                y: h * root.hour + 2px;
+                text: (h < 10 ? "0" : "") + h + ":00";
+                font-size: 11px;
+                color: Theme.muted;
+            }
+            for column[i] in root.columns: Rectangle {
+                x: root.gutter + i * (parent.width - root.gutter) / root.columns.length;
+                y: 0;
+                width: (parent.width - root.gutter) / root.columns.length;
+                height: parent.height;
+                border-width: 0.5px;
+                border-color: Theme.divider;
+                for block in column.blocks: Rectangle {
+                    x: block.lane * parent.width / block.lanes + 1px;
+                    y: block.start * root.hour / 60;
+                    width: parent.width / block.lanes - 2px;
+                    // Short events stay big enough to read and hit.
+                    height: max(block.length, 30) * root.hour / 60 - 1px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: block.color;
+                    background: block.color.with-alpha(block-touch.has-hover ? 0.35 : 0.22);
+                    clip: true;
+                    VerticalLayout {
+                        padding: 3px;
+                        alignment: start;
+                        Text {
+                            text: block.title;
+                            font-size: 12px;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: block.time;
+                            font-size: 11px;
+                            color: Theme.muted;
+                        }
+                    }
+                    block-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        accessible-role: button;
+                        accessible-label: block.title;
+                        accessible-action-default => { self.clicked(); }
+                        clicked => root.event-clicked(block.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component AgendaRow inherits Rectangle {
+    in property <AgendaItem> item;
+    callback clicked();
+    background: touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
+    HorizontalLayout {
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 8px;
+        Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: root.item.color;
+        }
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: root.item.time;
+                font-size: 12px;
+                color: Theme.muted;
+            }
+            Text {
+                text: root.item.title;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if root.item.location != "": Text {
+                text: root.item.location;
+                wrap: word-wrap;
+            }
+            if root.item.detail != "": Text {
+                text: root.item.detail;
+                font-size: 12px;
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.item.title;
+        accessible-action-default => { self.clicked(); }
+        clicked => root.clicked();
+    }
+}
+
+/// The opened event, with Edit and Delete.
+component DetailView inherits VerticalLayout {
+    in property <EventDetail> detail;
+    in-out property <bool> confirm-delete;
+    callback close();
+    callback edit();
+    callback delete();
+    alignment: start;
+    spacing: 8px;
+    HorizontalLayout {
+        spacing: 6px;
+        ToolButton {
+            text: "Back";
+            icon: @image-url("icons/arrow-left.svg");
+            show-text: false;
+            clicked => root.close();
+        }
+        Text {
+            text: root.detail.title;
+            font-size: 16px;
+            font-weight: 600;
+            wrap: word-wrap;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+    Text {
+        text: root.detail.when;
+        wrap: word-wrap;
+    }
+    if root.detail.location != "": Text {
+        text: root.detail.location;
+        wrap: word-wrap;
+    }
+    Text {
+        text: root.detail.calendar;
+        font-size: 12px;
+        color: Theme.muted;
+        wrap: word-wrap;
+    }
+    if root.detail.people != "": Text {
+        text: root.detail.people;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+    if root.detail.notes != "": Text {
+        text: root.detail.notes;
+        wrap: word-wrap;
+    }
+    if root.detail.recurring: Text {
+        text: "Repeats. Changes and deleting apply to every occurrence.";
+        font-size: 12px;
+        color: Theme.muted;
+        wrap: word-wrap;
+    }
+    if !root.detail.can-edit: Text {
+        text: "You were invited: only the organizer can change it.";
+        font-size: 12px;
+        color: Theme.muted;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        if root.detail.can-edit && !root.confirm-delete: Button {
+            text: "Edit";
+            clicked => root.edit();
+        }
+        if !root.confirm-delete: Button {
+            text: "Delete";
+            // The reader behind the page has its own Delete (for the message).
+            accessible-label: "Delete this event";
+            clicked => {
+                root.confirm-delete = true;
+            }
+        }
+        if root.confirm-delete: Button {
+            text: root.detail.recurring ? "Delete all occurrences" : "Delete event";
+            primary: true;
+            clicked => root.delete();
+        }
+        if root.confirm-delete: Button {
+            text: "Keep";
+            clicked => {
+                root.confirm-delete = false;
+            }
+        }
+    }
+}
+
+component EventFormView inherits VerticalLayout {
+    in-out property <EventForm> form;
+    in property <[string]> from-options;
+    in-out property <int> from-index;
+    in property <string> error;
+    /// Editing an event, not making one.
+    in property <bool> existing;
+    /// Editing a repeating event: only its texts change.
+    in property <bool> recurring;
+    callback save();
+    callback cancel();
+    alignment: start;
+    spacing: 8px;
+    Text {
+        text: root.existing ? "Edit event" : "New event";
+        font-size: 16px;
+        font-weight: 600;
+    }
+    if !root.existing && root.from-options.length > 1: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Calendar";
+            width: 90px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: Theme.muted;
+        }
+        ComboBox {
+            accessible-label: "Calendar";
+            model: root.from-options;
+            current-index <=> root.from-index;
+        }
+    }
+    Field {
+        label: "Title";
+        text <=> root.form.title;
+    }
+    if !root.recurring: Field {
+        label: "Date";
+        text <=> root.form.date;
+        placeholder: "YYYY-MM-DD";
+    }
+    if !root.recurring: HorizontalLayout {
+        padding-left: 98px;
+        CheckBox {
+            text: "All day";
+            checked <=> root.form.all-day;
+        }
+    }
+    if !root.recurring && !root.form.all-day: Field {
+        label: "Starts";
+        text <=> root.form.start;
+        placeholder: "HH:MM";
+    }
+    if !root.recurring && !root.form.all-day: Field {
+        label: "Ends";
+        text <=> root.form.end;
+        placeholder: "HH:MM";
+    }
+    Field {
+        label: "Location";
+        text <=> root.form.location;
+    }
+    if !root.recurring: Field {
+        label: "Invite";
+        text <=> root.form.attendees;
+        placeholder: "name@example.org, …";
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Notes";
+            width: 90px;
+            horizontal-alignment: right;
+            color: Theme.muted;
+        }
+        TextEdit {
+            accessible-label: "Notes";
+            text <=> root.form.notes;
+            height: 90px;
+            wrap: word-wrap;
+        }
+    }
+    if root.recurring: Text {
+        text: "This changes every occurrence. Times of repeating events can't be changed here.";
+        font-size: 12px;
+        color: Theme.muted;
+        wrap: word-wrap;
+    }
+    if root.error != "": Text {
+        text: root.error;
+        color: #d33;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        Button {
+            text: "Cancel";
+            clicked => root.cancel();
+        }
+        Button {
+            text: root.form.attendees == "" ? "Save" : root.existing ? "Save and notify" : "Send invitations";
+            primary: true;
+            clicked => root.save();
+        }
+    }
+}
+
+/// The selected day's events, the opened event, or the event form.
+component SidePanel inherits VerticalLayout {
+    in property <string> day-label;
+    in property <[AgendaItem]> agenda;
+    in-out property <bool> editing;
+    in-out property <bool> showing-event;
+    in property <EventDetail> detail;
+    in-out property <bool> confirm-delete;
+    in-out property <EventForm> form;
+    in property <bool> form-existing;
+    in property <[string]> from-options;
+    in-out property <int> from-index;
+    in property <string> error;
+    callback save();
+    callback event-clicked(int);
+    callback edit-event();
+    callback delete-event();
+    padding: 12px;
+    spacing: 8px;
+    if !root.editing && !root.showing-event: Text {
+        text: root.day-label;
+        font-size: 16px;
+        font-weight: 600;
+    }
+    if !root.editing && !root.showing-event && root.agenda.length == 0: Text {
+        text: "No events";
+        color: Theme.muted;
+    }
+    if !root.editing && !root.showing-event: ScrollView {
+        vertical-stretch: 1;
+        VerticalLayout {
+            alignment: start;
+            for item in root.agenda: AgendaRow {
+                item: item;
+                clicked => root.event-clicked(item.id);
+            }
+        }
+    }
+    if root.showing-event && !root.editing: ScrollView {
+        vertical-stretch: 1;
+        DetailView {
+            detail: root.detail;
+            confirm-delete <=> root.confirm-delete;
+            close => {
+                root.showing-event = false;
+            }
+            edit => root.edit-event();
+            delete => root.delete-event();
+        }
+    }
+    if root.editing: ScrollView {
+        vertical-stretch: 1;
+        EventFormView {
+            form <=> root.form;
+            from-options: root.from-options;
+            from-index <=> root.from-index;
+            error: root.error;
+            existing: root.form-existing;
+            recurring: root.form-existing && root.detail.recurring;
+            save => root.save();
+            cancel => {
+                root.editing = false;
+            }
+        }
+    }
+}
+
+export component CalendarView inherits Rectangle {
+    /// 0 month, 1 week, 2 day.
+    in-out property <int> view;
+    /// "October 2026", "12 – 18 Oct 2026", "Sunday, 11 October 2026".
+    in property <string> period-label;
+    in property <[CalendarDay]> days;
+    in property <[DayColumn]> columns;
+    in property <int> selected;
+    in property <string> day-label;
+    in property <[AgendaItem]> agenda;
+    in-out property <bool> editing;
+    in-out property <bool> showing-event;
+    in property <EventDetail> detail;
+    in-out property <bool> confirm-delete;
+    in-out property <EventForm> form;
+    in property <bool> form-existing;
+    in property <[string]> from-options;
+    in-out property <int> from-index;
+    in property <string> error;
+    /// Phones: the side panel replaces the calendar while it is in use.
+    in property <bool> narrow;
+    /// Phones: room for the status and navigation bars.
+    in property <length> inset-top;
+    in property <length> inset-bottom;
+    callback set-view(int);
+    callback shift(int);
+    callback today();
+    /// A month cell, or a week column's heading (which opens that day).
+    callback day-clicked(int);
+    callback event-clicked(int);
+    callback new-event();
+    callback edit-event();
+    callback delete-event();
+    callback save-event();
+    callback refresh();
+    callback close();
+    background: Palette.background;
+    // Drawn over the mail view: keep clicks from reaching it.
+    TouchArea { }
+
+    VerticalLayout {
+        padding-top: root.inset-top;
+        padding-bottom: root.inset-bottom;
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 6px;
+            ToolButton {
+                text: "Close";
+                icon: @image-url("icons/arrow-left.svg");
+                show-text: false;
+                clicked => root.close();
+            }
+            ToolButton {
+                text: "Previous";
+                icon: @image-url("icons/chevron-left.svg");
+                show-text: false;
+                clicked => root.shift(-1);
+            }
+            ToolButton {
+                text: "Next";
+                icon: @image-url("icons/chevron-right.svg");
+                show-text: false;
+                clicked => root.shift(1);
+            }
+            Text {
+                text: root.period-label;
+                font-size: 20px;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            for name[i] in ["Month", "Week", "Day"]: ToolButton {
+                text: name;
+                checked: root.view == i;
+                clicked => root.set-view(i);
+            }
+            ToolButton {
+                text: "Today";
+                clicked => root.today();
+            }
+            ToolButton {
+                text: "Refresh";
+                icon: @image-url("icons/refresh-cw.svg");
+                show-text: false;
+                clicked => root.refresh();
+            }
+            ToolButton {
+                text: "New event";
+                icon: @image-url("icons/plus.svg");
+                show-text: !root.narrow;
+                clicked => root.new-event();
+            }
+        }
+        Divider {
+            height: 1px;
+        }
+        if !root.narrow || !(root.editing || root.showing-event): HorizontalLayout {
+            vertical-stretch: 1;
+            if root.view == 0: MonthGrid {
+                horizontal-stretch: 1;
+                days: root.days;
+                selected: root.selected;
+                day-clicked(i) => root.day-clicked(i);
+                event-clicked(id) => root.event-clicked(id);
+            }
+            if root.view != 0: TimeGrid {
+                horizontal-stretch: 1;
+                columns: root.columns;
+                day-clicked(i) => root.day-clicked(i);
+                event-clicked(id) => root.event-clicked(id);
+            }
+            if !root.narrow: Divider {
+                width: 1px;
+            }
+            if !root.narrow: SidePanel {
+                width: 340px;
+                day-label: root.day-label;
+                agenda: root.agenda;
+                editing <=> root.editing;
+                showing-event <=> root.showing-event;
+                detail: root.detail;
+                confirm-delete <=> root.confirm-delete;
+                form <=> root.form;
+                form-existing: root.form-existing;
+                from-options: root.from-options;
+                from-index <=> root.from-index;
+                error: root.error;
+                save => root.save-event();
+                event-clicked(id) => root.event-clicked(id);
+                edit-event => root.edit-event();
+                delete-event => root.delete-event();
+            }
+        }
+        if root.narrow && (root.editing || root.showing-event): SidePanel {
+            vertical-stretch: 1;
+            day-label: root.day-label;
+            agenda: root.agenda;
+            editing <=> root.editing;
+            showing-event <=> root.showing-event;
+            detail: root.detail;
+            confirm-delete <=> root.confirm-delete;
+            form <=> root.form;
+            form-existing: root.form-existing;
+            from-options: root.from-options;
+            from-index <=> root.from-index;
+            error: root.error;
+            save => root.save-event();
+            event-clicked(id) => root.event-clicked(id);
+            edit-event => root.edit-event();
+            delete-event => root.delete-event();
+        }
+    }
+}

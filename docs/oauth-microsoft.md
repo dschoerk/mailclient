@@ -17,6 +17,11 @@ has **not been tested against Microsoft yet**: it needs an app registration firs
   refresh token replaces the stored one.
 - IMAP and SMTP log in with SASL XOAUTH2. Scopes: `offline_access`,
   `https://outlook.office.com/IMAP.AccessAsUser.All`, `https://outlook.office.com/SMTP.Send`.
+- The calendar goes through Microsoft Graph (Outlook offers no CalDAV), scope
+  `https://graph.microsoft.com/Calendars.ReadWrite`. Sign-in asks for all of them at once; a
+  Microsoft access token is valid for one API only, so the refresh token is traded separately
+  for a mail token and a Graph token. Accounts signed in before the calendar existed get the
+  Graph permission when they edit and save the account in Settings.
 
 ## One-time setup: register the app
 
@@ -34,7 +39,8 @@ has **not been tested against Microsoft yet**: it needs an app registration firs
    - Redirect URI: platform **Public client/native (mobile & desktop)**, URI `http://localhost`.
      Microsoft accepts any port on a localhost redirect.
 4. Optional, helps Microsoft 365 tenants that require admin consent: **API permissions → Add →
-   Microsoft Graph → Delegated**: `IMAP.AccessAsUser.All`, `SMTP.Send`, `offline_access`.
+   Microsoft Graph → Delegated**: `IMAP.AccessAsUser.All`, `SMTP.Send`, `offline_access`,
+   `Calendars.ReadWrite`.
 5. Copy the **Application (client) ID** from the overview page.
 
 No client secret is needed (public client). The client ID is not a secret.
@@ -54,7 +60,7 @@ has it. Without an ID, the sign-in button reports "this build has no Microsoft c
 ## Testing checklist
 
 - [ ] Desktop: Hotmail/Outlook.com address → browser opens → consent → "Signed in" page → mail syncs
-- [ ] Sending works (SMTP XOAUTH2 on `smtp.office365.com:587`)
+- [ ] Sending works (SMTP XOAUTH2 on `smtp-mail.outlook.com:587` for Outlook.com, `smtp.office365.com:587` for Microsoft 365)
 - [ ] Restart the app: it connects without signing in again (refresh token from the keyring)
 - [ ] After more than an hour: reconnect still works (access token refresh)
 - [ ] Android: browser opens, redirect reaches the app, switch back manually, mail syncs

@@ -64,10 +64,97 @@ export struct SetupData {
     smtp-starttls: bool,
     /// Sign in with Microsoft in the browser instead of a password.
     oauth: bool,
+    /// CalDAV server for password accounts; may be empty.
+    caldav-url: string,
 }
 
 /// An account in Settings.
 export struct AccountItem {
     name: string,
     email: string,
+}
+
+/// An event in a day of the month grid.
+export struct CalendarChip {
+    /// The event, for opening it.
+    id: int,
+    /// Start time on the day it starts; empty for all-day events and later days.
+    time: string,
+    title: string,
+    color: color,
+}
+
+/// A cell of the month grid.
+export struct CalendarDay {
+    day: int,
+    /// False for the days of the previous and next month that fill the grid.
+    in-month: bool,
+    today: bool,
+    chips: [CalendarChip],
+    /// Events that did not fit.
+    more: int,
+}
+
+/// An event of the selected day.
+export struct AgendaItem {
+    id: int,
+    time: string,
+    title: string,
+    location: string,
+    /// Organizer, calendar and notes.
+    detail: string,
+    color: color,
+}
+
+/// The new event form.
+export struct EventForm {
+    title: string,
+    /// YYYY-MM-DD
+    date: string,
+    /// HH:MM
+    start: string,
+    end: string,
+    all-day: bool,
+    location: string,
+    /// Addresses to invite, comma separated.
+    attendees: string,
+    notes: string,
+}
+
+/// An event in the week or day view.
+export struct EventBlock {
+    id: int,
+    title: string,
+    time: string,
+    color: color,
+    /// Minutes after midnight, and minutes long.
+    start: int,
+    length: int,
+    /// Overlapping events share the column: this one is lane `lane` of `lanes`.
+    lane: int,
+    lanes: int,
+}
+
+/// A day of the week or day view.
+export struct DayColumn {
+    label: string,
+    today: bool,
+    all-day: [EventBlock],
+    blocks: [EventBlock],
+}
+
+/// The opened event.
+export struct EventDetail {
+    title: string,
+    when: string,
+    location: string,
+    /// Calendar and account.
+    calendar: string,
+    /// Organizer and attendees with their answers.
+    people: string,
+    notes: string,
+    /// The user organizes it (or nobody does): it can be changed.
+    can-edit: bool,
+    /// An instance of a repeating event: changes apply to the series.
+    recurring: bool,
 }

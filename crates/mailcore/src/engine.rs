@@ -28,6 +28,7 @@ const PREFETCH_BODIES: usize = 40;
 const BODY_BATCH: usize = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
+const CALENDAR_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -50,6 +51,14 @@ pub enum Command {
     SaveDraft { id: u64, draft: Draft },
     /// Removes the saved copies of a discarded draft.
     DeleteDraft { message_id: String },
+    /// Fetches the account's calendars.
+    SyncCalendars,
+    /// Puts a VCALENDAR into the account's calendar; `invitation`: it arrived by mail.
+    SaveEvent { ics: String, invitation: bool },
+    /// Changes a stored event to `new`'s values, telling its attendees.
+    UpdateEvent { target: crate::store::StoredEvent, new: crate::ical::Event },
+    /// Deletes a stored event (a repeating one as a whole), telling its attendees.
+    DeleteEvent { target: crate::store::StoredEvent },
     /// Finishes the queued commands, logs out and ends the engine thread. Sent on drop.
     Stop,
 }
@@ -68,6 +77,7 @@ pub enum Event {
     /// A send or a draft save failed.
     SendFailed(u64, String),
     DraftSaved(u64),
+    CalendarChanged,
 }
 
 pub struct Engine {
@@ -177,6 +187,7 @@ impl<B: Backend> Worker<B> {
 
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Command>) {
         let mut poll = tokio::time::interval(POLL_INTERVAL);
+        let mut calendar_poll = tokio::time::interval(CALENDAR_INTERVAL);
         loop {
             let command = tokio::select! {
                 c = rx.recv() => match c {
@@ -184,9 +195,18 @@ impl<B: Backend> Worker<B> {
                     None => break,
                 },
                 _ = poll.tick() => Command::SyncAll,
+                _ = calendar_poll.tick() => Command::SyncCalendars,
             };
             if matches!(command, Command::Stop) {
                 break;
+            }
+            // HTTP, not the IMAP session: a failure says nothing about the mail connection.
+            if matches!(command, Command::SyncCalendars | Command::SaveEvent { .. } | Command::UpdateEvent { .. } | Command::DeleteEvent { .. }) {
+                if let Err(e) = self.calendar(command).await {
+                    log::warn!("calendar: {e:#}");
+                    self.emit(Event::Error(format!("Calendar: {e:#}")));
+                }
+                continue;
             }
             // Collapse bursts of syncs (e.g. IDLE notifications plus a poll tick).
             if matches!(command, Command::SyncAll) {
@@ -297,8 +317,47 @@ impl<B: Backend> Worker<B> {
                     self.remove_drafts(&drafts, &message_id, 0).await?;
                 }
             }
-            Command::Stop => {}
+            Command::Stop | Command::SyncCalendars | Command::SaveEvent { .. } | Command::UpdateEvent { .. } | Command::DeleteEvent { .. } => {}
         }
+        Ok(())
+    }
+
+    async fn calendar(&mut self, command: Command) -> Result<()> {
+        let notice = match &command {
+            Command::SaveEvent { ics, invitation } => {
+                crate::calendar::save(&self.account, &self.creds, &mut self.store, ics, *invitation).await?;
+                None
+            }
+            Command::UpdateEvent { target, new } => crate::calendar::update(&self.account, &self.creds, &mut self.store, target, new).await?,
+            Command::DeleteEvent { target } => crate::calendar::delete(&self.account, &self.creds, &mut self.store, target).await?,
+            _ => None,
+        };
+        if !matches!(command, Command::SyncCalendars) {
+            self.emit(Event::CalendarChanged);
+        }
+        if let Some(notice) = notice {
+            let quoted = |a: &crate::ical::Attendee| match a.name.as_str() {
+                "" => a.email.clone(),
+                name => format!("\"{}\" <{}>", name.replace('"', ""), a.email),
+            };
+            let e = &notice.event;
+            let (subject, what) = match notice.method {
+                "CANCEL" => (format!("Cancelled: {}", e.summary), "was cancelled"),
+                _ => (format!("Updated invitation: {}", e.summary), "was changed"),
+            };
+            let draft = Draft {
+                to: e.attendees.iter().map(quoted).collect::<Vec<_>>().join(", "),
+                subject,
+                body: format!("{} {what}.\n\n{}\n", e.summary, e.description),
+                message_id: mime::new_message_id(&self.account.email),
+                calendar: Some((notice.method.to_string(), notice.ics)),
+                ..Default::default()
+            };
+            // Not retried, like every send: the server change already happened.
+            self.send(0, &draft, None, &std::cell::Cell::new(false)).await?;
+        }
+        crate::calendar::sync(&self.account, &self.creds, &mut self.store).await?;
+        self.emit(Event::CalendarChanged);
         Ok(())
     }
 
