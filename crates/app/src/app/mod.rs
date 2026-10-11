@@ -15,6 +15,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use crate::compose::Composer;
 use crate::format;
 mod actions;
+mod calendar;
 mod folders;
 mod reader;
 mod setup;
@@ -147,6 +148,15 @@ struct State {
     standalone: Option<(MessageSummary, Vec<u8>)>,
     /// The account the setup form is editing, if not adding one.
     editing: Option<usize>,
+    /// The calendar page's selected day; its month is shown.
+    calendar_day: Option<chrono::NaiveDate>,
+    /// Answers given to invitations in this session, by event UID.
+    invite_answers: HashMap<String, String>,
+    /// The events on the calendar page; the UI refers to them by index.
+    calendar_shown: Vec<calendar::Shown>,
+    /// The event open in the calendar's side panel, and the one the form edits (none: a new one).
+    calendar_open: Option<calendar::Shown>,
+    calendar_editing: Option<calendar::Shown>,
 }
 
 impl State {
@@ -339,6 +349,18 @@ impl Controller {
         on!(on_save_attachment, |c, index| c.save_attachment(index as usize));
         on!(on_open_attachment, |c, index| c.save_attachment(index as usize));
         on!(on_close_message, |c| c.close_message());
+        on!(on_open_calendar, |c| c.open_calendar());
+        on!(on_calendar_set_view, |c, view| c.set_calendar_view(view));
+        on!(on_calendar_shift, |c, n| c.shift_calendar(n));
+        on!(on_calendar_event_clicked, |c, id| c.open_event(id as usize));
+        on!(on_calendar_edit_event, |c| c.edit_event());
+        on!(on_calendar_delete_event, |c| c.delete_event());
+        on!(on_calendar_today, |c| c.set_calendar_day(chrono::Local::now().date_naive()));
+        on!(on_calendar_day_clicked, |c, cell| c.calendar_day_clicked(cell as usize));
+        on!(on_calendar_new_event, |c| c.new_event());
+        on!(on_calendar_save_event, |c| c.save_event());
+        on!(on_calendar_refresh, |c| c.sync_calendars());
+        on!(on_invite_respond, |c, answer| c.invite_respond(&answer));
         on!(on_view_source, |c| c.toggle_source());
         on!(on_save_eml, |c| c.save_eml());
         on!(on_save_pdf, |c| c.save_pdf());
@@ -458,6 +480,7 @@ impl Controller {
                     self.set_status(format!("⚠ {error}"));
                 }
             }
+            Event::CalendarChanged => self.render_calendar(),
             Event::DraftSaved(id) => {
                 let composer = self.composer.borrow().clone();
                 if let Some(composer) = composer {

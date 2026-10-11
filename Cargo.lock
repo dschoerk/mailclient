@@ -4985,6 +4985,7 @@ dependencies = [
  "mail-parser",
  "pdf-writer",
  "ring",
+ "roxmltree 0.21.1",
  "rusqlite",
  "rustls",
  "serde",

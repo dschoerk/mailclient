@@ -21,7 +21,7 @@ What the mail client can do today. For ideas that are not built yet see
   | Provider | IMAP | SMTP | Sign-in |
   |---|---|---|---|
   | Gmail (`gmail.com`, `googlemail.com`) | `imap.gmail.com` | `smtp.gmail.com:465` TLS | app password |
-  | Outlook.com, Hotmail, Live, MSN | `outlook.office365.com` | `smtp.office365.com:587` STARTTLS | Microsoft OAuth |
+  | Outlook.com, Hotmail, Live, MSN | `outlook.office365.com` | `smtp-mail.outlook.com:587` STARTTLS | Microsoft OAuth |
   | Fastmail | `imap.fastmail.com` | `smtp.fastmail.com:465` TLS | app password |
   | iCloud (`icloud.com`, `me.com`) | `imap.mail.me.com` | `smtp.mail.me.com:587` STARTTLS | app password |
   | GMX (`gmx.net`, `.at`, `.de`) | `imap.gmx.net` | `mail.gmx.net:587` STARTTLS | password |

@@ -35,7 +35,7 @@ Status: **done** · **partial** · **missing**.
 | Raw source and full headers | done | View source (Ctrl+U), Save as .eml; link targets shown on request (US25). Power-user request (Vivaldi wish list). |
 | Print, save as PDF | done | US23, US24. Desktop prints the text version; Android prints the rendered HTML. |
 | Contacts: add sender, autocomplete, vCard import/export, CardDAV | missing | "Add sender to contacts" was #2 in the Jolla poll. |
-| Calendar (CalDAV), invites | missing | Users are split on built-in vs separate app. |
+| Calendar (CalDAV), invites | partial | Desktop month, week and day views; CalDAV, Google and Microsoft calendars; events opened, created, edited and deleted; invitations sent and answered by mail. Missing: reminders, repeats in the form, a mobile view (planned as a separate app). |
 | PGP / S/MIME | missing | Expected by technical users. |
 | Per-account colours | missing | Thunderbird top-20. |
 | Desktop integration (GNOME notifications, tray, default mail handler) | partial | `mailto:` handled inside the app; system integration missing. |

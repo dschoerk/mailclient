@@ -190,8 +190,23 @@ mod tests {
 
     #[test]
     fn prints_through_the_portal() {
+        // A bus that starts no services: `--session` would launch the desktop's real portal for
+        // the first call, which opens a real print dialog.
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("bus.conf");
+        std::fs::write(
+            &config,
+            format!(
+                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig><type>session</type><listen>unix:dir={}</listen><auth>EXTERNAL</auth>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>"#,
+                dir.path().display()
+            ),
+        )
+        .unwrap();
         let Ok(mut daemon) = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address"])
+            .arg(format!("--config-file={}", config.display()))
+            .args(["--nofork", "--print-address"])
             .stdout(std::process::Stdio::piped())
             .spawn()
         else {
@@ -202,7 +217,6 @@ mod tests {
         std::io::BufReader::new(daemon.stdout.take().unwrap()).read_line(&mut address).unwrap();
         let address = address.trim();
         let bus = zbus::blocking::connection::Builder::address(address).unwrap().build().unwrap();
-        let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("m.pdf");
         std::fs::write(&file, b"%PDF-1.7 test").unwrap();
         // Without a portal the caller falls back to the PDF viewer.

@@ -16,6 +16,7 @@ impl Controller {
         data.smtp_host = guess.smtp_host.into();
         data.smtp_port = guess.smtp_port.to_string().into();
         data.smtp_starttls = guess.smtp_security == Security::StartTls;
+        data.caldav_url = guess.caldav_url.into();
         // Builds without the provider's client ID fall back to a (app) password.
         data.oauth = mailcore::auth::available(guess.auth);
         // Follow the address while the name still looks auto-filled (typing arrives per character).
@@ -45,6 +46,7 @@ impl Controller {
                 Auth::Password => Auth::Microsoft,
                 auth => auth,
             },
+            caldav_url: if data.oauth { String::new() } else { data.caldav_url.trim().to_string() },
         };
         if !account.email.contains('@') {
             return Err(anyhow!("enter a valid email address"));
@@ -72,6 +74,7 @@ impl Controller {
             smtp_port: account.smtp_port.to_string().into(),
             smtp_starttls: account.smtp_security == Security::StartTls,
             oauth: account.auth != Auth::Password,
+            caldav_url: account.caldav_url.into(),
         });
         window.set_setup_error("".into());
         window.set_setup_editing(true);
@@ -270,7 +273,12 @@ pub(crate) fn db_path(account: &AccountConfig) -> Result<std::path::PathBuf> {
 async fn stored_secret(old: Option<&AccountConfig>, auth: Auth) -> Result<(String, String)> {
     let old = old.filter(|old| old.auth == auth).ok_or_else(|| anyhow!("no stored sign-in"))?;
     // Refreshing may rotate the refresh token, so read the keyring after it.
-    let login = mailcore::auth::Credentials::load(old)?.secret().await?;
+    let creds = mailcore::auth::Credentials::load(old)?;
+    let login = creds.secret().await?;
+    // Sign-ins from before the calendar lack its permission: asking again adds it.
+    if auth != Auth::Password {
+        creds.calendar_token().await?;
+    }
     Ok((login, old.password()?))
 }
 

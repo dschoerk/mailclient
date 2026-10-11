@@ -32,6 +32,7 @@ pdf-writer = "0.15"
 subsetter = { version = "0.2.6", default-features = false }
 ttf-parser = "0.25"
 fontdb = "0.24"
+roxmltree = "0.21"
 
 [dev-dependencies]
 tempfile = "3"

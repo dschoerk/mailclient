@@ -26,14 +26,17 @@ export component ToolButton inherits Rectangle {
     in property <bool> show-text: true;
     in property <brush> icon-color: Palette.foreground;
     in property <bool> enabled: true;
+    /// Marks the current choice among several buttons (calendar Month / Week / Day).
+    in property <bool> checked;
     callback clicked();
     accessible-role: button;
     accessible-label: root.text;
+    accessible-checked: root.checked;
     accessible-action-default => { root.clicked(); }
     height: 32px;
     min-width: content.preferred-width;
     border-radius: 6px;
-    background: !root.enabled ? transparent : touch.pressed ? Palette.foreground.with-alpha(0.15) : touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+    background: !root.enabled ? transparent : root.checked ? Theme.accent.with-alpha(touch.has-hover ? 0.22 : 0.15) : touch.pressed ? Palette.foreground.with-alpha(0.15) : touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
     // Press lands instantly, release and hover fade: feedback must never lag the finger.
     animate background { duration: touch.pressed ? 0ms : 150ms; easing: ease-out; }
     transform-scale: touch.pressed ? 0.94 : 1.0;

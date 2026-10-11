@@ -37,6 +37,18 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   names another site.
 - View a message's raw source (Ctrl+U), save it as an `.eml` file or a PDF, and print it
   (Ctrl+P; the desktop's print dialog, or Android's, which also saves PDFs).
+- Calendar (desktop): month, week and day views of all accounts' calendars, synced every 15
+  minutes. Events open in a side panel with their attendees' answers, and can be created, edited
+  and deleted; edits keep what other apps stored (alarms, time zones), and attendees of events
+  you organize get the update or cancellation by mail. Sources: any CalDAV server (Nextcloud, Fastmail, iCloud,
+  mailbox.org, Radicale…; the URL is set per account, and guessed for known providers), Google
+  Calendar over CalDAV and Outlook.com/Microsoft 365 over Microsoft Graph, both through the
+  account's browser sign-in. Accounts without a calendar server keep their events on the device.
+- Invitations by mail (iTIP/iMIP, RFC 5546), in the layout Gmail and Outlook use: received ones
+  show a card with Accept / Maybe / Decline, which mails the answer to the organizer and adds the
+  event to the calendar; replies and cancellations are shown too. New events with attendees
+  send invitations that Gmail, Outlook and Apple Mail show with their answer buttons (Microsoft
+  accounts let Exchange send them).
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,
   `#`/Delete delete, `u` read/unread, `s` flag, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search,
   Ctrl+U view source, Ctrl+P print, Ctrl+Enter send.
@@ -177,6 +189,26 @@ E2E_TARGET=android cargo test -p e2e -- --ignored --test-threads=1
 On Android the test wipes the app's data, copies the test CA and the MCP port into its
 storage (`files/mcp-port`), and sets up `adb reverse`/`adb forward`.
 
+Calendar sync against a local [Radicale](https://radicale.org) CalDAV server (needs
+[uv](https://docs.astral.sh/uv/)): discovery, saving, server-expanded repeats across a DST change.
+
+```sh
+scripts/test-caldav.sh                                      # start (stop: scripts/test-caldav.sh stop)
+cargo test -p mailcore --test caldav -- --ignored
+```
+
+Invitations between vendors, through real Gmail and GMX test accounts (`crates/mailcore/tests/interop_live.rs`):
+our invitations Gmail → GMX and GMX → Gmail with the answers back, and an invitation Google
+Calendar sends itself, answered by us. Checks that the other side's mail and calendar understand
+what we send (Google files our invitations and records our answers) and that we read Google's.
+Needs the Google client build (see [docs/oauth-google.md](docs/oauth-google.md)) and a refresh
+token from `google_live`:
+
+```sh
+LIVE_GOOGLE_EMAIL=… LIVE_GOOGLE_REFRESH_TOKEN=… LIVE_GMX_EMAIL=… LIVE_GMX_PASSWORD=… \
+  cargo test -p mailcore --test interop_live -- --ignored --nocapture --test-threads=1
+```
+
 Real-world mail corpus (downloaded into `target/testdata/`, never committed): the
 SpamAssassin public corpus ham folders (4,150 real messages, 2002–2003) and MIT-licensed
 HTML templates (Postmark, Cerberus, Lee Munroe) for modern layouts:
@@ -209,6 +241,9 @@ crates/mailcore   UI-independent backend
   imap.rs         IMAP session (async-imap, rustls)
   smtp.rs         sending (lettre)
   mime.rs         parsing, sanitizing, rendering, composing, reply templates
+  ical.rs         iCalendar events: parsing, time zones, repeats, invitations and replies
+  calendar.rs     calendar sync: CalDAV (servers, Google), Microsoft Graph
+  http.rs         minimal HTTP/1.0 client (OAuth tokens, CalDAV, Graph)
   engine.rs       background sync thread: commands in, events out; IDLE loop
 crates/app        Slint UI
   ui/app.slint    main window, setup form, compose window
@@ -225,6 +260,12 @@ crates/app        Slint UI
   (edit `config.toml`); new messages from "All inboxes" go out from the first account.
 - No drafts saving, contacts autocomplete, or rich-text compose.
 - Only the inbox, Sent and the open folder are synced; other folders sync when opened.
+- Calendar: repeating events are edited and deleted as a whole series, and their times cannot be
+  changed; the form cannot make repeating or multi-day timed events. Removed attendees get no
+  cancellation. An answered invitation is not marked as answered in Google's or Exchange's own copy.
+  A CalDAV server must use the account's username and password and accept Basic auth. Each sync
+  re-reads ±1 year instead of asking for changes only. Tested against Radicale, not yet against
+  Microsoft, Nextcloud or iCloud; Google with the live test (`google_live`).
 - Conversations are grouped by headers only, not by subject, and per account.
 - No CONDSTORE/QRESYNC yet; flag changes are found by re-fetching flags of cached
   messages (fine for the 500-message window).

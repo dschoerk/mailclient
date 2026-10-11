@@ -44,6 +44,9 @@ pub struct AccountConfig {
     pub smtp_security: Security,
     #[serde(default)]
     pub auth: Auth,
+    /// CalDAV server or calendar URL for password accounts; Google and Microsoft accounts find theirs.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caldav_url: String,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,9 +117,11 @@ impl AccountConfig {
             "gmail.com" | "googlemail.com" => {
                 ("imap.gmail.com", "smtp.gmail.com", 465, Security::Tls)
             }
+            // Outlook.com's own submission server (support.microsoft.com, "POP, IMAP, and SMTP
+            // settings for Outlook.com"); Microsoft 365 domains use smtp.office365.com.
             _ if microsoft => (
                 "outlook.office365.com",
-                "smtp.office365.com",
+                "smtp-mail.outlook.com",
                 587,
                 Security::StartTls,
             ),
@@ -133,6 +138,12 @@ impl AccountConfig {
                 ("imap.gmx.net", "mail.gmx.net", 587, Security::StartTls)
             }
             _ => ("", "", 465, Security::Tls),
+        };
+        let caldav = match domain.as_str() {
+            "fastmail.com" | "fastmail.fm" => "https://caldav.fastmail.com/",
+            "icloud.com" | "me.com" => "https://caldav.icloud.com/",
+            "mailbox.org" => "https://dav.mailbox.org/",
+            _ => "",
         };
         let or_prefixed = |host: &str, prefix: &str| {
             if host.is_empty() {
@@ -158,6 +169,7 @@ impl AccountConfig {
             } else {
                 Auth::Password
             },
+            caldav_url: caldav.to_string(),
         }
     }
 
@@ -317,8 +329,8 @@ mod tests {
         assert_eq!(gmail.auth, Auth::Google);
         let hotmail = AccountConfig::guess("someone@hotmail.co.uk");
         assert_eq!(
-            (hotmail.imap_host.as_str(), hotmail.auth),
-            ("outlook.office365.com", Auth::Microsoft)
+            (hotmail.imap_host.as_str(), hotmail.smtp_host.as_str(), hotmail.auth),
+            ("outlook.office365.com", "smtp-mail.outlook.com", Auth::Microsoft)
         );
 
         let other = AccountConfig::guess("me@example.org");
