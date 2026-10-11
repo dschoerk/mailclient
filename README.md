@@ -46,7 +46,9 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   account's browser sign-in. Accounts without a calendar server keep their events on the device.
 - Invitations by mail (iTIP/iMIP, RFC 5546), in the layout Gmail and Outlook use: received ones
   show a card with Accept / Maybe / Decline, which mails the answer to the organizer and adds the
-  event to the calendar; replies and cancellations are shown too. New events with attendees
+  event to the calendar; replies and cancellations are shown too. Attendees' answers are recorded
+  on the organizer's event (by the app for on-device and CalDAV calendars, which do not read mail;
+  Google and Exchange do it themselves) and listed with each attendee. New events with attendees
   send invitations that Gmail, Outlook and Apple Mail show with their answer buttons (Microsoft
   accounts let Exchange send them).
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,

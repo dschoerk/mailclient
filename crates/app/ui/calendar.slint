@@ -233,6 +233,32 @@ component TimeGrid inherits VerticalLayout {
     }
 }
 
+/// An attendee with their answer; removable in the form.
+component AttendeeRow inherits HorizontalLayout {
+    in property <AttendeeItem> item;
+    in property <bool> removable;
+    callback remove();
+    spacing: 6px;
+    Text {
+        text: root.item.name == "" ? root.item.email : root.item.name + " <" + root.item.email + ">";
+        overflow: elide;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+    Text {
+        text: root.item.status;
+        font-size: 12px;
+        vertical-alignment: center;
+        color: root.item.status == "Accepted" ? #2e9e5b : root.item.status == "Declined" ? #d33 : root.item.status == "Tentative" ? #e8a317 : Theme.muted;
+    }
+    if root.removable: ToolButton {
+        text: "Remove " + root.item.email;
+        icon: @image-url("icons/x.svg");
+        show-text: false;
+        clicked => root.remove();
+    }
+}
+
 component AgendaRow inherits Rectangle {
     in property <AgendaItem> item;
     callback clicked();
@@ -319,10 +345,21 @@ component DetailView inherits VerticalLayout {
         color: Theme.muted;
         wrap: word-wrap;
     }
-    if root.detail.people != "": Text {
-        text: root.detail.people;
+    if root.detail.organizer != "": Text {
+        text: "Organizer: " + root.detail.organizer;
         font-size: 12px;
         wrap: word-wrap;
+    }
+    if root.detail.attendees.length > 0: VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: "Attendees";
+            font-size: 12px;
+            color: Theme.muted;
+        }
+        for attendee in root.detail.attendees: AttendeeRow {
+            item: attendee;
+        }
     }
     if root.detail.notes != "": Text {
         text: root.detail.notes;
@@ -472,26 +509,10 @@ component EventFormView inherits VerticalLayout {
             font-size: 12px;
             color: Theme.muted;
         }
-        for attendee[i] in root.attendees: HorizontalLayout {
-            spacing: 6px;
-            Text {
-                text: attendee.name == "" ? attendee.email : attendee.name + " <" + attendee.email + ">";
-                overflow: elide;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            if attendee.status != "": Text {
-                text: attendee.status;
-                font-size: 12px;
-                vertical-alignment: center;
-                color: attendee.status == "Accepted" ? #2e9e5b : attendee.status == "Declined" ? #d33 : Theme.muted;
-            }
-            ToolButton {
-                text: "Remove " + attendee.email;
-                icon: @image-url("icons/x.svg");
-                show-text: false;
-                clicked => root.remove-attendee(i);
-            }
+        for attendee[i] in root.attendees: AttendeeRow {
+            item: attendee;
+            removable: true;
+            remove => root.remove-attendee(i);
         }
     }
     HorizontalLayout {

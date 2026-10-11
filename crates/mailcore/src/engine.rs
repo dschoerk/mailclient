@@ -599,10 +599,12 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn download_bodies(&mut self, folder: &str, uids: &[u32]) -> Result<()> {
+        let mut replies = Vec::new();
         for batch in uids.chunks(BODY_BATCH) {
             let bodies = self.conn().await?.fetch_bodies(folder, batch).await?;
             for (uid, raw) in bodies {
                 let body = mime::body_from_raw(&raw);
+                replies.extend(body.calendar.clone().filter(|c| crate::ical::parse(c).method == "REPLY"));
                 self.store.set_body(
                     folder,
                     uid,
@@ -612,6 +614,21 @@ impl<B: Backend> Worker<B> {
                     !body.attachments.is_empty(),
                 )?;
             }
+        }
+        // Answers to the user's invitations, for calendars that do not read mail themselves.
+        let mut answered = false;
+        for ics in replies {
+            match crate::calendar::apply_reply(&self.account, &self.creds, &mut self.store, &ics).await {
+                Ok(changed) => answered |= changed,
+                // A calendar problem must not stop the mail sync.
+                Err(e) => log::warn!("recording an answer: {e:#}"),
+            }
+        }
+        if answered {
+            if let Err(e) = crate::calendar::sync(&self.account, &self.creds, &mut self.store).await {
+                log::warn!("calendar: {e:#}");
+            }
+            self.emit(Event::CalendarChanged);
         }
         Ok(())
     }

@@ -225,6 +225,38 @@ pub async fn delete(account: &AccountConfig, creds: &Credentials, store: &mut St
     }
 }
 
+/// Records the answers in a REPLY mail (`ics`) on the organizer's copy of the event: on this
+/// device, or on a CalDAV server (which leaves mailed answers to the client, see SCHEDULE-AGENT).
+/// Google and Exchange record answers from mail themselves. Returns whether anything changed.
+pub async fn apply_reply(account: &AccountConfig, creds: &Credentials, store: &mut Store, ics: &str) -> Result<bool> {
+    let reply = ical::parse(ics);
+    if reply.method != "REPLY" || account.auth != Auth::Password {
+        return Ok(false);
+    }
+    let mut changed = false;
+    for e in &reply.events {
+        let Some(target) = store.event_by_uid(&e.uid)? else { continue };
+        let answer = |text: &str| e.attendees.iter().fold(text.to_string(), |t, a| ical::set_partstat(&t, &e.uid, &a.email, &a.partstat));
+        if target.calendar == LOCAL_CALENDAR {
+            let Some(text) = store.local_ics(&e.uid)? else { continue };
+            let answered = answer(&text);
+            let (from, to) = window();
+            store.add_local_events(&answered, &ical::expand(&ical::parse(&answered).events, from, to))?;
+            changed = true;
+        } else if let Some(Source::CalDav { auth, .. }) = source(account, creds).await? {
+            let (text, etag) = fetch(&auth, &target.href).await?;
+            let mut headers = vec![("Authorization", auth.as_str()), ("Content-Type", "text/calendar; charset=utf-8")];
+            headers.extend(etag.as_deref().map(|e| ("If-Match", e)));
+            let r = http::request("PUT", &target.href, &headers, answer(&text).as_bytes()).await?;
+            if !r.ok() {
+                bail!("recording the answer failed: {}", failure(&r));
+            }
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 fn failure(r: &Response) -> String {
     // Google and Graph explain themselves in JSON ("CalDAV API has not been used in project …").
     let json: Option<serde_json::Value> = serde_json::from_slice(&r.body).ok();

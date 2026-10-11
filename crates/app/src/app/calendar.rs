@@ -72,6 +72,14 @@ fn title(e: &Event) -> SharedString {
     if e.summary.is_empty() { "(no title)".into() } else { e.summary.clone().into() }
 }
 
+fn attendee_item(a: &Attendee) -> AttendeeItem {
+    AttendeeItem {
+        name: a.name.clone().into(),
+        email: a.email.clone().into(),
+        status: if a.partstat.is_empty() { "Will be invited" } else { partstat_verb(&a.partstat) }.into(),
+    }
+}
+
 fn partstat_verb(partstat: &str) -> &'static str {
     match partstat {
         "ACCEPTED" => "Accepted",
@@ -407,15 +415,14 @@ impl Controller {
             calendar.push_str(&format!(" · {account}"));
         }
         drop(state);
-        let mut people: Vec<String> = e.organizer.iter().map(|o| format!("Organizer: {}", format::person(&o.name, &o.email))).collect();
-        people.extend(e.attendees.iter().map(|a| format!("{}: {}", format::person(&a.name, &a.email), partstat_verb(&a.partstat))));
         let window = self.window();
         window.set_event_detail(EventDetail {
             title: title(e),
             when: when(e).into(),
             location: e.location.clone().into(),
             calendar: calendar.into(),
-            people: people.join("\n").into(),
+            organizer: e.organizer.as_ref().map(|o| format::person(&o.name, &o.email)).unwrap_or_default().into(),
+            attendees: ModelRc::new(VecModel::from(e.attendees.iter().map(attendee_item).collect::<Vec<_>>())),
             notes: e.description.clone().into(),
             can_edit: self.owns(shown.account, e),
             recurring: shown.stored.recurring,
@@ -469,17 +476,7 @@ impl Controller {
     }
 
     fn set_form_attendees(&self, attendees: Vec<Attendee>) {
-        let items: Vec<AttendeeItem> = attendees
-            .iter()
-            .map(|a| AttendeeItem {
-                name: a.name.clone().into(),
-                email: a.email.clone().into(),
-                status: match a.partstat.as_str() {
-                    "ACCEPTED" | "TENTATIVE" | "DECLINED" => partstat_verb(&a.partstat).into(),
-                    _ => "".into(),
-                },
-            })
-            .collect();
+        let items: Vec<AttendeeItem> = attendees.iter().map(attendee_item).collect();
         self.window().set_event_attendees(ModelRc::new(VecModel::from(items)));
         self.state.borrow_mut().form_attendees = attendees;
     }
@@ -504,7 +501,8 @@ impl Controller {
             if email.eq_ignore_ascii_case(&me) || attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
                 continue;
             }
-            attendees.push(Attendee { email, name, partstat: "NEEDS-ACTION".into() });
+            // No answer to wait for yet: shown as "Will be invited" until saved.
+            attendees.push(Attendee { email, name, partstat: String::new() });
         }
         window.set_event_error("".into());
         self.set_form_attendees(attendees);
@@ -547,7 +545,13 @@ impl Controller {
             }
             (start, end)
         };
-        let attendees = self.state.borrow().form_attendees.clone();
+        let attendees: Vec<Attendee> = self
+            .state
+            .borrow()
+            .form_attendees
+            .iter()
+            .map(|a| Attendee { partstat: if a.partstat.is_empty() { "NEEDS-ACTION".into() } else { a.partstat.clone() }, ..a.clone() })
+            .collect();
         Ok(Event {
             uid: mime::new_message_id(&account.email).trim_matches(['<', '>']).to_string(),
             summary: title.to_string(),

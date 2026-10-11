@@ -78,6 +78,14 @@ fn discovers_saves_and_syncs() {
         let find = |store: &Store, summary: &str| {
             store.events(utc("2026-10-01 00:00"), utc("2026-12-01 00:00")).unwrap().into_iter().find(|s| s.event.summary == summary)
         };
+        // The attendee's answer arrives by mail: it is recorded on the server's copy.
+        let invited = find(&store, "Lunch, then walk").unwrap();
+        let reply = ical::with_method(&ical::reply(&invited.event, "max@example.org", "ACCEPTED"), "REPLY");
+        assert!(calendar::apply_reply(&account, &creds, &mut store, &reply).await.unwrap());
+        calendar::sync(&account, &creds, &mut store).await.unwrap();
+        let answered = find(&store, "Lunch, then walk").unwrap();
+        assert_eq!(answered.event.attendees[0].partstat, "ACCEPTED", "{:?}", answered.event.attendees);
+
         // Moving the organized lunch an hour and renaming it: the attendee gets an updated invitation.
         let target = find(&store, "Lunch, then walk").unwrap();
         assert!(!target.recurring && target.href.ends_with("/lunch-1_example.org.ics"), "{target:?}");

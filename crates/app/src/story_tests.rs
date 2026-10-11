@@ -743,7 +743,7 @@ fn user_stories() {
             add(&format!("Second Story <{user2}>, {user}, extra@example.org"))?;
             add(&user2)?;
             ensure(invited() == [user2.clone(), "extra@example.org".to_string()], format!("list {:?}", invited()))?;
-            ensure(w.get_event_attendees().row_data(0).is_some_and(|a| a.name == "Second Story"), "name not kept")?;
+            ensure(w.get_event_attendees().row_data(0).is_some_and(|a| a.name == "Second Story" && a.status == "Will be invited"), "name or status wrong")?;
             click(&w, "Remove extra@example.org")?;
             ensure(invited() == [user2.clone()], format!("after removing: {:?}", invited()))?;
             ensure(w.get_event_error().is_empty(), format!("error left: {}", w.get_event_error()))?;
@@ -789,7 +789,11 @@ fn user_stories() {
             };
             open_mine("Design sync")?;
             ensure(w.get_calendar_showing_event(), "event not opened")?;
-            ensure(w.get_event_detail().people.contains(&user2), format!("people: {}", w.get_event_detail().people))?;
+            // The attendee's acceptance arrived by mail and is recorded on the organizer's event.
+            let listed = || w.get_event_detail().attendees.iter().map(|a| (a.email.to_string(), a.status.to_string())).collect::<Vec<_>>();
+            wait_for("the answer recorded", || listed() == [(user2.clone(), "Accepted".to_string())]).await
+                .map_err(|e| format!("{e}; detail attendees: {:?}", listed()))?;
+            ensure(w.get_event_detail().organizer.contains(&user), format!("organizer: {}", w.get_event_detail().organizer))?;
             click(&w, "Edit")?;
             ensure(w.get_event_attendees().iter().any(|a| a.email == user2.as_str()), "attendees not in the edit form")?;
             type_in(&w, "Title", "Design sync (moved)")?;
