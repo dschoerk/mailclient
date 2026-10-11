@@ -1476,7 +1476,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.1"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1485,7 +1485,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.1"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3440,7 +3440,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-android-activity"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
@@ -3456,7 +3456,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "bytemuck",
  "calloop 0.14.5",
@@ -3481,7 +3481,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "cfg_aliases",
  "i-slint-backend-android-activity",
@@ -3498,7 +3498,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-testing"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -3510,7 +3510,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3554,7 +3554,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "derive_more",
  "fontique",
@@ -3571,7 +3571,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -3605,7 +3605,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "accesskit",
  "async-channel 2.5.0",
@@ -3659,7 +3659,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "quote",
  "serde_json",
@@ -3669,7 +3669,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "const-field-offset",
  "femtovg",
@@ -3689,7 +3689,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "bytemuck",
  "cfg_aliases",
@@ -3726,7 +3726,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "bytemuck",
  "clru",
@@ -9232,7 +9232,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
@@ -9256,7 +9256,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "derive_more",
  "fontique",
@@ -9268,7 +9268,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.19.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -10753,7 +10753,7 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "vtable"
 version = "0.5.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -10764,7 +10764,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.5.0"
-source = "git+https://github.com/slint-ui/slint?rev=87b478eb388fb5ce66affa37617e4110c9081fdf#87b478eb388fb5ce66affa37617e4110c9081fdf"
+source = "git+https://github.com/dschoerk/slint?rev=322eb0d1c9e662dea916865a007cca89f04d2a99#322eb0d1c9e662dea916865a007cca89f04d2a99"
 dependencies = [
  "proc-macro2",
  "quote",
