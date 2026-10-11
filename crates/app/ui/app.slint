@@ -136,6 +136,8 @@ export component AppWindow inherits Window {
     callback edit-draft();
     /// Ticks or unticks a list row.
     callback toggle-checked(int);
+    /// A list row was long-pressed: haptic feedback on phones.
+    callback row-held();
     /// "seen", "flag", "archive", "delete" or "clear", on the ticked rows.
     callback bulk-action(string);
     /// A list row swiped away (phones): archived if true, else deleted.
@@ -518,6 +520,7 @@ export component AppWindow inherits Window {
                                         }
                                         keys.focus();
                                     }
+                                    held => { root.row-held(); }
                                     check-toggled => {
                                         root.toggle-checked(i);
                                         keys.focus();

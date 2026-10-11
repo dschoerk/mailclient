@@ -135,6 +135,8 @@ export component MessageRow inherits Rectangle {
     callback thread-clicked(int);
     /// Tick box tapped, or the row long-pressed.
     callback check-toggled();
+    /// The row was long-pressed (phones vibrate).
+    callback held();
     /// Phones: swiping the row right archives it, left deletes it.
     in property <bool> swipeable;
     callback swiped(/* archive */ bool);
@@ -340,6 +342,7 @@ export component MessageRow inherits Rectangle {
                 running: touch.pressed && !root.long-pressed;
                 triggered => {
                     root.long-pressed = true;
+                    root.held();
                     root.check-toggled();
                 }
             }

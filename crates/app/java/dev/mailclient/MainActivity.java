@@ -53,6 +53,11 @@ public final class MainActivity extends NativeActivity {
         });
     }
 
+    /** Long-press feedback; follows the system haptics setting and needs no VIBRATE permission. */
+    public void haptic() {
+        runOnUiThread(() -> getWindow().getDecorView().performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS));
+    }
+
     /** Syncs every account (Rust side); registered once the Rust UI runs. */
     static native void onResumed();
 

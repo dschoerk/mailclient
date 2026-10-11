@@ -338,6 +338,8 @@ impl Controller {
         on!(on_bulk_action, |c, action| c.bulk(&action));
         on!(on_row_swiped, |c, index, archive| c.swiped(index as usize, archive));
         #[cfg(target_os = "android")]
+        on!(on_row_held, |_c| crate::platform::haptic());
+        #[cfg(target_os = "android")]
         on!(on_html_area_changed, |c| {
             // Slint lays out in logical pixels; the WebView is placed in physical ones.
             let w = c.window();

@@ -126,6 +126,13 @@ pub fn open_url(url: &str) -> Result<()> {
     with_context(|env, context| start_view(env, context, url)).map_err(|e| anyhow!("opening {url}: {e}"))
 }
 
+/// The system's long-press vibration, if the user has haptics on.
+pub fn haptic() {
+    if let Err(e) = on_activity(|env, activity| env.call_method(activity, "haptic", "()V", &[]).map(drop)) {
+        log::warn!("cannot vibrate: {e}");
+    }
+}
+
 /// Posts a new-mail notification; tapping it opens the app. A newer one replaces the older.
 pub fn notify(title: &str, body: &str) {
     if let Err(e) = with_context(|env, context| post_notification(env, context, title, body)) {
