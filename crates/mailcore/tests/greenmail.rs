@@ -131,6 +131,13 @@ fn send_sync_flag_delete_idle() {
     assert_eq!(store.message("INBOX", msg.uid).unwrap().map(|m| m.subject), Some("Hello GreenMail".into()));
     assert_eq!(store.synced_from("INBOX").unwrap(), Some(msg.uid));
 
+    // A move the server refuses puts the message back instead of losing it locally.
+    store.apply_local("INBOX", msg.uid, &PendingOp::Move("No such folder".into())).unwrap();
+    assert!(store.message("INBOX", msg.uid).unwrap().is_none());
+    engine.send(Command::Flush);
+    wait_until("refused move dropped", || store.pending_ops().unwrap().is_empty());
+    assert!(store.message("INBOX", msg.uid).unwrap().is_some(), "refused move lost the message");
+
     // Direct server view, to check what the engine pushed.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

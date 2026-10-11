@@ -495,7 +495,20 @@ impl<B: Backend> Worker<B> {
                 // The server refused (message gone, folder missing): retrying won't help.
                 Err(e) if B::is_rejection(&e) => {
                     log::warn!("dropping {op:?} on {folder}/{uid}: {e:#}");
+                    // Undo the local change: the server's copy is the truth.
+                    if let PendingOp::Move(_) | PendingOp::Expunge = op {
+                        // A connection error leaves the op queued, so the restore is retried with it.
+                        match self.conn().await?.fetch_headers(&folder, &[uid]).await {
+                            Ok(headers) => self.store.upsert_messages(&headers)?,
+                            Err(e) if B::is_rejection(&e) => log::warn!("cannot restore {folder}/{uid}: {e:#}"),
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        // The next sync then fetches all flags instead of trusting the unchanged mark.
+                        self.store.set_sync_mark(&folder, None)?;
+                    }
                     self.store.remove_pending_op(id)?;
+                    self.emit(Event::MessagesChanged(folder));
                 }
                 Err(e) => return Err(e),
             }
