@@ -823,13 +823,38 @@ fn user_stories() {
             ensure(w.get_calendar_columns().row_count() == 1, "day view is not one column")?;
             w.invoke_calendar_set_view(0);
 
-            // Deleting asks first, then cancels it for the attendee.
+            // Editing the attendees: a third person is added and invited, the second is taken off
+            // and gets a cancellation; the event lists the third only.
+            let third = test_account(&format!("third-{user}"));
+            open_mine("Design sync (moved)")?;
+            click(&w, "Edit")?;
+            type_in(&w, "Add attendee", &format!("Third Story <{}>", third.email))?;
+            click(&w, "Add")?;
+            click(&w, &format!("Remove {user2}"))?;
+            let invited: Vec<String> = w.get_event_attendees().iter().map(|a| a.email.to_string()).collect();
+            ensure(invited == [third.email.clone()], format!("form attendees: {invited:?}"))?;
+            click(&w, "Save and notify")?;
+            ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
+            wait_for("new attendee invited", || !server_bodies(&third, "INBOX", "Updated invitation: Design sync (moved)").is_empty()).await?;
+            let invitation = server_bodies(&third, "INBOX", "Updated invitation: Design sync (moved)").remove(0);
+            let invitation = mailcore::ical::parse(invitation.calendar.as_deref().ok_or("invitation has no calendar part")?);
+            ensure(invitation.method == "REQUEST", format!("method {:?}", invitation.method))?;
+            wait_for("removed attendee cancelled", || !server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
+            let cancel = server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").remove(0);
+            let cancel = mailcore::ical::parse(cancel.calendar.as_deref().ok_or("cancellation has no calendar part")?);
+            let cancelled: Vec<&str> = cancel.events[0].attendees.iter().map(|a| a.email.as_str()).collect();
+            ensure(cancel.method == "CANCEL" && cancelled == [user2.as_str()], format!("cancellation: {:?} for {cancelled:?}", cancel.method))?;
+            let listed = || w.get_event_detail().attendees.iter().map(|a| a.email.to_string()).collect::<Vec<_>>();
+            wait_for("event lists the third only", || listed() == [third.email.clone()]).await
+                .map_err(|e| format!("{e}; detail attendees: {:?}", listed()))?;
+
+            // Deleting asks first, then cancels it for the attendee (now the third).
             open_mine("Design sync (moved)")?;
             click(&w, "Delete this event")?;
             ensure(w.get_calendar_confirm_delete(), "no confirmation step")?;
             click(&w, "Delete event")?;
             wait_for("deleted event gone", || !w.get_calendar_agenda().iter().any(|a| a.title == "Design sync (moved)")).await?;
-            wait_for("cancellation at the attendee", || !server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
+            wait_for("cancellation at the attendee", || !server_bodies(&third, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
             w.set_show_calendar(false);
 
             // A calendar that cannot be reached says so on the calendar page, until it works again.

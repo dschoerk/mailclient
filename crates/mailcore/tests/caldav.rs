@@ -94,14 +94,15 @@ fn discovers_saves_and_syncs() {
         (moved.start, moved.end) = (utc("2026-10-22 12:00"), utc("2026-10-22 13:00"));
         moved.attendees = vec![Attendee { email: "max@example.org".into(), partstat: "NEEDS-ACTION".into(), ..Default::default() }];
         moved.organizer = Some(Attendee { email: account.email.clone(), ..Default::default() });
-        let notice = calendar::update(&account, &creds, &mut store, &target, &moved).await.unwrap().expect("attendees are told");
+        let notices = calendar::update(&account, &creds, &mut store, &target, &moved).await.unwrap();
+        let [notice] = notices.as_slice() else { panic!("one notice expected: {notices:?}") };
         assert_eq!(notice.method, "REQUEST");
         assert_eq!(ical::parse(&notice.ics).events[0].sequence, 1);
         // Renaming the series renames every instance and keeps its times.
         let series = find(&store, "Team meeting").unwrap();
         assert!(series.recurring);
         let renamed = Event { summary: "Team sync".into(), ..series.event.clone() };
-        assert!(calendar::update(&account, &creds, &mut store, &series, &renamed).await.unwrap().is_none(), "nobody invited");
+        assert!(calendar::update(&account, &creds, &mut store, &series, &renamed).await.unwrap().is_empty(), "nobody invited");
         calendar::sync(&account, &creds, &mut store).await.unwrap();
         let events: Vec<(String, i64)> = store.events(utc("2026-10-01 00:00"), utc("2026-12-01 00:00")).unwrap().into_iter().map(|s| (s.event.summary, s.event.start)).collect();
         assert_eq!(
@@ -113,10 +114,26 @@ fn discovers_saves_and_syncs() {
                 ("Team sync".to_string(), utc("2026-11-03 09:00")),
             ]
         );
+        // Editing the attendees: Ann is added and gets the invitation, Max is taken off and gets a
+        // cancellation; the server keeps Ann only.
+        let lunch = find(&store, "Late lunch").unwrap();
+        let ann = Attendee { email: "ann@example.org".into(), name: "Ann".into(), partstat: "NEEDS-ACTION".into() };
+        let reinvited = Event { attendees: vec![ann.clone()], organizer: Some(Attendee { email: account.email.clone(), ..Default::default() }), ..lunch.event.clone() };
+        let notices = calendar::update(&account, &creds, &mut store, &lunch, &reinvited).await.unwrap();
+        let sent: Vec<(&str, Vec<&str>)> = notices.iter().map(|n| (n.method, n.event.attendees.iter().map(|a| a.email.as_str()).collect())).collect();
+        assert_eq!(sent, [("REQUEST", vec!["ann@example.org"]), ("CANCEL", vec!["max@example.org"])]);
+        let cancel = ical::parse(&notices[1].ics);
+        assert_eq!((cancel.method.as_str(), cancel.events[0].status.as_str()), ("CANCEL", "CANCELLED"));
+        calendar::sync(&account, &creds, &mut store).await.unwrap();
+        let attendees: Vec<String> = find(&store, "Late lunch").unwrap().event.attendees.into_iter().map(|a| a.email).collect();
+        assert_eq!(attendees, ["ann@example.org"]);
+
         // Deleting: the series goes, the lunch's attendee gets a cancellation.
         let lunch = find(&store, "Late lunch").unwrap();
-        let cancel = calendar::delete(&account, &creds, &mut store, &lunch).await.unwrap().expect("attendees are told");
+        let notices = calendar::delete(&account, &creds, &mut store, &lunch).await.unwrap();
+        let [cancel] = notices.as_slice() else { panic!("one cancellation expected: {notices:?}") };
         assert_eq!((cancel.method, cancel.event.status.as_str()), ("CANCEL", "CANCELLED"));
+        assert_eq!(cancel.event.attendees[0].email, "ann@example.org");
         let series = find(&store, "Team sync").unwrap();
         calendar::delete(&account, &creds, &mut store, &series).await.unwrap();
         calendar::sync(&account, &creds, &mut store).await.unwrap();

@@ -247,12 +247,17 @@ impl<B: Backend> Worker<B> {
             if matches!(command, Command::Stop) {
                 break;
             }
+            // The variant only: drafts and events are private.
+            let name = format!("{command:?}").split([' ', '(', '{']).next().unwrap_or_default().to_string();
+            let started = std::time::Instant::now();
+            log::debug!("engine: {name} started");
             // HTTP, not the IMAP session: a failure says nothing about the mail connection.
             if matches!(command, Command::SyncCalendars | Command::SaveEvent { .. } | Command::UpdateEvent { .. } | Command::DeleteEvent { .. }) {
                 if let Err(e) = self.calendar(command).await {
                     log::warn!("calendar: {e:#}");
                     self.emit(Event::CalendarFailed(format!("{e:#}")));
                 }
+                log::debug!("engine: {name} done in {:?}", started.elapsed());
                 continue;
             }
             // Collapse bursts: syncs (IDLE notifications plus a poll tick), and searches typed
@@ -284,6 +289,7 @@ impl<B: Backend> Worker<B> {
                     result = self.handle(command).await;
                 }
             }
+            log::debug!("engine: {name} done in {:?}", started.elapsed());
             if let Err(e) = result {
                 log::warn!("engine: {e:#}");
                 if let Some(id) = draft_id {
@@ -394,19 +400,19 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn calendar(&mut self, command: Command) -> Result<()> {
-        let notice = match &command {
+        let notices = match &command {
             Command::SaveEvent { ics, invitation } => {
                 crate::calendar::save(&self.account, &self.creds, &mut self.store, ics, *invitation).await?;
-                None
+                Vec::new()
             }
             Command::UpdateEvent { target, new } => crate::calendar::update(&self.account, &self.creds, &mut self.store, target, new).await?,
             Command::DeleteEvent { target } => crate::calendar::delete(&self.account, &self.creds, &mut self.store, target).await?,
-            _ => None,
+            _ => Vec::new(),
         };
         if !matches!(command, Command::SyncCalendars) {
             self.emit(Event::CalendarChanged);
         }
-        if let Some(notice) = notice {
+        for notice in notices {
             let quoted = |a: &crate::ical::Attendee| match a.name.as_str() {
                 "" => a.email.clone(),
                 name => format!("\"{}\" <{}>", name.replace('"', ""), a.email),
