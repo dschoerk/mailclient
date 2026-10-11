@@ -573,9 +573,7 @@ impl Backend for Imap {
 
     async fn find_message_id(&mut self, folder: &str, id: &str) -> Result<Vec<u32>> {
         self.ensure_selected(folder).await?;
-        // The id goes into a quoted string; drafts' ids are ours, but never let a quote through.
-        let id = id.replace(['"', '\\'], "");
-        let mut uids: Vec<u32> = self.session.uid_search(format!("HEADER Message-ID \"{id}\"")).await?.into_iter().collect();
+        let mut uids: Vec<u32> = self.session.uid_search(format!("HEADER Message-ID {}", quote(id))).await?.into_iter().collect();
         self.confirm().await?;
         uids.sort_unstable();
         Ok(uids)
@@ -642,11 +640,14 @@ fn role_from_name(name: &str) -> Role {
     }
 }
 
+/// `s` as an IMAP quoted string. A line break would end the command early; quotes and backslashes are escaped.
+fn quote(s: &str) -> String {
+    format!("\"{}\"", s.replace(|c: char| c.is_control(), " ").replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// SEARCH criteria for the search box's text: Gmail's own syntax there, elsewhere every word
 /// in the headers or body, and `from:address` in From.
 fn search_criteria(query: &str, gmail: bool) -> String {
-    // A line break would end the command early; quotes and backslashes are escaped.
-    let quote = |s: &str| format!("\"{}\"", s.replace(|c: char| c.is_control(), " ").replace('\\', "\\\\").replace('"', "\\\""));
     let criteria = if gmail {
         format!("X-GM-RAW {}", quote(query))
     } else {
@@ -701,6 +702,7 @@ mod tests {
         assert_eq!(search_criteria("from:a@b.org lunch", false), r#"FROM "a@b.org" TEXT "lunch""#);
         assert_eq!(search_criteria("say \"hi\"\r\nX", true), r#"X-GM-RAW "say \"hi\"  X""#);
         assert_eq!(search_criteria("Grüße", false), r#"CHARSET UTF-8 TEXT "Grüße""#);
+        assert_eq!(quote("<a\"b>\r\nX"), r#""<a\"b>  X""#);
     }
 
     #[test]

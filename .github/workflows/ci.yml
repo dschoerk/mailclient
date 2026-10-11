@@ -14,6 +14,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for every job; the release job asks for more itself.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Debug info for Servo/SpiderMonkey fills the runner's disk.
@@ -36,6 +40,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+      - name: Sync engine against GreenMail
+        run: |
+          scripts/test-mailserver.sh
+          cargo test -p mailcore --test greenmail -- --ignored
       - name: Release build
         if: env.RELEASE == 'true'
         run: |
