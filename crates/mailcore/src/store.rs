@@ -212,6 +212,37 @@ fn summary_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
     })
 }
 
+/// Schema version of a new cache; [`migrate`] brings older ones up to it.
+const SCHEMA_VERSION: i64 = 2;
+
+/// Upgrades a cache from an older version, one step per version, in one transaction. The steps
+/// are history: they spell out the schema of their time instead of reusing today's.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 1 {
+        // Caches from before folder_sync hold one contiguous window per folder.
+        tx.execute("INSERT OR IGNORE INTO folder_sync (folder, synced_from) SELECT folder, MIN(uid) FROM messages GROUP BY folder", [])?;
+    }
+    if version < 2 {
+        // Added while version 1 was current, so a cache may have some of them already.
+        for (column, definition) in [
+            ("href", "TEXT NOT NULL DEFAULT ''"),
+            ("recurring", "INTEGER NOT NULL DEFAULT 0"),
+            ("attendees", "TEXT NOT NULL DEFAULT ''"),
+            ("ics", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            let exists: bool = tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('events') WHERE name = ?1", [column], |r| r.get(0))?;
+            if !exists {
+                tx.execute(&format!("ALTER TABLE events ADD COLUMN {column} {definition}"), [])?;
+            }
+        }
+    }
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    tx.commit()?;
+    Ok(())
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         if let Some(parent) = path.parent() {
@@ -224,8 +255,9 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Store> {
+    fn init(mut conn: Connection) -> Result<Store> {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        let fresh = conn.query_row("SELECT COUNT(*) = 0 FROM sqlite_master", [], |r| r.get::<_, bool>(0))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -256,6 +288,7 @@ impl Store {
                  PRIMARY KEY (folder, uid)
              );
              CREATE INDEX IF NOT EXISTS messages_by_date ON messages(folder, date DESC);
+             -- Joined on messages' implicit rowid: VACUUM keeps it (tested), a table rebuild must copy it.
              CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(subject, sender, body);
              CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
                  DELETE FROM messages_fts WHERE rowid = old.rowid;
@@ -300,26 +333,10 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS events_by_start ON events(start);",
         )?;
-        // Caches from before folder_sync hold one contiguous window per folder.
-        if conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 0 {
-            conn.execute_batch(
-                "INSERT OR IGNORE INTO folder_sync (folder, synced_from) SELECT folder, MIN(uid) FROM messages GROUP BY folder;
-                 PRAGMA user_version = 1;",
-            )?;
-        }
-        // Caches from before a column existed get it; "duplicate column" means it is there.
-        for column in [
-            "href TEXT NOT NULL DEFAULT ''",
-            "recurring INTEGER NOT NULL DEFAULT 0",
-            "attendees TEXT NOT NULL DEFAULT ''",
-            "ics TEXT NOT NULL DEFAULT ''",
-        ] {
-            match conn.execute(&format!("ALTER TABLE events ADD COLUMN {column}"), []) {
-                Err(e) if e.to_string().contains("duplicate column") => {}
-                result => {
-                    result?;
-                }
-            }
+        if fresh {
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        } else {
+            migrate(&mut conn)?;
         }
         Ok(Store { conn })
     }
@@ -971,6 +988,19 @@ mod tests {
         // Opening again finds the columns there.
         drop(store);
         Store::open(&path).unwrap();
+    }
+
+    #[test]
+    fn search_survives_vacuum() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.sync_folders(&[("INBOX".into(), None, Role::Inbox)]).unwrap();
+        let message = |uid: u32, subject: &str| MessageSummary { folder: "INBOX".into(), uid, subject: subject.into(), ..Default::default() };
+        store.upsert_messages(&[message(1, "Gone"), message(2, "Lunch plans")]).unwrap();
+        // A gap in the rowids, which a VACUUM that renumbered them would close.
+        store.delete_messages("INBOX", &[1]).unwrap();
+        store.conn.execute_batch("VACUUM").unwrap();
+        let found: Vec<u32> = store.search("lunch", 10).unwrap().into_iter().map(|m| m.uid).collect();
+        assert_eq!(found, [2]);
     }
 
     #[test]
