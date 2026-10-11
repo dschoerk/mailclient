@@ -208,37 +208,78 @@ export component MessageRow inherits Rectangle {
     property <length> offset: swipe.swiping ? swipe.current-position.x - swipe.pressed-position.x : 0;
     // Far enough that letting go acts; a short swipe springs back.
     property <bool> armed: root.flying != 0 || abs(root.offset) > root.width * SwipeTuning.distance;
-    // Finger speed while swiping, in px per ms (signed), from samples at least 8 ms apart.
-    property <length> last-x;
-    property <duration> last-t;
+    // Finger speed while swiping, in px per ms (signed), over the last 25 to 50 ms:
+    // measured from an older sample that trails the finger, not between single events.
+    property <length> anchor-x;
+    property <duration> anchor-t;
+    property <length> mid-x;
+    property <duration> mid-t;
     property <float> speed;
     property <bool> tracking;
     // A counted swipe: the row slides out that way (1 archive, -1 delete), then `swiped` fires.
     property <int> flying;
     property <bool> flown;
-    // A reused row instance jumps back instead of sliding in from the side.
-    property <bool> snap;
+    // Where the row rests when nobody holds it.
+    property <length> rest: root.flying != 0 ? (abs(root.flying) == 2 ? root.flying / 2 : root.flying) * root.width : 0;
+    // After letting go the row glides to `rest`: it leaves at the finger's speed and slows to a stop.
+    property <bool> gliding;
+    property <length> glide-from;
+    // The start speed times the glide time, in px.
+    property <float> glide-move;
+    property <duration> glide-time;
+    property <duration> glide-start;
+    // How far through the glide, 0 to 1. Reads the animation tick only while gliding, so an idle row draws no frames.
+    property <float> glide-s: root.gliding ? min(1, (animation-tick() - root.glide-start) / root.glide-time) : 1;
     changed msg => {
-        root.snap = true;
+        root.gliding = false;
         root.flying = 0;
         root.flown = false;
     }
 
     function track(x: length) {
+        let now = animation-tick();
         if !root.tracking {
             root.tracking = true;
-            root.snap = false;
+            root.gliding = false;
             root.speed = 0;
-            root.last-x = swipe.pressed-position.x;
-            root.last-t = animation-tick();
+            // From here, not the press: the first 100 ms of the finger's travel arrive in one jump.
+            root.anchor-x = x;
+            root.anchor-t = now;
+            root.mid-x = x;
+            root.mid-t = now;
         }
-        let dt = (animation-tick() - root.last-t) / 1ms;
-        if dt >= 8 {
-            let v = (x - root.last-x) / 1px / dt;
-            root.speed = root.speed == 0 ? v : 0.6 * v + 0.4 * root.speed;
-            root.last-x = x;
-            root.last-t = animation-tick();
+        if now - root.mid-t >= 25ms {
+            root.anchor-x = root.mid-x;
+            root.anchor-t = root.mid-t;
+            root.mid-x = x;
+            root.mid-t = now;
         }
+        root.speed = root.speed-at(x);
+    }
+
+    // Speed from the trailing sample to `x` now; a finger that stopped before letting go has none left.
+    function speed-at(x: length) -> float {
+        let dt = (animation-tick() - root.anchor-t) / 1ms;
+        return dt <= 0 ? root.speed : (x - root.anchor-x) / 1px / dt;
+    }
+
+    // Let go at `from` moving `v` px per ms: glide to `rest` (a cubic that starts at that speed and ends still).
+    function glide(from: length, v: float) {
+        let d = (root.rest - from) / 1px;
+        if d == 0 {
+            root.gliding = false;
+            return;
+        }
+        let toward = d > 0 ? v : -v;
+        // Slowing evenly to a stop covers the distance in twice the time the start speed would.
+        let t = max(100, min(250, 2 * abs(d) / max(toward, 1)));
+        // More start speed than that overshoots: allow 3x the distance toward `rest`, 1x away from it.
+        let limit = (toward > 0 ? 3 : 1) * abs(d);
+        root.glide-move = max(-limit, min(limit, v * t));
+        root.glide-from = from;
+        root.glide-time = t * 1ms;
+        root.glide-start = animation-tick();
+        root.gliding = true;
     }
 
     // 1 archive, -1 delete, 0 spring back. `v`: release speed in px per ms.
@@ -264,7 +305,6 @@ export component MessageRow inherits Rectangle {
             return;
         }
         if SwipeTuning.fly-out {
-            root.snap = false;
             root.flying = dir;
         } else if abs(dir) == 2 {
             root.more();
@@ -336,23 +376,30 @@ export component MessageRow inherits Rectangle {
         handle-swipe-left: true;
         handle-swipe-right: true;
         moved => { root.track(self.current-position.x); }
-        cancelled => { root.tracking = false; }
+        cancelled => {
+            root.tracking = false;
+            root.glide(self.current-position.x - self.pressed-position.x, 0);
+        }
         // Released after `swiping` ends: measure from the positions.
         swiped => {
             root.tracking = false;
-            // A finger that stopped before letting go has no speed left.
-            let v = animation-tick() - root.last-t > 80ms ? 0 : root.speed;
-            root.act(root.decide(self.current-position.x - self.pressed-position.x, v));
+            let dx = self.current-position.x - self.pressed-position.x;
+            let v = root.speed-at(self.current-position.x);
+            root.act(root.decide(dx, v));
+            root.glide(dx, v);
         }
         Timer {
-            interval: 160ms;
-            running: root.flying != 0 && !root.flown;
+            interval: root.glide-time;
+            running: root.gliding;
             triggered => {
-                root.flown = true;
-                if abs(root.flying) == 2 {
-                    root.more();
-                } else {
-                    root.swiped(root.flying > 0);
+                root.gliding = false;
+                if root.flying != 0 && !root.flown {
+                    root.flown = true;
+                    if abs(root.flying) == 2 {
+                        root.more();
+                    } else {
+                        root.swiped(root.flying > 0);
+                    }
                 }
             }
         }
@@ -361,17 +408,21 @@ export component MessageRow inherits Rectangle {
             interval: 1200ms;
             running: root.flown;
             triggered => {
+                let from = root.rest;
                 root.flying = 0;
                 root.flown = false;
+                root.glide(from, 0);
             }
         }
         front := Rectangle {
             visible: !root.removed;
-            x: root.flying != 0 ? (abs(root.flying) == 2 ? root.flying / 2 : root.flying) * root.width : root.offset;
+            x: root.gliding ? root.glide-from * (2 * root.glide-s * root.glide-s * root.glide-s - 3 * root.glide-s * root.glide-s + 1)
+                    + root.glide-move * 1px * (root.glide-s * root.glide-s * root.glide-s - 2 * root.glide-s * root.glide-s + root.glide-s)
+                    + root.rest * (3 * root.glide-s * root.glide-s - 2 * root.glide-s * root.glide-s * root.glide-s)
+                : swipe.swiping ? root.offset : root.rest;
             width: root.width;
             height: root.height;
             background: Palette.background;
-            animate x { duration: swipe.swiping || root.snap ? 0ms : 150ms; }
             Rectangle {
                 // Expanded, the open message is marked on the timeline instead.
                 background: root.expanded ? Palette.foreground.with-alpha(0.03)
@@ -540,6 +591,7 @@ export component MessageRow inherits Rectangle {
                     let dir = root.swipeable && abs(dx) > 8px ? root.decide(dx, dx / 1px / 100) : 0;
                     if dir != 0 {
                         root.act(dir);
+                        root.glide(0, dx / 1px / 100);
                     // The release that ends a long press is not a click.
                     } else if !root.long-pressed {
                         root.clicked();
