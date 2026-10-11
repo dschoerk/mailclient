@@ -112,8 +112,11 @@ pub struct Tokens {
 /// keeps the stored refresh token current.
 pub struct Credentials {
     account: AccountConfig,
-    state: tokio::sync::Mutex<(String, Vec<(&'static str, String, Instant)>)>,
+    state: tokio::sync::Mutex<(String, AccessTokens)>,
 }
+
+/// (scopes, access token, valid until).
+type AccessTokens = Vec<(&'static str, String, Instant)>;
 
 impl Credentials {
     /// Reads the password or refresh token from the keyring.

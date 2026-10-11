@@ -68,7 +68,7 @@ fn google_sign_in_imap_smtp() {
         imap.logout().await;
 
         let raw = format!("From: {email}\r\nTo: {email}\r\nSubject: mailclient live test {}\r\n\r\nGoogle XOAUTH2 SMTP works.\r\n", stamp());
-        mailcore::smtp::send(&account, &tokens.access, raw.as_bytes(), &[email.clone()]).await.unwrap();
+        mailcore::smtp::send(&account, &tokens.access, raw.as_bytes(), std::slice::from_ref(&email)).await.unwrap();
     });
 }
 

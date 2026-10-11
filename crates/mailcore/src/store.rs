@@ -981,13 +981,13 @@ mod tests {
         let synced = |uid: &str, start: i64| StoredEvent { calendar: "https://dav/cal/".into(), href: format!("https://dav/cal/{uid}.ics"), event: ev(uid, start), ..Default::default() };
         store.add_local_events("BEGIN:VCALENDAR", &[ev("accepted", 1000)]).unwrap();
         let cal = CalendarInfo { id: "https://dav/cal/".into(), name: "Work".into(), color: "#ff0000".into() };
-        store.replace_synced_events(&[cal.clone()], &[synced("a", 5000), synced("b", 90_000)]).unwrap();
-        store.replace_synced_events(&[cal.clone()], &[synced("a", 5000)]).unwrap();
+        store.replace_synced_events(std::slice::from_ref(&cal), &[synced("a", 5000), synced("b", 90_000)]).unwrap();
+        store.replace_synced_events(std::slice::from_ref(&cal), &[synced("a", 5000)]).unwrap();
         let found: Vec<(String, String, String)> =
             store.events(0, 10_000).unwrap().into_iter().map(|s| (s.color, s.href, s.event.uid)).collect();
         assert_eq!(found, [("".into(), "".into(), "accepted".into()), ("#ff0000".into(), "https://dav/cal/a.ics".into(), "a".into())]);
         assert_eq!(store.events(0, 10_000).unwrap()[1].calendar_name, "Work");
-        assert_eq!(store.events(0, 10_000).unwrap()[1].event.attendees, [max.clone()]);
+        assert_eq!(store.events(0, 10_000).unwrap()[1].event.attendees, std::slice::from_ref(&max));
         assert_eq!(store.calendars().unwrap(), [cal]);
         // A newer copy of a local event replaces the old one.
         store.add_local_events("BEGIN:VCALENDAR\r\nX", &[ev("accepted", 2000)]).unwrap();

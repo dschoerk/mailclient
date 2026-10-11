@@ -873,7 +873,7 @@ DTSTART:20261101T150000Z\nDURATION:PT45M\nUID:b2@google.com\nSUMMARY:Call\nEND:V
             attendees: vec![Attendee { email: "max@example.org".into(), name: "Max".into(), partstat: "NEEDS-ACTION".into() }],
             ..Default::default()
         };
-        let text = write("REQUEST", &[invite.clone()]);
+        let text = write("REQUEST", std::slice::from_ref(&invite));
         assert!(text.lines().all(|l| l.len() <= 76), "{text}");
         assert!(text.replace("\r\n ", "").contains("ATTENDEE;CN=\"Max\";ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:max@example.org"));
         let back = parse(&text);

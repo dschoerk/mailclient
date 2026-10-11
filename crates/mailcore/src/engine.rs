@@ -36,6 +36,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
 const CALENDAR_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
+// Commands are few and short-lived; boxing the event variants would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Command {
     /// Refresh the folder list, the inbox, Sent and the active folder.
@@ -281,13 +283,13 @@ impl<B: Backend> Worker<B> {
             // Sending is never retried: SMTP may already have delivered it.
             let retry = (!matches!(command, Command::Send { .. })).then(|| command.clone());
             let mut result = self.handle(command).await;
-            if let (Err(e), Some(command)) = (&result, retry) {
-                if !B::is_rejection(e) {
-                    // Usually a connection the server dropped while idle: reconnect and try again once.
-                    log::info!("engine: {e:#}; reconnecting");
-                    self.conn = None;
-                    result = self.handle(command).await;
-                }
+            if let (Err(e), Some(command)) = (&result, retry)
+                && !B::is_rejection(e)
+            {
+                // Usually a connection the server dropped while idle: reconnect and try again once.
+                log::info!("engine: {e:#}; reconnecting");
+                self.conn = None;
+                result = self.handle(command).await;
             }
             log::debug!("engine: {name} done in {:?}", started.elapsed());
             if let Err(e) = result {

@@ -62,7 +62,7 @@ fn ms_sign_in_imap_smtp() {
         let access = creds.secret().await.unwrap();
         // Sending first: it tells apart a blocked mailbox from an IMAP-only problem.
         let raw = format!("From: {email}\r\nTo: {email}\r\nSubject: mailclient live test {}\r\n\r\nMicrosoft XOAUTH2 SMTP works.\r\n", stamp());
-        mailcore::smtp::send(&account, &access, raw.as_bytes(), &[email.clone()]).await.unwrap();
+        mailcore::smtp::send(&account, &access, raw.as_bytes(), std::slice::from_ref(&email)).await.unwrap();
 
         let mut imap = Imap::connect(&account, &access).await.unwrap();
         let folders = imap.list_folders().await.unwrap();

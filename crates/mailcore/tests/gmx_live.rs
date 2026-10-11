@@ -32,6 +32,6 @@ fn gmx_password_imap_smtp() {
 
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let raw = format!("From: {email}\r\nTo: {email}\r\nSubject: mailclient live test {stamp}\r\n\r\nGMX SMTP works.\r\n");
-        mailcore::smtp::send(&account, &password, raw.as_bytes(), &[email.clone()]).await.unwrap();
+        mailcore::smtp::send(&account, &password, raw.as_bytes(), std::slice::from_ref(&email)).await.unwrap();
     });
 }
