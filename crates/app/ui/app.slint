@@ -64,6 +64,9 @@ export component AppWindow inherits Window {
     in property <bool> searching;
 
     in property <string> status;
+    /// What the last move or delete did, while it can still be undone ("" hides Undo).
+    in property <string> undo-text;
+    callback undo();
     /// Build number, date and profile, shown in the status bar.
     in property <string> version;
     /// A sync the user asked for is running.
@@ -328,6 +331,10 @@ export component AppWindow inherits Window {
             }
             if event.text == "#" || event.text == Key.Delete {
                 if root.checked-count > 0 { root.bulk-action("delete"); } else { root.delete(); }
+                return accept;
+            }
+            if event.text == "z" && root.undo-text != "" {
+                root.undo();
                 return accept;
             }
             if event.text == "u" {
@@ -1059,11 +1066,22 @@ export component AppWindow inherits Window {
                 height: 1px;
             }
             HorizontalLayout {
-                height: 24px;
+                // Taller while Undo is offered: a finger-sized button.
+                height: root.undo-text != "" ? 36px : 24px;
                 padding-left: 10px;
                 padding-right: 10px;
                 spacing: 8px;
-                Text {
+                if root.undo-text != "": Text {
+                    text: root.undo-text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                if root.undo-text != "": ToolButton {
+                    text: "Undo";
+                    clicked => { root.undo(); }
+                }
+                if root.undo-text == "": Text {
                     text: root.status;
                     color: Theme.muted;
                     font-size: 12px;

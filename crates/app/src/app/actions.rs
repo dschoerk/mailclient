@@ -2,21 +2,74 @@
 
 use super::*;
 
+/// How long Undo is offered after a move or delete; the server hears of it afterwards.
+const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Controller {
     // ---- changing messages ----
 
-    /// Applies a change locally right away and queues it for the server.
+    /// Applies a change locally right away and queues it for the server. Moves and deletes are
+    /// held back for [`UNDO_WINDOW`] while Undo is offered.
     pub(super) fn apply(&self, account: usize, messages: &[MessageSummary], op: PendingOp) {
+        let held = matches!(op, PendingOp::Move(_) | PendingOp::Expunge);
+        // Whole seconds round down: one more keeps the change back for the full window.
+        let ready_at = if held { mailcore::store::now() + UNDO_WINDOW.as_secs() as i64 + 1 } else { 0 };
         let result = match self.state.borrow_mut().accounts.get_mut(account) {
-            Some(a) => messages.iter().try_for_each(|m| a.store.apply_local(&m.folder, m.uid, &op)),
+            Some(a) => messages.iter().map(|m| a.store.apply_local_until(&m.folder, m.uid, &op, ready_at)).collect::<Result<Vec<_>, _>>(),
             None => return,
         };
-        if let Err(e) = result {
-            return self.show_error(&e);
+        let ids = match result {
+            Ok(ids) => ids,
+            Err(e) => return self.show_error(&e),
+        };
+        self.reload_messages();
+        self.reload_folders();
+        if !held {
+            return self.send(account, Command::Flush);
+        }
+        let text = match &op {
+            PendingOp::Expunge => "Deleted forever".to_string(),
+            PendingOp::Move(dest) => match self.state.borrow().accounts[account].store.folder_role(dest) {
+                Ok(mailcore::store::Role::Trash) => "Deleted".to_string(),
+                _ => format!("Moved to {dest}"),
+            },
+            _ => unreachable!(),
+        };
+        self.state.borrow_mut().undoable.push((account, ids));
+        self.window().set_undo_text(text.into());
+        self.undo_timer.start(slint::TimerMode::SingleShot, UNDO_WINDOW + std::time::Duration::from_secs(1), || {
+            with_controller(|c| {
+                c.state.borrow_mut().undoable.clear();
+                c.window().set_undo_text("".into());
+                // Also sends held changes of earlier actions that this one's offer replaced.
+                for account in 0..c.state.borrow().accounts.len() {
+                    c.send(account, Command::Flush);
+                }
+            });
+        });
+    }
+
+    /// Takes back the last move or delete, if it has not reached the server yet.
+    pub(super) fn undo(&self) {
+        self.undo_timer.stop();
+        self.window().set_undo_text("".into());
+        let batches = std::mem::take(&mut self.state.borrow_mut().undoable);
+        let mut undone = 0;
+        for (account, ids) in batches {
+            match self.state.borrow().accounts.get(account).map(|a| a.store.undo(&ids)) {
+                Some(Ok(n)) => undone += n,
+                Some(Err(e)) => self.show_error(&e),
+                None => {}
+            }
         }
         self.reload_messages();
         self.reload_folders();
-        self.send(account, Command::Flush);
+        self.set_status(if undone > 0 { "Undone" } else { "Too late to undo: already on the server" });
+    }
+
+    /// A new move or delete replaces the Undo offer; the earlier one's changes are sent when it ends.
+    fn new_undo_offer(&self) {
+        self.state.borrow_mut().undoable.clear();
     }
 
     pub(super) fn toggle_selected(&self, flag: bool) {
@@ -48,6 +101,7 @@ impl Controller {
             Err(e) => return self.show_error(&e),
         };
         // Select the message that takes this one's place, like most mail clients.
+        self.new_undo_offer();
         self.apply(account, &targets, op);
         let count = self.state.borrow().messages.len();
         if count > 0 {
@@ -144,6 +198,7 @@ impl Controller {
                 None => batches.push((account, op, targets)),
             }
         }
+        self.new_undo_offer();
         for (account, op, targets) in batches {
             self.apply(account, &targets, op);
         }

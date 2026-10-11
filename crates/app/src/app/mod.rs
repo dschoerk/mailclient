@@ -161,6 +161,8 @@ struct State {
     form_attendees: Vec<mailcore::ical::Attendee>,
     /// The last calendar error of each account (by engine id), until its calendar works again.
     calendar_errors: HashMap<u64, String>,
+    /// The queued changes of the last move or delete, per account, while Undo is offered.
+    undoable: Vec<(usize, Vec<i64>)>,
 }
 
 impl State {
@@ -197,6 +199,8 @@ pub struct Controller {
     next_account_id: std::cell::Cell<u64>,
     /// Holds off the server search until typing pauses.
     search_timer: slint::Timer,
+    /// Ends the Undo offer and sends the held changes.
+    undo_timer: slint::Timer,
     #[cfg(feature = "servo")]
     viewer: RefCell<Option<Rc<crate::webview::MailView>>>,
 }
@@ -215,6 +219,7 @@ impl Controller {
             next_send_id: std::cell::Cell::new(1),
             next_account_id: std::cell::Cell::new(1),
             search_timer: slint::Timer::default(),
+            undo_timer: slint::Timer::default(),
             #[cfg(feature = "servo")]
             viewer: RefCell::new(None),
         });
@@ -354,6 +359,7 @@ impl Controller {
         });
         on!(on_archive, |c| c.remove_selected(true));
         on!(on_delete, |c| c.remove_selected(false));
+        on!(on_undo, |c| c.undo());
         on!(on_toggle_seen, |c| c.toggle_selected(false));
         on!(on_toggle_flag, |c| c.toggle_selected(true));
         on!(on_load_remote_images, |c| c.load_remote_images());

@@ -498,7 +498,13 @@ impl<B: Backend> Worker<B> {
         for (id, folder, uid, op) in ops {
             let result = self.conn().await?.apply(&folder, uid, &op).await;
             match result {
-                Ok(()) => self.store.remove_pending_op(id)?,
+                Ok(()) => {
+                    // Hidden while queued; the destination copy shows up with its new UID on the next sync.
+                    if let PendingOp::Move(_) | PendingOp::Expunge = op {
+                        self.store.delete_messages(&folder, &[uid])?;
+                    }
+                    self.store.remove_pending_op(id)?;
+                }
                 // The server refused (message gone, folder missing): retrying won't help.
                 Err(e) if B::is_rejection(&e) => {
                     log::warn!("dropping {op:?} on {folder}/{uid}: {e:#}");
@@ -941,7 +947,7 @@ mod tests {
         let op = delete_op(&worker.store, "INBOX").unwrap();
         assert_eq!(op, PendingOp::Move("Trash".into()));
         worker.store.apply_local("INBOX", 1, &op).unwrap();
-        assert!(cached(&worker).is_empty());
+        assert!(worker.store.messages("INBOX", 10).unwrap().is_empty());
 
         server(|s| s.apply_errors.push(Refused.into()));
         worker.execute(Command::Flush).await;

@@ -133,7 +133,7 @@ fn send_sync_flag_delete_idle() {
 
     // A move the server refuses puts the message back instead of losing it locally.
     store.apply_local("INBOX", msg.uid, &PendingOp::Move("No such folder".into())).unwrap();
-    assert!(store.message("INBOX", msg.uid).unwrap().is_none());
+    assert!(!store.messages("INBOX", 500).unwrap().iter().any(|m| m.uid == msg.uid), "moved message still listed");
     engine.send(Command::Flush);
     wait_until("refused move dropped", || store.pending_ops().unwrap().is_empty());
     assert!(store.message("INBOX", msg.uid).unwrap().is_some(), "refused move lost the message");

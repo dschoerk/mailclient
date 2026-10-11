@@ -25,7 +25,8 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Read, flag, mark read/unread, archive, delete, also for several conversations at once
   (tick them at the row's left edge, by long press on phones, or with `x`); on phones a row swiped
   right is archived, swiped left deleted. Changes apply instantly and are
-  queued for the server, so they also work offline.
+  queued for the server, so they also work offline. Archiving and deleting can be undone for
+  5 seconds (Undo in the status bar, or `z`); only then are they sent.
 - Full-text search (SQLite FTS5) over subject, sender and downloaded bodies; `from:address`
   limits it to one sender, and clicking the sender of an open message lists all of their mail.
 - Compose, reply, reply all and forward (including attachments) as plain text, with
@@ -52,7 +53,7 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
   send invitations that Gmail, Outlook and Apple Mail show with their answer buttons (Microsoft
   accounts let Exchange send them).
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,
-  `#`/Delete delete, `u` read/unread, `s` flag, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search,
+  `#`/Delete delete, `u` read/unread, `s` flag, `z` undo archive/delete, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search,
   Ctrl+U view source, Ctrl+P print, Ctrl+Enter send.
 - Open a message file without an account: `mailclient message.eml`.
 

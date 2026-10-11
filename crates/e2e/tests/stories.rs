@@ -469,3 +469,29 @@ fn conversation_scroll() {
     e2e::device_screenshot("conversation_scroll_top");
     assert_eq!(seen, ["Carol", "Bob", "Alice"], "highlight did not step through the conversation");
 }
+
+/// An archived conversation comes back with Undo; the server never sees the move.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn undo_archive() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    deliver(&account, ("Finn", "finn@example.org"), "Undo me", "Not yet.");
+    let app = App::launch();
+    app.set_up(&account);
+    if android() {
+        app.swipe_across("Finn: Undo me", "ListItem", 0.45);
+    } else {
+        app.click("Finn: Undo me", "ListItem");
+        app.click("Archive", "Button");
+    }
+    app.wait_until("row gone", || !app.exists("Finn: Undo me", "ListItem"));
+    app.screenshot("undo_offer");
+    app.click("Undo", "Button");
+    app.wait_for("Finn: Undo me", "ListItem");
+    // Past the Undo window: the held move must not have been sent.
+    std::thread::sleep(std::time::Duration::from_secs(8));
+    assert_eq!(server_subjects(&account, "INBOX"), ["Undo me"]);
+    assert!(server_subjects(&account, "Archive").is_empty(), "undone move reached the server");
+}

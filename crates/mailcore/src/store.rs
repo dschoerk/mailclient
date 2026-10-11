@@ -213,7 +213,14 @@ fn summary_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
 }
 
 /// Schema version of a new cache; [`migrate`] brings older ones up to it.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+
+/// SQL condition on a message `m`: not waiting to be moved away or deleted.
+const KEPT: &str = "NOT EXISTS (SELECT 1 FROM pending_ops p WHERE p.folder = m.folder AND p.uid = m.uid AND p.kind IN ('move', 'expunge'))";
+
+pub fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
 
 /// Upgrades a cache from an older version, one step per version, in one transaction. The steps
 /// are history: they spell out the schema of their time instead of reusing today's.
@@ -236,6 +243,13 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             if !exists {
                 tx.execute(&format!("ALTER TABLE events ADD COLUMN {column} {definition}"), [])?;
             }
+        }
+    }
+    if version < 3 {
+        // A cache older than pending_ops got the table, column included, from init.
+        let exists: bool = tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('pending_ops') WHERE name = 'ready_at'", [], |r| r.get(0))?;
+        if !exists {
+            tx.execute("ALTER TABLE pending_ops ADD COLUMN ready_at INTEGER NOT NULL DEFAULT 0", [])?;
         }
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -304,7 +318,9 @@ impl Store {
                  folder TEXT NOT NULL,
                  uid INTEGER NOT NULL,
                  kind TEXT NOT NULL,
-                 arg TEXT NOT NULL DEFAULT ''
+                 arg TEXT NOT NULL DEFAULT '',
+                 -- Unix seconds; until then the change can still be undone and is not sent.
+                 ready_at INTEGER NOT NULL DEFAULT 0
              );
              CREATE TABLE IF NOT EXISTS calendars (
                  id TEXT PRIMARY KEY,
@@ -373,12 +389,12 @@ impl Store {
     }
 
     pub fn folders(&self) -> Result<Vec<Folder>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT f.name, f.delimiter, f.role,
-                    (SELECT COUNT(*) FROM messages m WHERE m.folder = f.name AND m.seen = 0),
-                    (SELECT COUNT(*) FROM messages m WHERE m.folder = f.name)
-             FROM folders f",
-        )?;
+                    (SELECT COUNT(*) FROM messages m WHERE m.folder = f.name AND m.seen = 0 AND {KEPT}),
+                    (SELECT COUNT(*) FROM messages m WHERE m.folder = f.name AND {KEPT})
+             FROM folders f"
+        ))?;
         let mut folders: Vec<Folder> = stmt
             .query_map([], |r| {
                 Ok(Folder {
@@ -618,7 +634,7 @@ impl Store {
 
     pub fn messages(&self, folder: &str, limit: usize) -> Result<Vec<MessageSummary>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {SUMMARY_COLUMNS} FROM messages WHERE folder = ?1 ORDER BY date DESC, uid DESC LIMIT ?2"
+            "SELECT {SUMMARY_COLUMNS} FROM messages m WHERE folder = ?1 AND {KEPT} ORDER BY date DESC, uid DESC LIMIT ?2"
         ))?;
         let rows = stmt
             .query_map(params![folder, limit as i64], summary_from_row)?
@@ -630,7 +646,7 @@ impl Store {
     pub fn all_messages(&self) -> Result<Vec<MessageSummary>> {
         let mut stmt = self
             .conn
-            .prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM messages"))?;
+            .prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM messages m WHERE {KEPT}"))?;
         let rows = stmt
             .query_map([], summary_from_row)?
             .collect::<Result<_, _>>()?;
@@ -668,7 +684,7 @@ impl Store {
             "SELECT {columns} FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?1"
         };
         let mut stmt = self.conn.prepare(&format!(
-            "{} AND (?2 IS NULL OR lower(m.from_addr) = ?2) ORDER BY m.date DESC LIMIT ?3",
+            "{} AND {KEPT} AND (?2 IS NULL OR lower(m.from_addr) = ?2) ORDER BY m.date DESC LIMIT ?3",
             text.replace("{columns}", &columns)
         ))?;
         let rows = stmt
@@ -743,7 +759,13 @@ impl Store {
     // ---- local changes ----
 
     /// Applies a change to the cache immediately and queues it for the server.
-    pub fn apply_local(&mut self, folder: &str, uid: u32, op: &PendingOp) -> Result<()> {
+    pub fn apply_local(&mut self, folder: &str, uid: u32, op: &PendingOp) -> Result<i64> {
+        self.apply_local_until(folder, uid, op, 0)
+    }
+
+    /// The same, held back from the server until `ready_at` (Unix seconds) so [`Store::undo`] can take it back.
+    /// Returns the queued change's id.
+    pub fn apply_local_until(&mut self, folder: &str, uid: u32, op: &PendingOp, ready_at: i64) -> Result<i64> {
         match op {
             PendingOp::SetSeen(v) => {
                 self.conn.execute(
@@ -763,28 +785,34 @@ impl Store {
                     params![folder, uid],
                 )?;
             }
-            // The destination copy shows up with its new UID on the next sync.
-            PendingOp::Move(_) | PendingOp::Expunge => {
-                self.conn.execute(
-                    "DELETE FROM messages WHERE folder = ?1 AND uid = ?2",
-                    params![folder, uid],
-                )?;
-            }
+            // Hidden from the lists while queued (see KEPT); the engine deletes it once the server has moved it.
+            PendingOp::Move(_) | PendingOp::Expunge => {}
         }
         let (kind, arg) = op.encode();
         self.conn.execute(
-            "INSERT INTO pending_ops (folder, uid, kind, arg) VALUES (?1, ?2, ?3, ?4)",
-            params![folder, uid, kind, arg],
+            "INSERT INTO pending_ops (folder, uid, kind, arg, ready_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![folder, uid, kind, arg, ready_at],
         )?;
-        Ok(())
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Takes back queued changes not sent yet; returns how many were. A moved or deleted message
+    /// reappears; flags stay as they are (undo of those is not offered).
+    pub fn undo(&self, ids: &[i64]) -> Result<usize> {
+        let mut stmt = self.conn.prepare("DELETE FROM pending_ops WHERE id = ?1")?;
+        let mut undone = 0;
+        for id in ids {
+            undone += stmt.execute([id])?;
+        }
+        Ok(undone)
     }
 
     pub fn pending_ops(&self) -> Result<Vec<(i64, String, u32, PendingOp)>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, folder, uid, kind, arg FROM pending_ops ORDER BY id")?;
+            .prepare("SELECT id, folder, uid, kind, arg FROM pending_ops WHERE ready_at <= ?1 ORDER BY id")?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map([now()], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -1184,7 +1212,20 @@ mod tests {
         store
             .apply_local("INBOX", 1, &PendingOp::Move("Trash".into()))
             .unwrap();
-        assert!(store.message("INBOX", 1).unwrap().is_none());
+        assert!(store.messages("INBOX", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn held_move_hides_until_undone() {
+        let mut store = store_with_inbox();
+        store.upsert_messages(&[msg(1, "a")]).unwrap();
+        let id = store.apply_local_until("INBOX", 1, &PendingOp::Move("Trash".into()), now() + 60).unwrap();
+        assert!(store.messages("INBOX", 10).unwrap().is_empty());
+        assert!(store.all_messages().unwrap().is_empty());
+        assert!(store.pending_ops().unwrap().is_empty(), "held op sent before its time");
+        assert_eq!(store.undo(&[id]).unwrap(), 1);
+        assert_eq!(store.messages("INBOX", 10).unwrap().len(), 1);
+        assert_eq!(store.undo(&[id]).unwrap(), 0);
     }
 
     #[test]
