@@ -178,6 +178,8 @@ export component AppWindow inherits Window {
     in property <[string]> event-from-options;
     in-out property <int> event-from-index;
     in property <string> event-error;
+    /// Calendar sync or save failures, shown on the calendar page until they clear.
+    in property <string> calendar-error;
     callback open-calendar();
     callback calendar-set-view(int);
     callback calendar-shift(int);
@@ -1187,6 +1189,7 @@ export component AppWindow inherits Window {
         from-options: root.event-from-options;
         from-index <=> root.event-from-index;
         error: root.event-error;
+        sync-error: root.calendar-error;
         narrow: root.narrow;
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;

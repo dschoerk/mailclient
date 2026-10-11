@@ -809,6 +809,23 @@ fn user_stories() {
             wait_for("cancellation at the attendee", || !server_bodies(&second, "INBOX", "Cancelled: Design sync (moved)").is_empty()).await?;
             w.set_show_calendar(false);
 
+            // A calendar that cannot be reached says so on the calendar page, until it works again.
+            let set_calendar_url = |url: &str| -> Outcome {
+                click(&w, "Settings")?;
+                click(&w, "Edit")?;
+                type_in(&w, "Calendar", url)?;
+                click(&w, "Save")
+            };
+            set_calendar_url("http://localhost:9/")?;
+            wait_for("account saved", || !w.get_needs_setup()).await?;
+            click(&w, "Close")?;
+            wait_for("calendar error shown", || w.get_calendar_error().contains("localhost")).await
+                .map_err(|e| format!("{e}; banner: {:?}", w.get_calendar_error()))?;
+            set_calendar_url("")?;
+            wait_for("account saved", || !w.get_needs_setup()).await?;
+            click(&w, "Close")?;
+            wait_for("calendar error cleared", || w.get_calendar_error().is_empty()).await?;
+
             // Outlook writes names as "Last, First": the answer must still reach the organizer.
             let jane = test_account(&format!("jane-{user}"));
             let invite = mailcore::ical::Event {

@@ -90,6 +90,8 @@ pub enum Event {
     SendFailed(u64, String),
     DraftSaved(u64),
     CalendarChanged,
+    /// A calendar sync or change failed; the next success clears it.
+    CalendarFailed(String),
 }
 
 pub struct Engine {
@@ -249,7 +251,7 @@ impl<B: Backend> Worker<B> {
             if matches!(command, Command::SyncCalendars | Command::SaveEvent { .. } | Command::UpdateEvent { .. } | Command::DeleteEvent { .. }) {
                 if let Err(e) = self.calendar(command).await {
                     log::warn!("calendar: {e:#}");
-                    self.emit(Event::Error(format!("Calendar: {e:#}")));
+                    self.emit(Event::CalendarFailed(format!("{e:#}")));
                 }
                 continue;
             }

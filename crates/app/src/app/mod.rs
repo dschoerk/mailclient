@@ -157,6 +157,8 @@ struct State {
     /// The event open in the calendar's side panel, and the one the form edits (none: a new one).
     calendar_open: Option<calendar::Shown>,
     calendar_editing: Option<calendar::Shown>,
+    /// The last calendar error of each account (by engine id), until its calendar works again.
+    calendar_errors: HashMap<u64, String>,
 }
 
 impl State {
@@ -480,7 +482,16 @@ impl Controller {
                     self.set_status(format!("⚠ {error}"));
                 }
             }
-            Event::CalendarChanged => self.render_calendar(),
+            Event::CalendarChanged => {
+                self.state.borrow_mut().calendar_errors.remove(&id);
+                self.show_calendar_errors();
+                self.render_calendar();
+            }
+            Event::CalendarFailed(e) => {
+                self.set_status(format!("⚠ Calendar: {e}"));
+                self.state.borrow_mut().calendar_errors.insert(id, e);
+                self.show_calendar_errors();
+            }
             Event::DraftSaved(id) => {
                 let composer = self.composer.borrow().clone();
                 if let Some(composer) = composer {

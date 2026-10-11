@@ -564,6 +564,8 @@ export component CalendarView inherits Rectangle {
     in property <[string]> from-options;
     in-out property <int> from-index;
     in property <string> error;
+    /// Why the calendar does not sync or did not save; empty when it works.
+    in property <string> sync-error;
     /// Phones: the side panel replaces the calendar while it is in use.
     in property <bool> narrow;
     /// Phones: room for the status and navigation bars.
@@ -643,6 +645,23 @@ export component CalendarView inherits Rectangle {
         }
         Divider {
             height: 1px;
+        }
+        if root.sync-error != "": Rectangle {
+            background: #d33.with-alpha(0.12);
+            HorizontalLayout {
+                padding: 10px;
+                spacing: 8px;
+                Text {
+                    text: "⚠";
+                    color: #d33;
+                }
+                Text {
+                    text: root.sync-error;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    accessible-role: text;
+                }
+            }
         }
         if !root.narrow || !(root.editing || root.showing-event): HorizontalLayout {
             vertical-stretch: 1;

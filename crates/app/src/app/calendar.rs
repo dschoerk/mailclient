@@ -191,6 +191,21 @@ impl Controller {
         }
     }
 
+    /// The calendar page's banner: each failing account's last error.
+    pub(super) fn show_calendar_errors(&self) {
+        let state = self.state.borrow();
+        let several = state.accounts.len() > 1;
+        let lines: Vec<String> = state
+            .accounts
+            .iter()
+            .filter_map(|a| {
+                let e = state.calendar_errors.get(&a.id)?;
+                Some(if several { format!("{}: {e}", a.config.email) } else { e.clone() })
+            })
+            .collect();
+        self.window().set_calendar_error(lines.join("\n").into());
+    }
+
     pub(super) fn sync_calendars(&self) {
         for account in &self.state.borrow().accounts {
             account.engine.send(Command::SyncCalendars);
