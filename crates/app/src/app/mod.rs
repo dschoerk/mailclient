@@ -62,6 +62,31 @@ pub(crate) fn scrolled_to_later(index: i32) {
     });
 }
 
+#[cfg_attr(not(target_os = "android"), allow(unused_imports))]
+pub(crate) use setup::db_path;
+
+/// Notification for mail that just arrived.
+pub(crate) fn notify_new_mail(messages: &[MessageSummary]) {
+    let (title, body) = match messages {
+        [m] => (format::person(&m.from_name, &m.from_addr), m.subject.clone()),
+        _ => (
+            format!("{} new messages", messages.len()),
+            messages.iter().map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"),
+        ),
+    };
+    crate::platform::notify(&title, &body);
+}
+
+/// Syncs every account now, from any thread (Android: the app came back to the front).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn sync_now() {
+    with_controller(|c| {
+        for account in &c.state.borrow().accounts {
+            account.engine.send(Command::SyncAll);
+        }
+    });
+}
+
 /// Runs `f` on the UI thread with the controller, from any thread.
 fn with_controller(f: impl FnOnce(&Rc<Controller>) + Send + 'static) {
     let _ = slint::invoke_from_event_loop(move || {
@@ -378,16 +403,7 @@ impl Controller {
             }
             Event::FoldersChanged => self.reload_folders(),
             Event::NewMail(_) if !self.window().get_notifications() => {}
-            Event::NewMail(messages) => {
-                let (title, body) = match messages.as_slice() {
-                    [m] => (format::person(&m.from_name, &m.from_addr), m.subject.clone()),
-                    _ => (
-                        format!("{} new messages", messages.len()),
-                        messages.iter().map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"),
-                    ),
-                };
-                crate::platform::notify(&title, &body);
-            }
+            Event::NewMail(messages) => notify_new_mail(&messages),
             Event::MessagesChanged(_) => {
                 let state = self.state.borrow();
                 // Any folder can add to the listed conversations (replies sit in Sent).

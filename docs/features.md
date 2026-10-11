@@ -63,11 +63,11 @@ What the mail client can do today. For ideas that are not built yet see
   when you open them.
 - **New mail** is pushed on the inbox through IMAP IDLE. If that fails, the client checks
   every 5 minutes. The "Sync" button checks right away.
-- **Push on Android in the background**: a foreground service ("Waiting for new mail", a
-  silent notification in the shade) keeps the app running, and IDLE with it. Back on the
-  main screen sends the app to the background instead of closing it. Swiping it away from
-  Recents stops push until the app is opened again. Battery savers and Doze can still
-  delay mail.
+- **New mail on Android in the background**: no push, to save battery. A background job
+  checks the inboxes about every 15 minutes, when Android allows it (Doze batches and
+  delays it), and notifies about new mail. Coming back to the app syncs right away; while
+  it is open, IDLE pushes as on the desktop. The check keeps running after the app is
+  swiped away and after a reboot.
 - **Notifications**: new unread mail arriving in an inbox while the app runs shows a system
   notification (sender and subject; a count for several). Linux desktops get it through the
   freedesktop notification service; Android asks for the permission on first start, and

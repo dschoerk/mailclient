@@ -17,7 +17,7 @@ import java.util.List;
 /**
  * The app's activity: NativeActivity runs the Rust UI; this subclass adds what needs Java
  * callbacks: the system file pickers (their results arrive in onActivityResult, which
- * NativeActivity drops) and the push service, which runs as long as the activity does.
+ * NativeActivity drops), the sync when the app comes back, and the background mail check.
  *
  * Called from Rust on any thread. One picker at a time; its result goes to onResult.
  */
@@ -53,27 +53,32 @@ public final class MainActivity extends NativeActivity {
         });
     }
 
-    /** Activities alive; a new one can start before the one it replaces is destroyed. UI thread only. */
-    private static int alive;
+    /** Syncs every account (Rust side); registered once the Rust UI runs. */
+    static native void onResumed();
 
-    /** Keeps the process running (and IMAP IDLE with it) while the app is in the background. */
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        alive++;
-        startForegroundService(new Intent(this, MailService.class));
-    }
-
-    /** The Rust side stops with its activity: nothing is left to wait for mail. */
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (--alive == 0) {
-            stopService(new Intent(this, MailService.class));
+        try {
+            SyncJob.schedule(this);
+        } catch (RuntimeException e) {
+            // The app works without background checks; the error lands in logcat.
+            android.util.Log.w("mailclient", "cannot schedule the mail check", e);
         }
     }
 
-    /** Back the app did not use: leave like Android 12+ launchers do, without finishing, so push keeps running. */
+    /** In the background Android freezes the app and its IMAP IDLE: catch up on what arrived. */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        try {
+            onResumed();
+        } catch (UnsatisfiedLinkError e) {
+            // First start: the Rust side is not up yet and syncs on its own.
+        }
+    }
+
+    /** Back the app did not use: leave like Android 12+ launchers do, without finishing, so it reopens instantly. */
     @Override
     public void onBackPressed() {
         moveTaskToBack(true);

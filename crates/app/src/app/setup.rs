@@ -262,7 +262,7 @@ impl Controller {
     }
 }
 
-fn db_path(account: &AccountConfig) -> Result<std::path::PathBuf> {
+pub(crate) fn db_path(account: &AccountConfig) -> Result<std::path::PathBuf> {
     Ok(config::data_dir()?.join(format!("{}.sqlite", account.email)))
 }
 
