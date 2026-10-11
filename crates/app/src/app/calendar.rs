@@ -6,7 +6,7 @@ use mailcore::ical::{self, Attendee, Event};
 use mailcore::store::{LOCAL_CALENDAR, StoredEvent};
 
 use super::*;
-use crate::{AgendaItem, CalendarChip, CalendarDay, DayColumn, EventBlock, EventDetail, EventForm};
+use crate::{AgendaItem, AttendeeItem, CalendarChip, CalendarDay, DayColumn, EventBlock, EventDetail, EventForm};
 
 /// Events shown in one cell of the month grid; the rest are counted as "+N more".
 const CHIPS_PER_DAY: usize = 3;
@@ -429,6 +429,7 @@ impl Controller {
         // The next full hour today (if a whole hour is left), else the morning of the chosen day.
         let start = if day == now.date_naive() && now.hour() < 22 { now.hour() + 1 } else { 9 };
         self.state.borrow_mut().calendar_editing = None;
+        self.set_form_attendees(Vec::new());
         let window = self.window();
         window.set_event_form(EventForm {
             date: day.format("%Y-%m-%d").to_string().into(),
@@ -457,14 +458,65 @@ impl Controller {
             end: local(e.end).format("%H:%M").to_string().into(),
             all_day: e.all_day,
             location: e.location.clone().into(),
-            attendees: e.attendees.iter().map(|a| address(&a.name, &a.email)).collect::<Vec<_>>().join(", ").into(),
             notes: e.description.clone().into(),
         });
+        self.set_form_attendees(e.attendees.clone());
         window.set_event_from_index(shown.account as i32);
         window.set_event_form_existing(true);
         window.set_event_error("".into());
         self.state.borrow_mut().calendar_editing = Some(shown);
         window.set_calendar_editing(true);
+    }
+
+    fn set_form_attendees(&self, attendees: Vec<Attendee>) {
+        let items: Vec<AttendeeItem> = attendees
+            .iter()
+            .map(|a| AttendeeItem {
+                name: a.name.clone().into(),
+                email: a.email.clone().into(),
+                status: match a.partstat.as_str() {
+                    "ACCEPTED" | "TENTATIVE" | "DECLINED" => partstat_verb(&a.partstat).into(),
+                    _ => "".into(),
+                },
+            })
+            .collect();
+        self.window().set_event_attendees(ModelRc::new(VecModel::from(items)));
+        self.state.borrow_mut().form_attendees = attendees;
+    }
+
+    /// Adds the typed addresses ("Name <a@x>", several at once) to the form's attendees.
+    /// False, with the form's error set, when one is not an address.
+    pub(super) fn add_attendees(&self, text: &str) -> bool {
+        let window = self.window();
+        let me = {
+            let state = self.state.borrow();
+            let index = state.calendar_editing.as_ref().map_or(window.get_event_from_index().max(0) as usize, |s| s.account);
+            state.accounts.get(index).map(|a| a.config.email.clone()).unwrap_or_default()
+        };
+        let parsed = mime::parse_address_list(text);
+        if let Some((_, bad)) = parsed.iter().find(|(_, email)| !email.contains('@') || email.contains(char::is_whitespace)) {
+            window.set_event_error(format!("not an email address: {bad}").into());
+            return false;
+        }
+        let mut attendees = self.state.borrow().form_attendees.clone();
+        for (name, email) in parsed {
+            // The organizer is not their own attendee; nobody is invited twice.
+            if email.eq_ignore_ascii_case(&me) || attendees.iter().any(|a| a.email.eq_ignore_ascii_case(&email)) {
+                continue;
+            }
+            attendees.push(Attendee { email, name, partstat: "NEEDS-ACTION".into() });
+        }
+        window.set_event_error("".into());
+        self.set_form_attendees(attendees);
+        true
+    }
+
+    pub(super) fn remove_attendee(&self, index: usize) {
+        let mut attendees = self.state.borrow().form_attendees.clone();
+        if index < attendees.len() {
+            attendees.remove(index);
+            self.set_form_attendees(attendees);
+        }
     }
 
     pub(super) fn delete_event(&self) {
@@ -495,13 +547,7 @@ impl Controller {
             }
             (start, end)
         };
-        let attendees: Vec<Attendee> = mime::parse_address_list(&form.attendees)
-            .into_iter()
-            .map(|(name, email)| Attendee { email, name, partstat: "NEEDS-ACTION".into() })
-            .collect();
-        if let Some(bad) = attendees.iter().find(|a| !a.email.contains('@') || a.email.contains(char::is_whitespace)) {
-            return Err(anyhow!("invalid address: {}", bad.email));
-        }
+        let attendees = self.state.borrow().form_attendees.clone();
         Ok(Event {
             uid: mime::new_message_id(&account.email).trim_matches(['<', '>']).to_string(),
             summary: title.to_string(),
@@ -547,7 +593,7 @@ impl Controller {
         // rest the invitation goes out by mail like Gmail's and Outlook's do.
         if !event.attendees.is_empty() && account.auth != Auth::Microsoft {
             let draft = Draft {
-                to: window.get_event_form().attendees.to_string(),
+                to: event.attendees.iter().map(|a| address(&a.name, &a.email)).collect::<Vec<_>>().join(", "),
                 subject: format!("Invitation: {}", event.summary),
                 body: invitation_text(&event),
                 message_id: mime::new_message_id(&account.email),

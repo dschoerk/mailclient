@@ -157,6 +157,8 @@ struct State {
     /// The event open in the calendar's side panel, and the one the form edits (none: a new one).
     calendar_open: Option<calendar::Shown>,
     calendar_editing: Option<calendar::Shown>,
+    /// The attendees in the event form.
+    form_attendees: Vec<mailcore::ical::Attendee>,
     /// The last calendar error of each account (by engine id), until its calendar works again.
     calendar_errors: HashMap<u64, String>,
 }
@@ -360,6 +362,11 @@ impl Controller {
         on!(on_calendar_today, |c| c.set_calendar_day(chrono::Local::now().date_naive()));
         on!(on_calendar_day_clicked, |c, cell| c.calendar_day_clicked(cell as usize));
         on!(on_calendar_new_event, |c| c.new_event());
+        on!(on_calendar_remove_attendee, |c, index| c.remove_attendee(index as usize));
+        {
+            let weak = Rc::downgrade(self);
+            window.on_calendar_add_attendee(move |text| weak.upgrade().is_some_and(|c| c.add_attendees(&text)));
+        }
         on!(on_calendar_save_event, |c| c.save_event());
         on!(on_calendar_refresh, |c| c.sync_calendars());
         on!(on_invite_respond, |c, answer| c.invite_respond(&answer));

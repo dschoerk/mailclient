@@ -732,7 +732,21 @@ fn user_stories() {
             type_in(&w, "Title", "Design sync")?;
             type_in(&w, "Starts", "10:00")?;
             type_in(&w, "Ends", "11:00")?;
-            type_in(&w, "Invite", &user2)?;
+            // The attendee list: refuses non-addresses, skips duplicates and the organizer, removes.
+            let add = |text: &str| -> Outcome {
+                type_in(&w, "Add attendee", text)?;
+                click(&w, "Add")
+            };
+            let invited = || w.get_event_attendees().iter().map(|a| a.email.to_string()).collect::<Vec<_>>();
+            add("not an address")?;
+            ensure(w.get_event_error().contains("not an email address") && invited().is_empty(), format!("error {:?}, list {:?}", w.get_event_error(), invited()))?;
+            add(&format!("Second Story <{user2}>, {user}, extra@example.org"))?;
+            add(&user2)?;
+            ensure(invited() == [user2.clone(), "extra@example.org".to_string()], format!("list {:?}", invited()))?;
+            ensure(w.get_event_attendees().row_data(0).is_some_and(|a| a.name == "Second Story"), "name not kept")?;
+            click(&w, "Remove extra@example.org")?;
+            ensure(invited() == [user2.clone()], format!("after removing: {:?}", invited()))?;
+            ensure(w.get_event_error().is_empty(), format!("error left: {}", w.get_event_error()))?;
             click(&w, "Send invitations")?;
             ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
             wait_for("event in the organizer's calendar", || w.get_calendar_agenda().iter().any(|a| a.title == "Design sync")).await?;
@@ -777,6 +791,7 @@ fn user_stories() {
             ensure(w.get_calendar_showing_event(), "event not opened")?;
             ensure(w.get_event_detail().people.contains(&user2), format!("people: {}", w.get_event_detail().people))?;
             click(&w, "Edit")?;
+            ensure(w.get_event_attendees().iter().any(|a| a.email == user2.as_str()), "attendees not in the edit form")?;
             type_in(&w, "Title", "Design sync (moved)")?;
             type_in(&w, "Starts", "14:00")?;
             type_in(&w, "Ends", "15:00")?;

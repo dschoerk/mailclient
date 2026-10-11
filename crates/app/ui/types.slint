@@ -116,9 +116,15 @@ export struct EventForm {
     end: string,
     all-day: bool,
     location: string,
-    /// Addresses to invite, comma separated.
-    attendees: string,
     notes: string,
+}
+
+/// Someone invited to the event in the form.
+export struct AttendeeItem {
+    name: string,
+    email: string,
+    /// Their answer: "Accepted", "Tentative", "Declined"; empty when none yet.
+    status: string,
 }
 
 /// An event in the week or day view.
