@@ -33,10 +33,13 @@ Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 - Drafts: closing the composer (or Back on Android) saves to Drafts, plus an autosave every
   15 s; reopen with "Edit draft". Sending or discarding removes the draft.
 - Save attachments; `mailto:` links open the composer; other links open in the
-  system browser.
+  system browser. Optionally every link shows the site it goes to, in red when its text
+  names another site.
+- View a message's raw source (Ctrl+U), save it as an `.eml` file or a PDF, and print it
+  (Ctrl+P; the desktop's print dialog, or Android's, which also saves PDFs).
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,
   `#`/Delete delete, `u` read/unread, `s` flag, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search,
-  Ctrl+Enter send.
+  Ctrl+U view source, Ctrl+P print, Ctrl+Enter send.
 - Open a message file without an account: `mailclient message.eml`.
 
 ## Security model for HTML mail

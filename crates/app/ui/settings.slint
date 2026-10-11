@@ -46,6 +46,7 @@ export component SettingsView inherits Rectangle {
     in-out property <int> theme;
     in-out property <bool> notifications;
     in-out property <bool> always-load-images;
+    in-out property <bool> show-link-targets;
     in-out property <bool> left-handed;
     in-out property <bool> floating-buttons;
     in property <[AccountItem]> accounts;
@@ -131,6 +132,12 @@ export component SettingsView inherits Rectangle {
                         text: "Always load remote images";
                         hint: "Senders can see when you open their mail.";
                         checked <=> root.always-load-images;
+                        toggled => root.changed();
+                    }
+                    Toggle {
+                        text: "Show where links go";
+                        hint: "Each link in HTML mail gets a label with the site it opens, red when the link text names a different site.";
+                        checked <=> root.show-link-targets;
                         toggled => root.changed();
                     }
 

@@ -189,6 +189,7 @@ impl Controller {
         window.set_theme(settings.theme as i32);
         window.set_notifications(!settings.mute_notifications);
         window.set_always_load_images(settings.load_remote_images);
+        window.set_show_link_targets(settings.show_link_targets);
         controller.connect_callbacks(window);
         #[cfg(feature = "servo")]
         controller.init_webview(window);
@@ -305,6 +306,10 @@ impl Controller {
         on!(on_save_attachment, |c, index| c.save_attachment(index as usize));
         on!(on_open_attachment, |c, index| c.save_attachment(index as usize));
         on!(on_close_message, |c| c.close_message());
+        on!(on_view_source, |c| c.toggle_source());
+        on!(on_save_eml, |c| c.save_eml());
+        on!(on_save_pdf, |c| c.save_pdf());
+        on!(on_print, |c| c.print());
         on!(on_settings_changed, |c| {
             let w = c.window();
             let settings = config::Settings {
@@ -317,9 +322,14 @@ impl Controller {
                 },
                 mute_notifications: !w.get_notifications(),
                 load_remote_images: w.get_always_load_images(),
+                show_link_targets: w.get_show_link_targets(),
             };
             if let Err(e) = config::save_settings(settings) {
                 c.show_error(&e);
+            }
+            // Link targets and remote images change how the open message is drawn.
+            if w.get_has_message() {
+                c.render_selected();
             }
         });
     }

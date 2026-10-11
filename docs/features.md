@@ -99,11 +99,29 @@ What the mail client can do today. For ideas that are not built yet see
 - **Remote images** are blocked by default. A banner offers "Load images" for the open
   message.
 - **Links**: `mailto:` links open the composer, and other links open in your web browser.
+- **Where links go** (Settings → "Show where links go", off by default): every link in HTML
+  mail gets a small label with the site it opens. When the link text names a different site
+  (text `www.paypal.com`, link to `paypal.com.evil.io`) the label turns red with a ⚠.
+  Look-alike Unicode domains show in their `xn--…` form.
 - **Copying text**: select text in a message and copy it: drag with the mouse and Ctrl+C on
   the desktop; long press, then Copy, on Android.
 - **Attachments** are listed with their name and size, and can be saved to disk.
 - **Open a single file**: `mailclient message.eml` opens a message file. No account is
   needed.
+- **More tools** (the ⋯ button in the reader) opens a row with the tools below.
+- **View source** (Ctrl+U): shows the message exactly as it came from the
+  server, all headers included, in place of the body. It follows the selection, so `j`/`k`
+  step through sources; Esc or the button again closes it. Very large messages are cut
+  after 512 KB.
+- **Save as .eml**: saves the whole message as a file, named after its
+  subject, for other mail programs, bug reports or archiving.
+- **Save as PDF**: subject, sender, recipients, date, the message text and the names of
+  its attachments on A4 pages, in a system font embedded in the file (text stays
+  selectable). The PDF holds the text version of the message: HTML layout and images
+  are not reproduced.
+- **Print** (Ctrl+P): on the Linux desktop the system print dialog (xdg-desktop-portal)
+  prints that PDF; without a portal the PDF opens in your PDF viewer to print from there.
+  On Android the system print dialog prints the message as shown, and also offers Save as PDF.
 
 ### Safety of HTML mail
 
@@ -175,7 +193,9 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 | `s` | Flag / unflag |
 | `x` | Tick the current conversation; `e`, `#`, `u`, `s` then act on all ticked ones |
 | `/` | Search |
-| Esc | Clear the search |
+| Ctrl+U | View source / back to the message |
+| Ctrl+P | Print |
+| Esc | Close the source view, else clear the search |
 | Ctrl+Enter | Send (in the compose window) |
 | Back (Android) | Close the message or the folder panel |
 

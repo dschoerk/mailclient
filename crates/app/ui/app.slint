@@ -1,4 +1,4 @@
-import { Button, LineEdit, ListView, ScrollView, CheckBox, Palette, Spinner } from "std-widgets.slint";
+import { Button, LineEdit, ListView, ScrollView, CheckBox, Palette, Spinner, TextEdit } from "std-widgets.slint";
 import { Webview } from "../src/webview/webview.slint";
 import { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem } from "types.slint";
 import { Theme, Divider, ToolButton, FloatButton } from "widgets.slint";
@@ -36,7 +36,7 @@ export component AppWindow inherits Window {
     out property <length> html-height: html-area.height;
     // Anything drawn over the reader (drawer, setup) must hide the native view, which is always on top.
     out property <bool> html-visible: root.html-overlay && root.has-message && !root.composing && !root.needs-setup
-        && !root.show-settings && !(root.narrow && root.show-folders);
+        && !root.show-settings && !root.source-open && !(root.narrow && root.show-folders);
     changed html-x => { root.html-area-changed(); }
     changed html-y => { root.html-area-changed(); }
     changed html-width => { root.html-area-changed(); }
@@ -80,6 +80,9 @@ export component AppWindow inherits Window {
     in property <bool> msg-loading;
     in property <bool> msg-remote-blocked;
     in property <string> msg-text;
+    /// The open message's raw source, shown in place of the body while source-open.
+    in property <string> msg-source;
+    in-out property <bool> source-open;
     in property <[AttachmentItem]> msg-attachments;
     // Every message of the open conversation, oldest first; empty for a lone message.
     in property <[ConversationItem]> conversation;
@@ -99,6 +102,7 @@ export component AppWindow inherits Window {
     in-out property <int> theme;
     in-out property <bool> notifications: true;
     in-out property <bool> always-load-images;
+    in-out property <bool> show-link-targets;
     changed theme => { root.apply-theme(); }
     init => { root.apply-theme(); }
     function apply-theme() {
@@ -143,6 +147,13 @@ export component AppWindow inherits Window {
     callback save-attachment(int);
     callback open-attachment(int);
     callback close-message();
+    /// Shows or hides the open message's source.
+    callback view-source();
+    callback save-eml();
+    callback save-pdf();
+    callback print();
+    /// The reader's row of message tools (source, .eml, PDF, print) is open.
+    in-out property <bool> tools-open;
     callback settings-changed();
 
     // ---- composing (inline; phones show it as its own page) ----
@@ -201,6 +212,15 @@ export component AppWindow inherits Window {
         }
 
         key-pressed(event) => {
+            // Ctrl+U and Ctrl+P as in Thunderbird and browsers.
+            if !root.needs-setup && !root.show-settings && !root.composing && event.modifiers.control && (event.text == "u" || event.text == "U") {
+                root.view-source();
+                return accept;
+            }
+            if !root.needs-setup && !root.show-settings && !root.composing && root.has-message && event.modifiers.control && (event.text == "p" || event.text == "P") {
+                root.print();
+                return accept;
+            }
             if root.needs-setup || event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
                 return reject;
             }
@@ -258,6 +278,10 @@ export component AppWindow inherits Window {
             }
             if event.text == "/" {
                 search-box.focus();
+                return accept;
+            }
+            if (event.text == Key.Back || event.text == Key.Escape) && root.source-open {
+                root.view-source();
                 return accept;
             }
             if event.text == Key.Back && root.checked-count > 0 && !root.has-message && !root.show-folders {
@@ -554,6 +578,14 @@ export component AppWindow inherits Window {
                                     show-text: false;
                                     clicked => root.toggle-seen();
                                 }
+                                // Phones leave room for the draft's labelled Edit button.
+                                if !root.narrow || !root.msg-is-draft: ToolButton {
+                                    text: root.tools-open ? "Fewer tools" : "More tools";
+                                    icon: @image-url("icons/ellipsis.svg");
+                                    show-text: false;
+                                    icon-color: root.tools-open ? Theme.accent : Palette.foreground;
+                                    clicked => { root.tools-open = !root.tools-open; }
+                                }
                                 // Phones have these in the thumb bar at the bottom.
                                 if !root.narrow: ToolButton {
                                     text: "Archive";
@@ -566,6 +598,37 @@ export component AppWindow inherits Window {
                                     icon: @image-url("icons/trash.svg");
                                     show-text: parent.labels;
                                     clicked => root.delete();
+                                }
+                            }
+                            // In the layout rather than a popup: Android's native message view would cover a popup.
+                            if root.tools-open: HorizontalLayout {
+                                spacing: 2px;
+                                ToolButton {
+                                    text: root.source-open ? "Hide source" : "View source";
+                                    short-text: root.source-open ? "Message" : "Source";
+                                    icon: @image-url("icons/code.svg");
+                                    icon-color: root.source-open ? Theme.accent : Palette.foreground;
+                                    clicked => root.view-source();
+                                }
+                                ToolButton {
+                                    text: "Save as .eml";
+                                    short-text: root.narrow ? ".eml" : "";
+                                    icon: @image-url("icons/download.svg");
+                                    clicked => root.save-eml();
+                                }
+                                ToolButton {
+                                    text: "Save as PDF";
+                                    short-text: root.narrow ? "PDF" : "";
+                                    icon: @image-url("icons/file-down.svg");
+                                    clicked => root.save-pdf();
+                                }
+                                ToolButton {
+                                    text: "Print";
+                                    icon: @image-url("icons/printer.svg");
+                                    clicked => root.print();
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
                                 }
                             }
                             Text {
@@ -701,10 +764,17 @@ export component AppWindow inherits Window {
                             if root.use-webview: Webview {
                                 width: 100%;
                                 height: 100%;
-                                visible: root.has-message && !root.composing;
+                                visible: root.has-message && !root.composing && !root.source-open;
                                 scrolled => { root.reader-scrolled = true; }
                             }
-                            if !root.use-webview && !root.html-overlay && root.has-message && !root.composing: reader-scroll := ScrollView {
+                            if root.source-open && root.has-message && !root.composing: TextEdit {
+                                accessible-label: "Message source";
+                                read-only: true;
+                                wrap: no-wrap;
+                                font-size: 12px;
+                                text: root.msg-source;
+                            }
+                            if !root.use-webview && !root.html-overlay && !root.source-open && root.has-message && !root.composing: reader-scroll := ScrollView {
                                 scrolled => { root.reader-scrolled = true; }
                                 VerticalLayout {
                                     width: reader-scroll.visible-width;
@@ -942,6 +1012,7 @@ export component AppWindow inherits Window {
         theme <=> root.theme;
         notifications <=> root.notifications;
         always-load-images <=> root.always-load-images;
+        show-link-targets <=> root.show-link-targets;
         left-handed <=> root.left-handed;
         floating-buttons <=> root.floating-buttons;
         accounts: root.accounts;

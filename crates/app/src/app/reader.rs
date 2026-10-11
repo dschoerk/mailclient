@@ -130,6 +130,7 @@ impl Controller {
             state.body = None;
         }
         self.window().set_current_message(-1);
+        self.window().set_source_open(false);
         self.clear_reader();
     }
 
@@ -203,6 +204,10 @@ impl Controller {
                 Err(e) => return self.show_error(&e),
             }
         }
+        // An open source view follows the selection, so j/k step through sources.
+        if window.get_source_open() {
+            window.set_msg_source(raws[current].as_deref().map_or("Loading…".into(), source_text).into());
+        }
         // Each arrives with BodyReady, which renders again.
         for (m, _) in conversation.iter().zip(&raws).filter(|(_, raw)| raw.is_none()) {
             if self.state.borrow_mut().fetching.insert((account, m.folder.clone(), m.uid)) {
@@ -260,6 +265,17 @@ impl Controller {
         );
         #[cfg(any(feature = "servo", target_os = "android"))]
         {
+            // Only the shown HTML gets the badges; the stored body stays clean for quoting.
+            let marked: Vec<Option<Body>>;
+            let (bodies, body) = if window.get_show_link_targets() {
+                marked = bodies
+                    .iter()
+                    .map(|b| b.as_ref().map(|b| Body { html: b.html.as_deref().map(mime::mark_link_targets), ..b.clone() }))
+                    .collect();
+                (&marked, marked[current].as_ref().expect("checked above"))
+            } else {
+                (&bodies, &body)
+            };
             let csp = mime::content_security_policy(allow_remote);
             // shortcut: one map for all messages; Content-IDs are meant to be globally unique.
             let inline_parts: HashMap<String, (String, Vec<u8>)> =
@@ -267,7 +283,7 @@ impl Controller {
             #[cfg(feature = "servo")]
             if let Some(view) = self.viewer.borrow().as_ref() {
                 let (document, anchor) = if conversation.len() == 1 {
-                    (mime::render_document(&body), String::new())
+                    (mime::render_document(body), String::new())
                 } else {
                     let parts: Vec<(String, Option<&Body>)> =
                         headings.iter().cloned().zip(bodies.iter().map(Option::as_ref)).collect();
@@ -330,6 +346,82 @@ impl Controller {
         }
     }
 
+    /// Shows the open message's raw source in place of its body, or the body again.
+    pub(super) fn toggle_source(&self) {
+        let window = self.window();
+        if window.get_source_open() || !window.get_has_message() {
+            window.set_source_open(false);
+            return;
+        }
+        window.set_source_open(true);
+        self.render_selected();
+    }
+
+    /// Saves the open message as it came from the server, as an `.eml` file.
+    pub(super) fn save_eml(&self) {
+        let Some((account, summary)) = self.selected_summary() else { return };
+        let raw = match self.raw_of(account, &summary) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return self.set_status("The message is still downloading"),
+            Err(e) => return self.show_error(&e),
+        };
+        let name = mime::message_file_name(&summary.subject, "eml");
+        self.save_in_background(name, "message/rfc822", async { Ok(raw) }, "saving message");
+    }
+
+    /// The open message as it goes on paper; `None` while its body is still downloading.
+    fn printable(&self) -> Option<mailcore::pdf::Printable> {
+        let (_, m) = self.selected_summary()?;
+        let state = self.state.borrow();
+        let body = state.body.as_ref()?;
+        Some(mailcore::pdf::Printable {
+            subject: m.subject.clone(),
+            from: format::person(&m.from_name, &m.from_addr),
+            to: m.to.clone(),
+            cc: m.cc.clone(),
+            date: format::full_date(m.date),
+            text: body.text.clone(),
+            attachments: body.attachments.iter().map(|a| format!("{}  {}", a.name, format::size(a.size))).collect(),
+        })
+    }
+
+    /// Saves the open message as a PDF.
+    pub(super) fn save_pdf(&self) {
+        let Some(printable) = self.printable() else { return self.set_status("The message is still downloading") };
+        let name = mime::message_file_name(&printable.subject, "pdf");
+        self.save_in_background(name, "application/pdf", pdf_in_background(printable), "saving PDF");
+    }
+
+    /// Prints the open message. Android prints the HTML view as shown; elsewhere the PDF of
+    /// [`Self::save_pdf`] goes to the system print dialog.
+    pub(super) fn print(&self) {
+        let Some(printable) = self.printable() else { return self.set_status("The message is still downloading") };
+        let title = if printable.subject.trim().is_empty() { "Message".to_string() } else { printable.subject.clone() };
+        #[cfg(target_os = "android")]
+        {
+            drop(printable);
+            crate::platform::html::print(&title);
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let weak = self.window.clone();
+            self.set_status("Preparing to print…");
+            let _ = slint::spawn_local(async move {
+                let result = match pdf_in_background(printable).await {
+                    Ok(pdf) => crate::platform::print_pdf(&title, pdf).await,
+                    Err(e) => Err(e),
+                };
+                let status = match result {
+                    Ok(status) => status.unwrap_or_default(),
+                    Err(e) => format!("⚠ printing: {e:#}"),
+                };
+                if let Some(window) = weak.upgrade() {
+                    window.set_status(status.into());
+                }
+            });
+        }
+    }
+
     pub(super) fn save_attachment(&self, index: usize) {
         let Some((account, summary)) = self.selected_summary() else { return };
         let Ok(Some(raw)) = self.raw_of(account, &summary) else { return };
@@ -343,16 +435,31 @@ impl Controller {
         else {
             return;
         };
+        match mime::attachment_data(&raw, index) {
+            Some(data) => self.save_in_background(name, &mime_type, async { Ok(data) }, "saving attachment"),
+            None => self.set_status("⚠ attachment not found"),
+        }
+    }
+
+    /// Asks where to save `data` once it is ready and reports the outcome in the status bar.
+    fn save_in_background(
+        &self,
+        name: String,
+        mime_type: &str,
+        data: impl std::future::Future<Output = Result<Vec<u8>>> + 'static,
+        what: &'static str,
+    ) {
         let weak = self.window.clone();
+        let mime_type = mime_type.to_string();
         let _ = slint::spawn_local(async move {
-            let result = match mime::attachment_data(&raw, index) {
-                Some(data) => crate::platform::save_file(&name, &mime_type, data).await,
-                None => Err(anyhow!("attachment not found")),
+            let saved = match data.await {
+                Ok(data) => crate::platform::save_file(&name, &mime_type, data).await,
+                Err(e) => Err(e),
             };
-            let result = match result {
+            let result = match saved {
                 Ok(None) => return,
                 Ok(Some(saved)) => Ok(format!("Saved {saved}")),
-                Err(e) => Err(anyhow!("saving attachment: {e:#}")),
+                Err(e) => Err(anyhow!("{what}: {e:#}")),
             };
             if let Some(window) = weak.upgrade() {
                 window.set_status(match result {
@@ -362,4 +469,20 @@ impl Controller {
             }
         });
     }
+}
+
+/// Larger sources are cut: a text view of megabytes of base64 helps nobody and is slow to lay out.
+const SOURCE_LIMIT: usize = 512 * 1024;
+
+fn source_text(raw: &[u8]) -> String {
+    mime::source_text(raw, SOURCE_LIMIT)
+}
+
+/// The PDF of a message, made on another thread: finding the system font scans the font directories.
+async fn pdf_in_background(printable: mailcore::pdf::Printable) -> Result<Vec<u8>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(mailcore::pdf::system_font().and_then(|font| mailcore::pdf::message_pdf(&printable, font)));
+    });
+    rx.await.map_err(|_| anyhow!("the PDF could not be made"))?
 }

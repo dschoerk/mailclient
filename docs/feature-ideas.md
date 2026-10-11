@@ -32,7 +32,8 @@ Status: **done** · **partial** · **missing**.
 | Snooze | missing | Often cited as missing from Gmail; Mozilla Connect request. Needs a local timer plus a folder or keyword on the server. |
 | Rich (HTML) compose and signatures | missing | Compose is plain text. Signatures missing entirely. |
 | Attachments: save all, shown at the top of long threads | partial | Single attachments can be added and saved, on Android through the system pickers (US12). |
-| Raw source and full headers | missing | Power-user request (Vivaldi wish list). |
+| Raw source and full headers | done | View source (Ctrl+U), Save as .eml; link targets shown on request (US25). Power-user request (Vivaldi wish list). |
+| Print, save as PDF | done | US23, US24. Desktop prints the text version; Android prints the rendered HTML. |
 | Contacts: add sender, autocomplete, vCard import/export, CardDAV | missing | "Add sender to contacts" was #2 in the Jolla poll. |
 | Calendar (CalDAV), invites | missing | Users are split on built-in vs separate app. |
 | PGP / S/MIME | missing | Expected by technical users. |

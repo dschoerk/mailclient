@@ -69,6 +69,8 @@ pub struct Settings {
     pub mute_notifications: bool,
     /// Remote images load without asking (gives up tracking protection).
     pub load_remote_images: bool,
+    /// HTML mail shows the host each link goes to next to it, flagging links whose text names another site.
+    pub show_link_targets: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -334,6 +336,7 @@ mod tests {
             theme: Theme::Dark,
             mute_notifications: true,
             load_remote_images: true,
+            show_link_targets: true,
         };
         let text = toml::to_string_pretty(&ConfigFile {
             accounts: vec![account.clone()],

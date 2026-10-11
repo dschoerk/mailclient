@@ -31,6 +31,9 @@ GreenMail server; the rest are checked by hand. Results: [Test results](#test-re
 | US20 | As a user I act on several conversations at once. | Rows are ticked at their left edge (phones: long press, then taps) and a bar shows how many (**auto**). Read, flag, unflag, archive and delete apply to all ticked rows and only to them, in the list at once and on the server (**auto**); the ticks clear afterwards or with Clear (**auto**). |
 | US21 | As a user I find all mail from the same sender. | "More from this sender" on the open message lists that sender's mail newest first, and mail that only mentions their address is not included (**auto**). `from:address` can be typed, also with more words (**auto**); clearing the search restores the folder (**auto**). Phones show the results in the list. |
 | US22 | As a phone user I clear my inbox with a thumb. | Swiping a list row right archives its conversation, swiping left deletes it, like Archive and Delete in the reader; the action shows behind the row while swiping, and a short swipe springs back and does nothing (**e2e**). |
+| US23 | As a user I keep a message as a PDF. | "Save as PDF" (More tools) saves the open message with subject, sender, recipients, date, text and attachment names, on A4 pages with page numbers; the text can be selected and searched in a PDF viewer (**auto**: `mailcore::pdf`). Non-ASCII text (umlauts, €) prints correctly. While the body is downloading, a status line says so. |
+| US24 | As a user I print a message. | "Print" (More tools, Ctrl+P) opens the system print dialog; confirming prints, cancelling does nothing (**auto**: the desktop portal protocol against a stand-in portal). Linux desktop: the xdg-desktop-portal dialog prints the message's PDF (US23); without a portal the PDF opens in the default viewer. Android: the system dialog prints the message as shown in the reader and also offers Save as PDF. |
+| US25 | As a power user I see what a message really is. | "View source" (More tools, Ctrl+U) shows the raw message with all headers in place of the body, follows the selection, and Esc closes it (**auto**). "Save as .eml" saves the message as received. With "Show where links go" in Settings, every link in HTML mail shows its target host, in red when the link text names another site (**auto**: `mailcore::mime`). |
 | US17 | As a user I see my folder tree as it is on the server. | Folders created or removed by another client appear or disappear after a sync (**auto**). Subfolders are indented under their parent, also under Inbox and the special folders, and can be opened (**auto**). |
 
 ## Test results
@@ -64,6 +67,9 @@ state checked over IMAP after each step.
 | US17 Folder tree | pass (auto) | not tested | Nested folders created and deleted over IMAP during the run. |
 | US20 Bulk actions | pass (auto, e2e) | pass (e2e) | 2026-10-10. Android ticks with a real long press (`adb input swipe`). |
 | US19 Notifications | pass (auto, e2e) | pass (e2e) | 2026-10-10. Desktop e2e reads the D-Bus `Notify` call, Android e2e `dumpsys notification`. |
+| US23 Save as PDF | pass (unit) | not tested | 2026-10-11. `pdf::tests` renders a 9-page message; checked with poppler (`pdftotext`, `pdftoppm`): text extracts, umlauts show. Not yet run in the app. |
+| US24 Print | pass (unit) | not tested | 2026-10-11. `prints_through_the_portal`: dialog, token and PDF handed over, cancel, no portal. Not yet tried with a real printer or on Android. |
+| US25 Source and links | pass (unit) | not tested | 2026-10-11. Source view toggled in the headless UI; link badges and look-alike hosts in `mime::tests`. |
 | US22 Swipe rows | n/a | pass (e2e) | 2026-10-10. `swipe_rows`: real finger swipes through `adb input swipe`; Archive and Trash checked on the server. |
 | US18 Drafts | pass (auto) | pass (e2e) | 2026-10-10. Android: `crates/e2e` `drafts`, leaving with the system Back key. |
 
