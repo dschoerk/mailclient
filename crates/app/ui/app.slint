@@ -64,6 +64,8 @@ export component AppWindow inherits Window {
     in property <bool> searching;
 
     in property <string> status;
+    /// Build number, date and profile, shown in the status bar.
+    in property <string> version;
     /// A sync the user asked for is running.
     in property <bool> syncing;
     in property <bool> online: true;
@@ -1066,6 +1068,12 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                     overflow: elide;
                     horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.version;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
                 }
                 if root.has-account: Text {
                     text: root.online ? "● Online" : "○ Offline";

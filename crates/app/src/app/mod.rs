@@ -225,6 +225,8 @@ impl Controller {
         window.set_msg_attachments(ModelRc::from(controller.attachment_model.clone()));
         window.set_conversation(ModelRc::from(controller.conversation_model.clone()));
         window.set_use_webview(cfg!(feature = "servo"));
+        let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+        window.set_version(format!("Build {} · {} · {profile}", env!("BUILD_NUMBER"), env!("BUILD_DATE")).into());
         // Android builds use Slint's Material style, which starts field text further in.
         #[cfg(target_os = "android")]
         window.global::<crate::Theme>().set_text_inset(16.0);

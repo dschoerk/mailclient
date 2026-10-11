@@ -16,6 +16,15 @@ fn main() {
         .unwrap();
     }
     println!("cargo:rerun-if-changed=build.rs");
+    // Build number: commits on HEAD, with the last commit's date. Rerun on each commit or checkout.
+    // shortcut: uncommitted changes show the last commit's number; add a dirty marker if that confuses.
+    println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).output().ok().filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|| "?".into())
+    };
+    println!("cargo:rustc-env=BUILD_NUMBER={}", git(&["rev-list", "--count", "HEAD"]));
+    println!("cargo:rustc-env=BUILD_DATE={}", git(&["log", "-1", "--format=%cs"]));
     // Debug info lets the story tests find UI elements by accessible label.
     let debug = std::env::var("PROFILE").as_deref() == Ok("debug");
     let config = slint_build::CompilerConfiguration::new().with_debug_info(debug);
