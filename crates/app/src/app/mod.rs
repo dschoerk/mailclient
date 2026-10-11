@@ -225,6 +225,9 @@ impl Controller {
         window.set_msg_attachments(ModelRc::from(controller.attachment_model.clone()));
         window.set_conversation(ModelRc::from(controller.conversation_model.clone()));
         window.set_use_webview(cfg!(feature = "servo"));
+        // Android builds use Slint's Material style, which starts field text further in.
+        #[cfg(target_os = "android")]
+        window.global::<crate::Theme>().set_text_inset(16.0);
         window.set_html_overlay(cfg!(target_os = "android"));
         let settings = config::load_settings().unwrap_or_else(|e| {
             log::warn!("cannot read settings: {e:#}");

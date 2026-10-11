@@ -1,7 +1,7 @@
 import { Button, LineEdit, ListView, ScrollView, CheckBox, Palette, Spinner, TextEdit } from "std-widgets.slint";
 import { Webview } from "../src/webview/webview.slint";
 import { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem, CalendarDay, AgendaItem, EventForm, DayColumn, EventDetail, AttendeeItem } from "types.slint";
-import { Theme, Divider, ToolButton, FloatButton } from "widgets.slint";
+import { Theme, Divider, ToolButton, FloatButton, TextField } from "widgets.slint";
 import { FolderRow, MessageRow, TimelineItem } from "lists.slint";
 import { SetupView } from "setup.slint";
 import { SettingsView } from "settings.slint";
@@ -9,6 +9,7 @@ import { ComposeView } from "compose.slint";
 import { CalendarView } from "calendar.slint";
 
 export { WebviewLogic } from "../src/webview/webview.slint";
+export { Theme } from "widgets.slint";
 export { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem, CalendarChip, CalendarDay, AgendaItem, EventForm, EventBlock, DayColumn, EventDetail, AttendeeItem } from "types.slint";
 
 export component AppWindow inherits Window {
@@ -410,10 +411,10 @@ export component AppWindow inherits Window {
                                     keys.focus();
                                 }
                             }
-                            search-box := LineEdit {
-                                accessible-label: "Search";
+                            search-box := TextField {
+                                label: "Search";
                                 text <=> root.search-text;
-                                placeholder-text: "Search mail  ( / )";
+                                placeholder: "Search mail  ( / )";
                                 edited(text) => root.search(text);
                                 accepted => keys.focus();
                             }

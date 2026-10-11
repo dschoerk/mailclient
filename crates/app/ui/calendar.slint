@@ -3,7 +3,7 @@
 
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import { CalendarDay, AgendaItem, EventForm, EventBlock, DayColumn, EventDetail, AttendeeItem } from "types.slint";
-import { Theme, Divider, ToolButton, Field } from "widgets.slint";
+import { Theme, Divider, ToolButton, Field, TextField } from "widgets.slint";
 
 /// An event in a month cell or the all-day strip.
 component Chip inherits Rectangle {
@@ -482,9 +482,9 @@ component EventFormView inherits VerticalLayout {
             vertical-alignment: center;
             color: Theme.muted;
         }
-        add-field := LineEdit {
-            accessible-label: "Add attendee";
-            placeholder-text: "name@example.org";
+        add-field := TextField {
+            label: "Add attendee";
+            placeholder: "name@example.org";
             accepted(text) => {
                 if root.add-attendee(text) {
                     self.text = "";
