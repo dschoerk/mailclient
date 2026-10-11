@@ -145,6 +145,7 @@ impl Controller {
         window.set_calendar_showing_event(false);
         window.set_show_calendar(true);
         self.render_calendar();
+        self.sync_calendars();
     }
 
     pub(super) fn set_calendar_day(&self, day: NaiveDate) {
@@ -356,7 +357,23 @@ impl Controller {
             .collect();
         window.set_calendar_day_label(selected.format("%A, %-d %B").to_string().into());
         window.set_calendar_agenda(ModelRc::new(VecModel::from(agenda)));
+        // The opened event shows what the calendar now holds (answers that arrived, an edit saved).
+        let open = self.state.borrow().calendar_open.clone();
+        let fresh = open.and_then(|open| {
+            shown
+                .iter()
+                .find(|s| {
+                    s.account == open.account
+                        && s.stored.event.uid == open.stored.event.uid
+                        // A series' instances share the UID; a single event may have moved.
+                        && (!open.stored.recurring || s.stored.event.start == open.stored.event.start)
+                })
+                .cloned()
+        });
         self.state.borrow_mut().calendar_shown = shown;
+        if let Some(fresh) = fresh {
+            self.show_event_detail(fresh);
+        }
     }
 
     // ---- opening, editing, deleting ----
@@ -369,6 +386,15 @@ impl Controller {
 
     pub(super) fn open_event(&self, id: usize) {
         let Some(shown) = self.state.borrow().calendar_shown.get(id).cloned() else { return };
+        self.show_event_detail(shown);
+        let window = self.window();
+        window.set_calendar_confirm_delete(false);
+        window.set_calendar_editing(false);
+        window.set_calendar_showing_event(true);
+    }
+
+    /// Fills the side panel with `shown` and makes it the opened event.
+    fn show_event_detail(&self, shown: Shown) {
         let e = &shown.stored.event;
         let state = self.state.borrow();
         let account = state.accounts.get(shown.account).map(|a| a.config.email.clone()).unwrap_or_default();
@@ -395,9 +421,6 @@ impl Controller {
             recurring: shown.stored.recurring,
         });
         self.state.borrow_mut().calendar_open = Some(shown);
-        window.set_calendar_confirm_delete(false);
-        window.set_calendar_editing(false);
-        window.set_calendar_showing_event(true);
     }
 
     pub(super) fn new_event(&self) {
@@ -514,6 +537,9 @@ impl Controller {
                 event.end = event.start + (old.end - old.start).max(86400);
             }
             self.state.borrow_mut().calendar_editing = None;
+            self.state.borrow_mut().calendar_open = Some(target.clone());
+            // Back to its details, which update once the change is saved.
+            window.set_calendar_showing_event(true);
             self.send(index, Command::UpdateEvent { target: target.stored, new: event });
             return self.set_status("Saving the event…");
         }

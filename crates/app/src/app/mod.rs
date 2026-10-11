@@ -434,8 +434,13 @@ impl Controller {
                 self.window().set_online(all_online);
             }
             Event::FoldersChanged => self.reload_folders(),
-            Event::NewMail(_) if !self.window().get_notifications() => {}
-            Event::NewMail(messages) => notify_new_mail(&messages),
+            Event::NewMail(messages) => {
+                // An answer to an invitation is mail too: the server's calendar may have changed.
+                self.send(account, Command::SyncCalendars);
+                if self.window().get_notifications() {
+                    notify_new_mail(&messages);
+                }
+            }
             Event::MessagesChanged(_) => {
                 let state = self.state.borrow();
                 // Any folder can add to the listed conversations (replies sit in Sent).

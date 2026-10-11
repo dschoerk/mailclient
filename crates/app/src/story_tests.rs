@@ -783,6 +783,10 @@ fn user_stories() {
             click(&w, "Save and notify")?;
             ensure(w.get_event_error().is_empty(), format!("form error: {}", w.get_event_error()))?;
             wait_for("moved event listed", || w.get_calendar_agenda().iter().any(|a| a.title == "Design sync (moved)" && a.time == "14:00 – 15:00")).await?;
+            // The panel returns to the event, showing the saved change.
+            ensure(w.get_calendar_showing_event(), "edited event not shown")?;
+            wait_for("details updated", || w.get_event_detail().title == "Design sync (moved)" && w.get_event_detail().when.contains("14:00")).await
+                .map_err(|e| format!("{e}; detail: {:?}, {:?}", w.get_event_detail().title, w.get_event_detail().when))?;
             wait_for("update at the attendee", || !server_bodies(&second, "INBOX", "Updated invitation: Design sync (moved)").is_empty()).await?;
             let update = server_bodies(&second, "INBOX", "Updated invitation: Design sync (moved)").remove(0);
             let update = mailcore::ical::parse(update.calendar.as_deref().ok_or("update has no calendar part")?);
