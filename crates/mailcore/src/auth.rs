@@ -223,16 +223,21 @@ impl SignIn {
             match read_redirect(&mut stream).await {
                 Ok(Some(params)) => {
                     let result = callback_code(&params, &self.state);
-                    let page = match &result {
-                        Ok(_) => {
-                            "Signed in. You can close this tab and return to Mail.".to_string()
+                    match &result {
+                        // The app cannot bring itself to the front from the background; the
+                        // browser can, through the URL scheme MainActivity registers.
+                        Ok(_) if cfg!(target_os = "android") => {
+                            let _ = stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: dev.mailclient.app://signed-in\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                            let _ = stream.shutdown().await;
                         }
-                        Err(e) => format!(
-                            "Sign-in failed: {}",
-                            html_escape::encode_text(&format!("{e:#}"))
-                        ),
-                    };
-                    respond(&mut stream, "200 OK", &page).await;
+                        Ok(_) => {
+                            respond(&mut stream, "200 OK", "Signed in. You can close this tab and return to Mail.").await
+                        }
+                        Err(e) => {
+                            let page = format!("Sign-in failed: {}", html_escape::encode_text(&format!("{e:#}")));
+                            respond(&mut stream, "200 OK", &page).await
+                        }
+                    }
                     break result?;
                 }
                 // favicon.ico and other stray requests
