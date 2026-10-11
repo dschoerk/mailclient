@@ -220,6 +220,11 @@ impl App {
         self.touch_drag(label, role, dx, 300);
     }
 
+    /// The same, as a quick flick that ends within Slint's 100 ms gesture delay.
+    pub fn flick_across(&self, label: &str, role: &str, dx: f64) {
+        self.touch_drag(label, role, dx, 60);
+    }
+
     fn touch_drag(&self, label: &str, role: &str, dx: f64, ms: u32) {
         assert!(android(), "a touch gesture");
         let e = self.wait_for(label, role);

@@ -137,7 +137,7 @@ fn swipe_rows() {
     app.swipe_across("Finn: Swipe keep", "ListItem", 0.2);
     app.swipe_across("Finn: Swipe archive", "ListItem", 0.45);
     app.wait_until("archived on the server", || server_subjects(&account, "Archive") == ["Swipe archive"]);
-    app.swipe_across("Finn: Swipe delete", "ListItem", -0.45);
+    app.flick_across("Finn: Swipe delete", "ListItem", -0.45);
     app.wait_until("deleted on the server", || server_subjects(&account, "Trash") == ["Swipe delete"]);
     assert_eq!(server_subjects(&account, "INBOX"), ["Swipe keep"]);
     assert!(app.exists("Finn: Swipe keep", "ListItem"), "short swipe removed the row");

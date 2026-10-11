@@ -154,12 +154,13 @@ export component MessageRow inherits Rectangle {
     accessible-action-default => { root.clicked(); }
     height: root.head + (root.expanded ? root.thread.length * 30px + 8px : 0px);
     // Revealed behind the row while it is swiped: green archives, red deletes.
-    background: root.offset > 0 ? #2e9d5b : #d93f3f;
-    if root.offset != 0: Image {
-        x: root.offset > 0 ? 20px : root.width - 20px - self.width;
+    // The row's drawn position, not `offset`: after letting go it still slides back.
+    background: front.x > 0 ? #2e9d5b : #d93f3f;
+    if front.x != 0: Image {
+        x: front.x > 0 ? 20px : root.width - 20px - self.width;
         y: (root.head - self.height) / 2;
         width: 24px;
-        source: root.offset > 0 ? @image-url("icons/archive.svg") : @image-url("icons/trash.svg");
+        source: front.x > 0 ? @image-url("icons/archive.svg") : @image-url("icons/trash.svg");
         colorize: white;
         opacity: root.armed ? 1 : 0.5;
     }
@@ -173,7 +174,7 @@ export component MessageRow inherits Rectangle {
                 root.swiped(self.current-position.x > self.pressed-position.x);
             }
         }
-        Rectangle {
+        front := Rectangle {
             x: root.offset;
             width: root.width;
             height: root.height;
@@ -326,8 +327,11 @@ export component MessageRow inherits Rectangle {
                 y: 0;
                 height: root.head;
                 clicked => {
+                    // A flick released within Slint's 100 ms gesture delay arrives as a click: still a swipe.
+                    if root.swipeable && abs(self.mouse-x - self.pressed-x) > root.width * 0.35 {
+                        root.swiped(self.mouse-x > self.pressed-x);
                     // The release that ends a long press is not a click.
-                    if !root.long-pressed {
+                    } else if !root.long-pressed {
                         root.clicked();
                     }
                 }
