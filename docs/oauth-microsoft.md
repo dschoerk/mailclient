@@ -43,19 +43,24 @@ has **not been tested against Microsoft yet**: it needs an app registration firs
    `Calendars.ReadWrite`.
 5. Copy the **Application (client) ID** from the overview page.
 
-No client secret is needed (public client). The client ID is not a secret.
+No client secret is needed (public client).
 
 ## Build with the client ID
 
-The ID is compiled in from `MAILCLIENT_MS_CLIENT_ID`:
+The ID is compiled in from `MAILCLIENT_MS_CLIENT_ID`. It lives, like the Google values, in the
+committed `oauth_secrets.toml` at the repo root; [`build.rs`](../crates/mailcore/build.rs) passes
+it to every `cargo` build (including `scripts/build-android.sh`). A variable set in the shell wins:
 
-```sh
-MAILCLIENT_MS_CLIENT_ID=<client id> cargo run
-MAILCLIENT_MS_CLIENT_ID=<client id> scripts/build-android.sh --no-default-features --target x86_64-linux-android
+```toml
+# oauth_secrets.toml at the repo root (committed)
+MAILCLIENT_MS_CLIENT_ID = "<client id>"
+MAILCLIENT_GOOGLE_CLIENT_ID = "<installed.client_id>"
+# Reversed, so GitHub's secret scanning doesn't report it to Google; build.rs flips it back.
+MAILCLIENT_GOOGLE_CLIENT_SECRET_REV = "<installed.client_secret reversed>"
 ```
 
-Once it works, replace `MICROSOFT_CLIENT_ID` in `auth.rs` with the literal ID so every build
-has it. Without an ID, the sign-in button reports "this build has no Microsoft client ID".
+The IDs end up readable in every shipped binary anyway, so committing them gives nothing away. Without
+an ID, the setup screen falls back to a password, which Microsoft rejects.
 
 ## Testing checklist
 
