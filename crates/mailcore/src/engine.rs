@@ -249,19 +249,6 @@ impl<B: Backend> Worker<B> {
             if matches!(command, Command::Stop) {
                 break;
             }
-            // The variant only: drafts and events are private.
-            let name = format!("{command:?}").split([' ', '(', '{']).next().unwrap_or_default().to_string();
-            let started = std::time::Instant::now();
-            log::debug!("engine: {name} started");
-            // HTTP, not the IMAP session: a failure says nothing about the mail connection.
-            if matches!(command, Command::SyncCalendars | Command::SaveEvent { .. } | Command::UpdateEvent { .. } | Command::DeleteEvent { .. }) {
-                if let Err(e) = self.calendar(command).await {
-                    log::warn!("calendar: {e:#}");
-                    self.emit(Event::CalendarFailed(format!("{e:#}")));
-                }
-                log::debug!("engine: {name} done in {:?}", started.elapsed());
-                continue;
-            }
             // Collapse bursts: syncs (IDLE notifications plus a poll tick), and searches typed
             // faster than the server answers, where the last one wins.
             if matches!(command, Command::SyncAll | Command::Search(_)) {
@@ -276,37 +263,55 @@ impl<B: Backend> Worker<B> {
                     }
                 }
             }
-            let draft_id = match &command {
-                Command::SaveDraft { id, .. } => Some(*id),
-                _ => None,
-            };
-            // Sending is never retried: SMTP may already have delivered it.
-            let retry = (!matches!(command, Command::Send { .. })).then(|| command.clone());
-            let mut result = self.handle(command).await;
-            if let (Err(e), Some(command)) = (&result, retry)
-                && !B::is_rejection(e)
-            {
-                // Usually a connection the server dropped while idle: reconnect and try again once.
-                log::info!("engine: {e:#}; reconnecting");
-                self.conn = None;
-                result = self.handle(command).await;
-            }
-            log::debug!("engine: {name} done in {:?}", started.elapsed());
-            if let Err(e) = result {
-                log::warn!("engine: {e:#}");
-                if let Some(id) = draft_id {
-                    self.emit(Event::SendFailed(id, format!("Draft not saved: {e:#}")));
-                }
-                if !B::is_rejection(&e) {
-                    // Assume the connection is broken; reconnect on next use.
-                    self.conn = None;
-                    self.emit(Event::Online(false));
-                }
-                self.emit(Event::Error(format!("{e:#}")));
-            }
+            self.execute(command).await;
         }
         if let Some(conn) = self.conn.take() {
             conn.logout().await;
+        }
+    }
+
+    /// Runs one command, retrying once on a dropped connection, and reports a failure as events.
+    async fn execute(&mut self, command: Command) {
+        // The variant only: drafts and events are private.
+        let name = format!("{command:?}").split([' ', '(', '{']).next().unwrap_or_default().to_string();
+        let started = std::time::Instant::now();
+        log::debug!("engine: {name} started");
+        // HTTP, not the IMAP session: a failure says nothing about the mail connection.
+        if matches!(command, Command::SyncCalendars | Command::SaveEvent { .. } | Command::UpdateEvent { .. } | Command::DeleteEvent { .. }) {
+            if let Err(e) = self.calendar(command).await {
+                log::warn!("calendar: {e:#}");
+                self.emit(Event::CalendarFailed(format!("{e:#}")));
+            }
+            log::debug!("engine: {name} done in {:?}", started.elapsed());
+            return;
+        }
+        let draft_id = match &command {
+            Command::SaveDraft { id, .. } => Some(*id),
+            _ => None,
+        };
+        // Sending is never retried: SMTP may already have delivered it.
+        let retry = (!matches!(command, Command::Send { .. })).then(|| command.clone());
+        let mut result = self.handle(command).await;
+        if let (Err(e), Some(command)) = (&result, retry)
+            && !B::is_rejection(e)
+        {
+            // Usually a connection the server dropped while idle: reconnect and try again once.
+            log::info!("engine: {e:#}; reconnecting");
+            self.conn = None;
+            result = self.handle(command).await;
+        }
+        log::debug!("engine: {name} done in {:?}", started.elapsed());
+        if let Err(e) = result {
+            log::warn!("engine: {e:#}");
+            if let Some(id) = draft_id {
+                self.emit(Event::SendFailed(id, format!("Draft not saved: {e:#}")));
+            }
+            if !B::is_rejection(&e) {
+                // Assume the connection is broken; reconnect on next use.
+                self.conn = None;
+                self.emit(Event::Online(false));
+            }
+            self.emit(Event::Error(format!("{e:#}")));
         }
     }
 
@@ -727,5 +732,253 @@ async fn idle_loop<B: Backend>(
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(300));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::backend::FolderState;
+
+    /// A server refusal; any other error counts as a dropped connection.
+    #[derive(Debug)]
+    struct Refused;
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("refused")
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
+    #[derive(Default)]
+    struct Server {
+        folders: HashMap<String, Vec<MessageSummary>>,
+        /// Returned by the next `apply` / `send` calls instead of doing anything.
+        apply_errors: Vec<anyhow::Error>,
+        send_errors: Vec<anyhow::Error>,
+        connects: usize,
+        sends: usize,
+    }
+
+    thread_local! {
+        // Per test: `#[tokio::test]` runs each test on its own thread.
+        static SERVER: RefCell<Server> = RefCell::default();
+    }
+
+    fn server<T>(f: impl FnOnce(&mut Server) -> T) -> T {
+        SERVER.with(|s| f(&mut s.borrow_mut()))
+    }
+
+    fn in_folder(folder: &str, keep: impl Fn(&MessageSummary) -> bool) -> Vec<MessageSummary> {
+        server(|s| s.folders.get(folder).into_iter().flatten().filter(|m| keep(m)).cloned().collect())
+    }
+
+    struct Fake;
+
+    impl Backend for Fake {
+        async fn connect(_: &AccountConfig, _: &str) -> Result<Fake> {
+            server(|s| s.connects += 1);
+            Ok(Fake)
+        }
+
+        async fn logout(self) {}
+
+        fn is_rejection(e: &anyhow::Error) -> bool {
+            e.is::<Refused>()
+        }
+
+        async fn list_folders(&mut self) -> Result<Vec<(String, Option<String>, Role)>> {
+            Ok(vec![("INBOX".into(), None, Role::Inbox), ("Trash".into(), None, Role::Trash)])
+        }
+
+        async fn select(&mut self, folder: &str) -> Result<FolderState> {
+            let exists = in_folder(folder, |_| true).len() as u32;
+            Ok(FolderState { exists, uid_validity: Some(1), highest_modseq: None })
+        }
+
+        async fn fetch_new(&mut self, folder: &str, after: u32) -> Result<Vec<MessageSummary>> {
+            Ok(in_folder(folder, |m| m.uid > after))
+        }
+
+        async fn fetch_latest(&mut self, folder: &str, _: u32, count: u32) -> Result<Vec<MessageSummary>> {
+            let all = in_folder(folder, |_| true);
+            Ok(all[all.len().saturating_sub(count as usize)..].to_vec())
+        }
+
+        async fn fetch_older(&mut self, _: &str, _: u32, _: u32) -> Result<Vec<MessageSummary>> {
+            Ok(Vec::new())
+        }
+
+        async fn fetch_headers(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<MessageSummary>> {
+            Ok(in_folder(folder, |m| uids.contains(&m.uid)))
+        }
+
+        async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<(u32, bool, bool, bool)>> {
+            let found = in_folder(folder, |m| ranges.iter().any(|(a, b)| (*a..=*b).contains(&m.uid)));
+            Ok(found.iter().map(|m| (m.uid, m.seen, m.flagged, m.answered)).collect())
+        }
+
+        async fn search(&mut self, _: &str, _: &str) -> Result<Vec<u32>> {
+            Ok(Vec::new())
+        }
+
+        async fn fetch_bodies(&mut self, _: &str, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+            Ok(uids.iter().map(|uid| (*uid, b"Subject: Hi\r\n\r\nHello\r\n".to_vec())).collect())
+        }
+
+        async fn apply(&mut self, folder: &str, uid: u32, op: &PendingOp) -> Result<()> {
+            if let Some(e) = server(|s| s.apply_errors.pop()) {
+                return Err(e);
+            }
+            server(|s| {
+                let messages = s.folders.entry(folder.to_string()).or_default();
+                match op {
+                    PendingOp::SetSeen(v) => messages.iter_mut().filter(|m| m.uid == uid).for_each(|m| m.seen = *v),
+                    PendingOp::SetFlagged(v) => messages.iter_mut().filter(|m| m.uid == uid).for_each(|m| m.flagged = *v),
+                    PendingOp::SetAnswered => messages.iter_mut().filter(|m| m.uid == uid).for_each(|m| m.answered = true),
+                    PendingOp::Move(_) | PendingOp::Expunge => messages.retain(|m| m.uid != uid),
+                }
+            });
+            Ok(())
+        }
+
+        async fn send(_: &AccountConfig, _: &str, _: &[u8], _: &[String]) -> Result<()> {
+            server(|s| {
+                s.sends += 1;
+                s.send_errors.pop().map_or(Ok(()), Err)
+            })
+        }
+
+        fn files_sent(_: &AccountConfig) -> bool {
+            true
+        }
+
+        async fn save_sent(&mut self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn save_draft(&mut self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn find_message_id(&mut self, _: &str, _: &str) -> Result<Vec<u32>> {
+            Ok(Vec::new())
+        }
+
+        async fn create_folder(&mut self, _: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn wait_for_change(self, _: &str, _: Duration) -> Result<(Fake, bool)> {
+            Ok((self, false))
+        }
+    }
+
+    fn message(uid: u32, seen: bool) -> MessageSummary {
+        MessageSummary { folder: "INBOX".into(), uid, subject: format!("Message {uid}"), date: uid.into(), seen, ..Default::default() }
+    }
+
+    fn worker() -> (Worker<Fake>, Arc<Mutex<Vec<Event>>>) {
+        let account = AccountConfig::guess("me@example.org");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let worker = Worker {
+            creds: Arc::new(Credentials::with_secret(&account, "secret".into())),
+            account,
+            store: Store::open_in_memory().unwrap(),
+            conn: None,
+            active: None,
+            on_event: Arc::new(move |e| sink.lock().unwrap().push(e)),
+        };
+        (worker, events)
+    }
+
+    fn cached(worker: &Worker<Fake>) -> Vec<u32> {
+        let mut uids = worker.store.uids("INBOX").unwrap();
+        uids.sort_unstable();
+        uids
+    }
+
+    fn errors(events: &Mutex<Vec<Event>>) -> Vec<Event> {
+        events.lock().unwrap().iter().filter(|e| matches!(e, Event::Error(_))).cloned().collect()
+    }
+
+    #[tokio::test]
+    async fn sync_reports_new_mail_and_drops_expunged() {
+        server(|s| s.folders.insert("INBOX".into(), vec![message(1, true), message(2, true)]));
+        let (mut worker, events) = worker();
+        worker.execute(Command::SyncAll).await;
+        assert_eq!(cached(&worker), [1, 2]);
+        // The first sync fills the cache without notifying.
+        assert!(!events.lock().unwrap().iter().any(|e| matches!(e, Event::NewMail(_))));
+
+        server(|s| {
+            let inbox = s.folders.get_mut("INBOX").unwrap();
+            inbox.remove(0);
+            inbox.push(message(3, false));
+        });
+        worker.execute(Command::SyncAll).await;
+        assert_eq!(cached(&worker), [2, 3]);
+        let new_mail: Vec<u32> = events.lock().unwrap().iter().filter_map(|e| match e {
+            Event::NewMail(m) => Some(m.iter().map(|m| m.uid)),
+            _ => None,
+        }).flatten().collect();
+        assert_eq!(new_mail, [3]);
+        assert_eq!(errors(&events), []);
+    }
+
+    #[tokio::test]
+    async fn refused_move_is_undone_locally() {
+        server(|s| s.folders.insert("INBOX".into(), vec![message(1, true)]));
+        let (mut worker, events) = worker();
+        worker.execute(Command::SyncAll).await;
+        let op = delete_op(&worker.store, "INBOX").unwrap();
+        assert_eq!(op, PendingOp::Move("Trash".into()));
+        worker.store.apply_local("INBOX", 1, &op).unwrap();
+        assert!(cached(&worker).is_empty());
+
+        server(|s| s.apply_errors.push(Refused.into()));
+        worker.execute(Command::Flush).await;
+        assert_eq!(cached(&worker), [1]);
+        assert!(worker.store.pending_ops().unwrap().is_empty());
+        assert_eq!(errors(&events), []);
+    }
+
+    #[tokio::test]
+    async fn dropped_connection_is_retried_once() {
+        server(|s| s.folders.insert("INBOX".into(), vec![message(1, true)]));
+        let (mut worker, events) = worker();
+        worker.execute(Command::SyncAll).await;
+        worker.store.apply_local("INBOX", 1, &PendingOp::SetFlagged(true)).unwrap();
+        let connects = server(|s| s.connects);
+
+        server(|s| s.apply_errors.push(anyhow!("connection reset")));
+        worker.execute(Command::Flush).await;
+        assert_eq!(server(|s| s.connects), connects + 1);
+        assert!(in_folder("INBOX", |m| m.uid == 1)[0].flagged);
+        assert!(worker.store.pending_ops().unwrap().is_empty());
+        assert_eq!(errors(&events), []);
+    }
+
+    #[tokio::test]
+    async fn failed_send_is_not_retried() {
+        let (mut worker, events) = worker();
+        server(|s| s.send_errors.push(anyhow!("connection reset")));
+        let draft = Draft {
+            to: "you@example.org".into(),
+            subject: "Hi".into(),
+            body: "Hello".into(),
+            message_id: mime::new_message_id("me@example.org"),
+            ..Default::default()
+        };
+        worker.execute(Command::Send { id: 7, draft, replied_to: None }).await;
+        assert_eq!(server(|s| s.sends), 1);
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::SendFailed(7, _))));
     }
 }
