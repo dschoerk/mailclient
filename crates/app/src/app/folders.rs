@@ -100,17 +100,18 @@ impl Controller {
 
     pub(super) fn update_folder_selection(&self) {
         let state = self.state.borrow();
-        let index = state.current.as_ref().and_then(|c| state.rows.iter().position(|r| r == c));
+        let index = state.current.as_ref().filter(|_| !state.everywhere).and_then(|c| state.rows.iter().position(|r| r == c));
         let window = self.window();
         window.set_current_folder(index.map(|i| i as i32).unwrap_or(-1));
-        if state.search.is_empty() {
-            let title = match &state.current {
-                Some(Row::Unified) => "All inboxes".to_string(),
-                Some(Row::Folder(a, f)) => state.folder(*a, f).map(|f| f.display_name()).unwrap_or_default(),
-                _ => String::new(),
-            };
-            window.set_list_title(title.into());
-        }
+        // The filter pills: "in" is the open folder, none while searching everywhere.
+        let folder = match &state.current {
+            _ if state.everywhere => String::new(),
+            Some(Row::Unified) => "All inboxes".to_string(),
+            Some(Row::Folder(a, f)) => state.folder(*a, f).map(|f| f.display_name()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        window.set_filter_in(folder.into());
+        window.set_filter_from(state.search_from.clone().unwrap_or_default().into());
     }
 
     pub(super) fn select_folder(&self, index: usize) {
@@ -122,7 +123,11 @@ impl Controller {
             let mut state = self.state.borrow_mut();
             state.current = Some(row.clone());
             state.search.clear();
+            state.search_from = None;
+            state.everywhere = false;
+            state.search_hits.clear();
         }
+        self.window().set_search_text("".into());
         self.window().set_searching(false);
         self.update_folder_selection();
         self.reload_messages();
@@ -140,44 +145,117 @@ impl Controller {
         }
     }
 
+    /// The search box changed. Finished `from:` and `in:` words (a space after them) become filter pills.
     pub(super) fn search(&self, text: &str) {
-        let query = text.trim().to_string();
+        let mut kept = String::new();
+        let mut converted = false;
+        for word in text.split_inclusive(char::is_whitespace) {
+            let finished = word.ends_with(char::is_whitespace);
+            if let Some(from) = filter_word(word.trim(), "from:").filter(|_| finished) {
+                self.state.borrow_mut().search_from = Some(from.to_string());
+                converted = true;
+            } else if filter_word(word.trim(), "in:").filter(|_| finished).is_some_and(|name| self.open_folder_named(name)) {
+                converted = true;
+            } else {
+                kept.push_str(word);
+            }
+        }
+        if converted {
+            self.window().set_search_text(kept.as_str().into());
+        }
+        let query = kept.trim().to_string();
         {
             let mut state = self.state.borrow_mut();
-            if state.search == query {
+            if state.search == query && !converted {
                 return;
             }
-            state.search = query.clone();
-            state.search_hits.clear();
+            state.search = query;
         }
-        let searching = !query.is_empty();
-        if searching {
+        self.run_search();
+    }
+
+    /// `in:name`: opens the folder of that name, in the browsed account first. Case, spaces and
+    /// dashes don't matter: `in:alle-nachrichten` finds "Alle Nachrichten".
+    fn open_folder_named(&self, name: &str) -> bool {
+        let found = {
+            let state = self.state.borrow();
+            let browsed = match &state.current {
+                Some(Row::Folder(a, _)) => *a,
+                _ => 0,
+            };
+            let mut accounts: Vec<usize> = (0..state.accounts.len()).collect();
+            accounts.sort_by_key(|a| *a != browsed);
+            accounts.into_iter().find_map(|a| {
+                let folder = state.accounts[a].folders.iter().find(|f| [f.name.clone(), f.display_name()].iter().any(|n| loose(n) == loose(name)))?;
+                Some((a, folder.name.clone()))
+            })
+        };
+        let Some((account, folder)) = found else { return false };
+        {
+            let mut state = self.state.borrow_mut();
+            state.current = Some(Row::Folder(account, folder.clone()));
+            state.everywhere = false;
+        }
+        self.send(account, Command::OpenFolder(folder));
+        true
+    }
+
+    /// Applies the search text and filters: the pills, the list, and (with something to match) the server.
+    fn run_search(&self) {
+        let (searching, query, scopes) = {
+            let mut state = self.state.borrow_mut();
+            state.search_hits.clear();
+            // The server searches one folder, or (None) where most mail is: Gmail's All Mail.
+            let scopes: Vec<(usize, Option<String>)> = (0..state.accounts.len())
+                .filter_map(|a| state.search_scope(a).map(|folders| (a, if folders.len() == 1 { folders.into_iter().next() } else { None })))
+                .collect();
+            (state.searching(), state.search_query(), scopes)
+        };
+        if query.is_empty() {
+            self.search_timer.stop();
+        } else {
             self.search_timer.start(slint::TimerMode::SingleShot, SERVER_SEARCH_DELAY, move || {
-                let query = query.clone();
+                let (query, scopes) = (query.clone(), scopes.clone());
                 with_controller(move |c| {
-                    for account in 0..c.state.borrow().accounts.len() {
-                        c.send(account, Command::Search(query.clone()));
+                    for (account, folder) in scopes {
+                        c.send(account, Command::Search { query: query.clone(), folder });
                     }
                 });
             });
-        } else {
-            self.search_timer.stop();
         }
-        let window = self.window();
-        window.set_searching(searching);
-        if searching {
-            window.set_list_title(format!("Search: {}", text.trim()).into());
-        } else {
-            self.update_folder_selection();
-        }
+        self.window().set_searching(searching);
+        self.update_folder_selection();
         self.reload_messages();
+    }
+
+    /// Back or Escape while searching: no text, no sender, the open folder again.
+    pub(super) fn clear_search(&self) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.search.clear();
+            state.search_from = None;
+            state.everywhere = false;
+        }
+        self.window().set_search_text("".into());
+        self.run_search();
+    }
+
+    pub(super) fn remove_filter_from(&self) {
+        self.state.borrow_mut().search_from = None;
+        self.run_search();
+    }
+
+    /// Removing the "in" pill: search every folder of every account.
+    pub(super) fn remove_filter_in(&self) {
+        self.state.borrow_mut().everywhere = true;
+        self.run_search();
     }
 
     /// Asks the engines for mail older than the list shows, when it is scrolled to its end.
     pub(super) fn load_older(&self) {
         let targets: Vec<(usize, String)> = {
             let mut state = self.state.borrow_mut();
-            let Some(current) = state.current.clone().filter(|_| state.search.is_empty()) else { return };
+            let Some(current) = state.current.clone().filter(|_| !state.searching()) else { return };
             let requested = Some((current.clone(), state.messages.len()));
             if state.older_requested == requested {
                 return;
@@ -199,16 +277,38 @@ impl Controller {
         }
     }
 
+    /// Lists the mail from `address` in the open folder (clicking a sender, Find similar).
+    pub(super) fn show_mail_from(&self, address: &str) {
+        if address.is_empty() {
+            return;
+        }
+        {
+            let mut state = self.state.borrow_mut();
+            state.search_from = Some(address.to_string());
+            state.search.clear();
+        }
+        self.window().set_search_text("".into());
+        self.run_search();
+    }
+
     pub(super) fn reload_messages(&self) {
         let rows = {
             let state = self.state.borrow();
-            let limit = if state.search.is_empty() { LIST_LIMIT } else { 500 };
+            let limit = if state.searching() { 500 } else { LIST_LIMIT };
             let mut rows = Vec::new();
             for (i, account) in state.accounts.iter().enumerate() {
                 let store = &account.store;
-                let found = if !state.search.is_empty() {
-                    store.search(&state.search, limit).and_then(|mut found| {
-                        for (_, folder, uid) in state.search_hits.iter().filter(|h| h.0 == i) {
+                let found = if state.searching() {
+                    let Some(scope) = state.search_scope(i) else { continue };
+                    let query = state.search_query();
+                    let searched = if scope.is_empty() {
+                        store.search(&query, None, limit)
+                    } else {
+                        scope.iter().map(|f| store.search(&query, Some(f), limit)).collect::<Result<Vec<_>>>().map(|found| found.concat())
+                    };
+                    searched.and_then(|mut found| {
+                        let in_scope = |folder: &String| scope.is_empty() || scope.contains(folder);
+                        for (_, folder, uid) in state.search_hits.iter().filter(|h| h.0 == i && in_scope(&h.1)) {
                             if !found.iter().any(|m| m.folder == *folder && m.uid == *uid)
                                 && let Some(m) = store.message(folder, *uid)?
                             {
@@ -242,6 +342,19 @@ impl Controller {
                 let role = |folder: &str| state.folder(i, folder).map(|f| f.role).unwrap_or(Role::Other);
                 rows.extend(conversation_rows(listed, &all, role).into_iter().map(|(m, c)| (i, m, c)));
             }
+            // Rows moved or deleted a moment ago stay where they were, as strips with Undo.
+            {
+                let view = state.view();
+                for undo in state.undos.iter().filter(|u| u.view == view) {
+                    for (m, c) in &undo.rows {
+                        // The strip stands for the conversation: other copies of it (Gmail's All Mail,
+                        // in a search of all folders) are not listed beside it.
+                        let ids: HashSet<&str> = c.iter().map(|m| m.message_id.as_str()).filter(|id| !id.is_empty()).collect();
+                        rows.retain(|(a, _, conv)| *a != undo.account || !conv.iter().any(|x| ids.contains(x.message_id.as_str())));
+                        rows.push((undo.account, m.clone(), c.clone()));
+                    }
+                }
+            }
             // Each account lists newest first; a stable sort merges them and keeps that order.
             rows.sort_by_key(|(_, m, _)| Reverse(m.date));
             rows.truncate(limit);
@@ -254,7 +367,11 @@ impl Controller {
                 state.folder(account, folder).is_some_and(|f| matches!(f.role, Role::Sent | Role::Drafts))
             };
             rows.iter()
-                .map(|(a, m, conversation)| MessageItem {
+                .map(|(a, m, conversation)| (a, m, conversation, state.undo_of(*a, m).map(|i| &state.undos[i])))
+                .map(|(a, m, conversation, undo)| MessageItem {
+                    folder_label: if state.everywhere { folder_tag(&state, *a, m).into() } else { Default::default() },
+                    removed: undo.map_or("", |u| u.kind).into(),
+                    removed_text: undo.map(|u| u.text.clone()).unwrap_or_default().into(),
                     folder: m.folder.clone().into(),
                     uid: m.uid as i32,
                     sender: if show_recipients(*a, &m.folder) {
@@ -405,4 +522,53 @@ fn groups_list_into_conversations() {
             (2, vec![("INBOX", 1), ("Sent", 1), ("INBOX", 2)]),
         ]
     );
+}
+
+/// Where a listed message is, for the "all folders" view. Gmail's All Mail copies by their labels
+/// ("Inbox · Archiv"); one without any is archived and named after All Mail.
+fn folder_tag(state: &State, account: usize, m: &MessageSummary) -> String {
+    let Some(a) = state.accounts.get(account) else { return String::new() };
+    let name = |folder: &str| state.folder(account, folder).map(|f| f.display_name()).unwrap_or_else(|| folder.to_string());
+    let in_all_mail = state.folder(account, &m.folder).is_some_and(|f| f.role == Role::All);
+    if !(a.config.is_gmail() && in_all_mail) {
+        return name(&m.folder);
+    }
+    let of_role = |role: Role| a.folders.iter().find(|f| f.role == role).map(|f| f.display_name());
+    let shown: Vec<String> = a
+        .store
+        .labels(&m.folder, m.uid)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|l| match l.as_str() {
+            "\\Inbox" => of_role(Role::Inbox),
+            "\\Sent" => of_role(Role::Sent),
+            "\\Draft" => of_role(Role::Drafts),
+            // Important, Starred: marks, not places.
+            l if l.starts_with('\\') => None,
+            l => Some(name(l)),
+        })
+        .collect();
+    if shown.is_empty() { name(&m.folder) } else { shown.join(" · ") }
+}
+
+/// A folder name for comparing what was typed: lower case, letters and digits only.
+fn loose(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// `from:x` with key "from:" → "x" (key in any case); None for other words or an empty value.
+fn filter_word<'a>(word: &'a str, key: &str) -> Option<&'a str> {
+    word.get(..key.len()).filter(|p| p.eq_ignore_ascii_case(key)).map(|_| &word[key.len()..]).filter(|v| !v.is_empty())
+}
+
+#[cfg(test)]
+#[test]
+fn reads_filter_words() {
+    assert_eq!(filter_word("FROM:a@b.org", "from:"), Some("a@b.org"));
+    assert_eq!(filter_word("in:Archive", "in:"), Some("Archive"));
+    assert_eq!(filter_word("from:", "from:"), None);
+    assert_eq!(filter_word("frö", "from:"), None);
+    assert_eq!(filter_word("inbox", "in:"), None);
+    assert_eq!(loose("Alle Nachrichten"), loose("alle-nachrichten"));
+    assert_ne!(loose("Archiv"), loose("Archive"));
 }

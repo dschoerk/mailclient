@@ -46,8 +46,8 @@ pub enum Command {
     OpenFolder(String),
     /// Fetch the headers of messages older than any synced in `folder`.
     FetchOlder(String),
-    /// Search the server; answered with [`Event::SearchHits`].
-    Search(String),
+    /// Search the server, in `folder` or where most mail lives; answered with [`Event::SearchHits`].
+    Search { query: String, folder: Option<String> },
     /// Download a message body that is not cached yet.
     FetchBody { folder: String, uid: u32 },
     /// Push locally queued changes to the server.
@@ -202,6 +202,49 @@ pub fn delete_op(store: &Store, folder: &str) -> Result<PendingOp> {
     })
 }
 
+/// What moving `m` to `dest` means. Gmail's All Mail holds every message once, labelled with the
+/// folders it shows in: from there a move takes the labels of those folders off and puts `dest`'s
+/// on (none for All Mail itself: archiving). Elsewhere, and into Trash or Spam (outside All Mail),
+/// it is a plain move.
+pub fn move_op(store: &Store, gmail: bool, m: &MessageSummary, dest: &str) -> Result<PendingOp> {
+    if !gmail || store.folder_role(&m.folder)? != Role::All || matches!(store.folder_role(dest)?, Role::Trash | Role::Junk) {
+        return Ok(PendingOp::Move(dest.to_string()));
+    }
+    let add: Vec<String> = label_of_folder(store, dest)?.into_iter().collect();
+    let remove = store
+        .labels(&m.folder, m.uid)?
+        .into_iter()
+        // Where it shows: the inbox and the user's labels, not Important or Starred.
+        .filter(|l| (l == "\\Inbox" || !l.starts_with('\\')) && !add.contains(l))
+        .collect();
+    Ok(PendingOp::Relabel { add, remove })
+}
+
+/// The Gmail label that puts a message in `folder`; None for All Mail.
+fn label_of_folder(store: &Store, folder: &str) -> Result<Option<String>> {
+    Ok(match store.folder_role(folder)? {
+        Role::All => None,
+        Role::Inbox => Some("\\Inbox".into()),
+        Role::Sent => Some("\\Sent".into()),
+        Role::Drafts => Some("\\Draft".into()),
+        Role::Flagged => Some("\\Starred".into()),
+        _ => Some(folder.to_string()),
+    })
+}
+
+/// The folder showing the messages with this Gmail label, if there is one.
+fn folder_of_label(store: &Store, label: &str) -> Result<Option<String>> {
+    let role = match label {
+        "\\Inbox" => Role::Inbox,
+        "\\Sent" => Role::Sent,
+        "\\Draft" => Role::Drafts,
+        "\\Starred" => Role::Flagged,
+        l if l.starts_with('\\') => return Ok(None),
+        l => return Ok(Some(l.to_string())),
+    };
+    store.folder_by_role(role)
+}
+
 pub fn archive_op(store: &Store, folder: &str) -> Result<PendingOp> {
     let dest = match store.folder_by_role(Role::Archive)? {
         Some(a) => a,
@@ -209,7 +252,8 @@ pub fn archive_op(store: &Store, folder: &str) -> Result<PendingOp> {
             .folder_by_role(Role::All)?
             .ok_or_else(|| anyhow!("no Archive folder on this account"))?,
     };
-    if dest == folder {
+    // Gmail: archiving from All Mail takes its labels off (see `move_op`).
+    if dest == folder && store.folder_role(folder)? != Role::All {
         return Err(anyhow!("message is already archived"));
     }
     Ok(PendingOp::Move(dest))
@@ -251,11 +295,11 @@ impl<B: Backend> Worker<B> {
             }
             // Collapse bursts: syncs (IDLE notifications plus a poll tick), and searches typed
             // faster than the server answers, where the last one wins.
-            if matches!(command, Command::SyncAll | Command::Search(_)) {
+            if matches!(command, Command::SyncAll | Command::Search { .. }) {
                 while let Ok(next) = rx.try_recv() {
                     match (&command, next) {
                         (Command::SyncAll, Command::SyncAll) => {}
-                        (Command::Search(_), next @ Command::Search(_)) => command = next,
+                        (Command::Search { .. }, next @ Command::Search { .. }) => command = next,
                         (_, next) => {
                             queued = Some(next);
                             break;
@@ -338,8 +382,10 @@ impl<B: Backend> Worker<B> {
                     self.emit(Event::FoldersChanged);
                 }
                 let mut targets = Vec::new();
-                // Sent too: the user's replies belong in the inbox's conversations.
-                for role in [Role::Inbox, Role::Sent] {
+                // Sent too: the user's replies belong in the inbox's conversations. Gmail: All Mail
+                // as well, where a search of all folders looks, with the labels saying where each is.
+                let all_mail = self.account.is_gmail().then_some(Role::All);
+                for role in [Role::Inbox, Role::Sent].into_iter().chain(all_mail) {
                     targets.extend(self.store.folder_by_role(role)?);
                 }
                 if let Some(active) = self.active.clone().filter(|a| !targets.contains(a)) {
@@ -369,7 +415,7 @@ impl<B: Backend> Worker<B> {
                 }
                 self.emit(Event::Status(String::new()));
             }
-            Command::Search(query) => self.search(query).await?,
+            Command::Search { query, folder } => self.search(query, folder).await?,
             Command::FetchBody { folder, uid } => {
                 self.download_bodies(&folder, &[uid]).await?;
                 self.emit(Event::BodyReady { folder, uid });
@@ -494,16 +540,59 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn flush(&mut self) -> Result<()> {
+        let (mut touched, mut done) = (Vec::new(), Vec::new());
+        let result = self.apply_pending(&mut touched, &mut done).await;
+        // Whatever the server did is mirrored by syncing those folders now, not by guessing: Gmail
+        // keeps a message moved out of All Mail there and drops a trashed one from every label.
+        // Moved copies have new UIDs in their destination. Not announced as new mail: the user
+        // put them there. (After a connection error the next sync does it.)
+        if result.is_ok() {
+            touched.sort();
+            touched.dedup();
+            for folder in touched {
+                if let Err(e) = self.sync_folder_as(&folder, false).await {
+                    log::warn!("cannot sync {folder} after moving mail: {e:#}");
+                }
+            }
+        }
+        // Only now: until its folder is synced, a moved message stays hidden where it was.
+        for id in done {
+            self.store.remove_pending_op(id)?;
+        }
+        result
+    }
+
+    /// Sends the queued changes. A sent move or delete adds its id to `done` and the folders it
+    /// may have changed to `touched`; the rest are settled here.
+    async fn apply_pending(&mut self, touched: &mut Vec<String>, done: &mut Vec<i64>) -> Result<()> {
         let ops = self.store.pending_ops()?;
         for (id, folder, uid, op) in ops {
+            // Before the change: where the message is (Gmail: also All Mail and its labels).
+            let copies = match op {
+                PendingOp::Move(_) | PendingOp::Expunge => self.store.folders_with_copies(&folder, uid)?,
+                _ => Vec::new(),
+            };
             let result = self.conn().await?.apply(&folder, uid, &op).await;
             match result {
                 Ok(()) => {
-                    // Hidden while queued; the destination copy shows up with its new UID on the next sync.
                     if let PendingOp::Move(_) | PendingOp::Expunge = op {
-                        self.store.delete_messages(&folder, &[uid])?;
+                        touched.extend(copies);
+                        if let PendingOp::Move(dest) = &op {
+                            touched.push(dest.clone());
+                        }
+                        // A folder spanning the others (Gmail's All Mail) changes with them.
+                        touched.extend(self.store.folder_by_role(Role::All)?);
+                        done.push(id);
+                    } else if let PendingOp::Relabel { add, remove } = &op {
+                        // The message enters and leaves the labels' folders; its own copy gets the new labels.
+                        touched.push(folder.clone());
+                        for label in add.iter().chain(remove) {
+                            touched.extend(folder_of_label(&self.store, label)?);
+                        }
+                        done.push(id);
+                    } else {
+                        self.store.remove_pending_op(id)?;
                     }
-                    self.store.remove_pending_op(id)?;
                 }
                 // The server refused (message gone, folder missing): retrying won't help.
                 Err(e) if B::is_rejection(&e) => {
@@ -530,6 +619,11 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn sync_folder(&mut self, folder: &str) -> Result<()> {
+        self.sync_folder_as(folder, true).await
+    }
+
+    /// `announce`: unread arrivals in the inbox are reported as [`Event::NewMail`].
+    async fn sync_folder_as(&mut self, folder: &str, announce: bool) -> Result<()> {
         self.emit(Event::Status(format!("Syncing {folder}…")));
         let state = self.conn().await?.select(folder).await?;
         // The UI reloads on every change event; a sync that found nothing new sends none.
@@ -552,14 +646,14 @@ impl<B: Backend> Worker<B> {
                 self.store.upsert_messages(&new)?;
                 changed |= !new.is_empty();
                 let unread: Vec<MessageSummary> = new.into_iter().filter(|m| !m.seen).collect();
-                if !unread.is_empty() && self.store.folder_role(folder)? == Role::Inbox {
+                if announce && !unread.is_empty() && self.store.folder_role(folder)? == Role::Inbox {
                     self.emit(Event::NewMail(unread));
                 }
                 // The synced window, plus search hits below it one by one.
                 let mut ranges = vec![(from, max.max(from))];
                 ranges.extend(cached.iter().filter(|uid| **uid < from).map(|uid| (*uid, *uid)));
                 let flags = self.conn().await?.fetch_flags(folder, &ranges).await?;
-                let on_server: std::collections::HashSet<u32> = flags.iter().map(|f| f.0).collect();
+                let on_server: std::collections::HashSet<u32> = flags.iter().map(|f| f.uid).collect();
                 let gone: Vec<u32> = cached.into_iter().filter(|uid| !on_server.contains(uid)).collect();
                 self.store.delete_messages(folder, &gone)?;
                 changed |= !gone.is_empty();
@@ -595,12 +689,13 @@ impl<B: Backend> Worker<B> {
 
     /// Searches the server and caches the headers of hits not cached yet, so the
     /// search finds mail older than the synced window and bodies not downloaded.
-    async fn search(&mut self, query: String) -> Result<()> {
+    async fn search(&mut self, query: String, folder: Option<String>) -> Result<()> {
         self.emit(Event::Status("Searching the server…".into()));
         // An all-mail folder (Gmail) holds everything; elsewhere, where most mail lives.
-        let folders = match self.store.folder_by_role(Role::All)? {
-            Some(all) => vec![all],
-            None => {
+        let folders = match (folder, self.store.folder_by_role(Role::All)?) {
+            (Some(folder), _) => vec![folder],
+            (None, Some(all)) => vec![all],
+            (None, None) => {
                 let mut folders = Vec::new();
                 for role in [Role::Inbox, Role::Sent, Role::Archive] {
                     folders.extend(self.store.folder_by_role(role)?);
@@ -749,6 +844,7 @@ mod tests {
 
     use super::*;
     use crate::backend::FolderState;
+    use crate::store::Flags;
 
     /// A server refusal; any other error counts as a dropped connection.
     #[derive(Debug)]
@@ -770,6 +866,8 @@ mod tests {
         send_errors: Vec<anyhow::Error>,
         connects: usize,
         sends: usize,
+        /// Moves so far: moved copies get UIDs from 1001 up, never reusing one (as servers must).
+        moves: u32,
     }
 
     thread_local! {
@@ -825,9 +923,12 @@ mod tests {
             Ok(in_folder(folder, |m| uids.contains(&m.uid)))
         }
 
-        async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<(u32, bool, bool, bool)>> {
+        async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<Flags>> {
             let found = in_folder(folder, |m| ranges.iter().any(|(a, b)| (*a..=*b).contains(&m.uid)));
-            Ok(found.iter().map(|m| (m.uid, m.seen, m.flagged, m.answered)).collect())
+            Ok(found
+                .iter()
+                .map(|m| Flags { uid: m.uid, seen: m.seen, flagged: m.flagged, answered: m.answered, labels: Some(m.labels.clone()) })
+                .collect())
         }
 
         async fn search(&mut self, _: &str, _: &str) -> Result<Vec<u32>> {
@@ -848,7 +949,21 @@ mod tests {
                     PendingOp::SetSeen(v) => messages.iter_mut().filter(|m| m.uid == uid).for_each(|m| m.seen = *v),
                     PendingOp::SetFlagged(v) => messages.iter_mut().filter(|m| m.uid == uid).for_each(|m| m.flagged = *v),
                     PendingOp::SetAnswered => messages.iter_mut().filter(|m| m.uid == uid).for_each(|m| m.answered = true),
-                    PendingOp::Move(_) | PendingOp::Expunge => messages.retain(|m| m.uid != uid),
+                    PendingOp::Expunge => messages.retain(|m| m.uid != uid),
+                    PendingOp::Relabel { add, remove } => messages.iter_mut().filter(|m| m.uid == uid).for_each(|m| {
+                        let mut labels: Vec<&str> = m.labels.lines().filter(|l| !remove.iter().any(|r| r == l)).collect();
+                        labels.extend(add.iter().map(String::as_str).filter(|a| !m.labels.lines().any(|l| l == *a)));
+                        m.labels = labels.join("\n");
+                    }),
+                    // Like a server: filed in the destination under a new UID.
+                    PendingOp::Move(dest) => {
+                        let Some(i) = messages.iter().position(|m| m.uid == uid) else { return };
+                        let mut moved = messages.remove(i);
+                        s.moves += 1;
+                        moved.uid = 1000 + s.moves;
+                        moved.folder = dest.clone();
+                        s.folders.entry(dest.clone()).or_default().push(moved);
+                    }
                 }
             });
             Ok(())
@@ -936,6 +1051,64 @@ mod tests {
             _ => None,
         }).flatten().collect();
         assert_eq!(new_mail, [3]);
+        assert_eq!(errors(&events), []);
+    }
+
+    #[test]
+    fn moving_out_of_gmail_all_mail_relabels() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .sync_folders(&[
+                ("INBOX".into(), None, Role::Inbox),
+                ("[Gmail]/All Mail".into(), None, Role::All),
+                ("[Gmail]/Trash".into(), None, Role::Trash),
+                ("Work".into(), None, Role::Other),
+                ("Projects".into(), None, Role::Other),
+            ])
+            .unwrap();
+        let m = MessageSummary {
+            folder: "[Gmail]/All Mail".into(),
+            labels: "\\Inbox\n\\Important\nWork".into(),
+            ..message(1, true)
+        };
+        store.upsert_messages(std::slice::from_ref(&m)).unwrap();
+        let relabel = |add: &[&str], remove: &[&str]| PendingOp::Relabel {
+            add: add.iter().map(|s| s.to_string()).collect(),
+            remove: remove.iter().map(|s| s.to_string()).collect(),
+        };
+        // Into a label: off the inbox and Work, onto Projects; Important stays.
+        assert_eq!(move_op(&store, true, &m, "Projects").unwrap(), relabel(&["Projects"], &["\\Inbox", "Work"]));
+        assert_eq!(move_op(&store, true, &m, "INBOX").unwrap(), relabel(&["\\Inbox"], &["Work"]));
+        // To All Mail itself: archived, no label left.
+        assert_eq!(move_op(&store, true, &m, "[Gmail]/All Mail").unwrap(), relabel(&[], &["\\Inbox", "Work"]));
+        // The trash is outside All Mail: a real move.
+        assert_eq!(move_op(&store, true, &m, "[Gmail]/Trash").unwrap(), PendingOp::Move("[Gmail]/Trash".into()));
+        // Not Gmail, or not from All Mail: a real move.
+        assert_eq!(move_op(&store, false, &m, "Projects").unwrap(), PendingOp::Move("Projects".into()));
+        let inbox = MessageSummary { folder: "INBOX".into(), ..m.clone() };
+        assert_eq!(move_op(&store, true, &inbox, "Projects").unwrap(), PendingOp::Move("Projects".into()));
+    }
+
+    #[tokio::test]
+    async fn moved_mail_shows_in_its_new_folder() {
+        server(|s| {
+            s.folders.insert("INBOX".into(), vec![message(1, false)]);
+            s.folders.insert("Trash".into(), vec![MessageSummary { folder: "Trash".into(), ..message(7, false) }]);
+        });
+        let (mut worker, events) = worker();
+        worker.execute(Command::SyncAll).await;
+        worker.execute(Command::OpenFolder("Trash".into())).await;
+        events.lock().unwrap().clear();
+
+        worker.store.apply_local("INBOX", 1, &PendingOp::Move("Trash".into())).unwrap();
+        worker.store.apply_local("Trash", 7, &PendingOp::Move("INBOX".into())).unwrap();
+        worker.execute(Command::Flush).await;
+        // Each in its new folder under its new UID, without waiting for the next sync.
+        let uids = |folder: &str| worker.store.messages(folder, 10).unwrap().iter().map(|m| (m.subject.clone(), m.uid)).collect::<Vec<_>>();
+        assert_eq!(uids("Trash"), [("Message 1".to_string(), 1001)]);
+        assert_eq!(uids("INBOX"), [("Message 7".to_string(), 1002)]);
+        // An unread message the user moved into the inbox is not new mail.
+        assert!(!events.lock().unwrap().iter().any(|e| matches!(e, Event::NewMail(_))));
         assert_eq!(errors(&events), []);
     }
 

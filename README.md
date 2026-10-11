@@ -55,12 +55,19 @@ The screenshots show made-up mail on the local GreenMail test server (see "End-t
   notification for new unread mail while the app runs (Linux desktop and Android). On Android
   a background job checks the inboxes about every 15 minutes while the app is closed.
 - Read, flag, mark read/unread, archive, delete, also for several conversations at once
-  (tick them at the row's left edge, by long press on phones, or with `x`); on phones a row swiped
-  right is archived, swiped left deleted. Changes apply instantly and are
-  queued for the server, so they also work offline. Archiving and deleting can be undone for
-  5 seconds (Undo in the status bar, or `z`); only then are they sent.
-- Full-text search (SQLite FTS5) over subject, sender and downloaded bodies; `from:address`
-  limits it to one sender, and clicking the sender of an open message lists all of their mail.
+  (tick them at the row's left edge, by long press on phones, or with `x`). On phones a row swiped
+  right is archived, swiped left deleted (a quick flick is enough); dragged past a third of the way
+  and held, it turns blue and offers the folders to move it to. Changes apply instantly and are
+  queued for the server, so they also work offline. The row's place shows what happened for
+  5 seconds, with Undo (or `z`) and Find similar (the sender's mail in this folder); only then is
+  the change sent.
+- Full-text search (SQLite FTS5) over subject, sender and downloaded bodies, in the open folder.
+  Filters show as pills under the search box: "in" is the open folder (remove it to search every
+  folder), and typing `from:address` or `in:folder` followed by a space adds one. Clicking the
+  sender of an open message lists their mail; Back or Esc clears the search. On Gmail, where
+  folders are labels and one message can be in several, "all folders" means All Mail (plus Trash
+  and Spam), so each message is listed once, tagged with its labels; moving it there changes its
+  labels the way Gmail's own app does (moving it to All Mail archives it).
 - Compose, reply, reply all and forward (including attachments) as plain text, with
   file attachments. Sent mail is filed to the Sent folder (Gmail does this itself).
 - Drafts: closing the composer (or Back on Android) saves to Drafts, plus an autosave every
@@ -85,7 +92,7 @@ The screenshots show made-up mail on the local GreenMail test server (see "End-t
   send invitations that Gmail, Outlook and Apple Mail show with their answer buttons (Microsoft
   accounts let Exchange send them).
 - Keyboard: `j`/`k` next/previous, `r` reply, `a` reply all, `f` forward, `e` archive,
-  `#`/Delete delete, `u` read/unread, `s` flag, `z` undo archive/delete, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search,
+  `#`/Delete delete, `u` read/unread, `s` flag, `z` undo archive/delete, `x` tick for bulk actions, `c` compose, `/` search, Esc clear search (Back on phones),
   Ctrl+U view source, Ctrl+P print, Ctrl+Enter send.
 - Open a message file without an account: `mailclient message.eml`.
 
@@ -242,6 +249,18 @@ token from `google_live`:
 ```sh
 LIVE_GOOGLE_EMAIL=… LIVE_GOOGLE_REFRESH_TOKEN=… LIVE_GMX_EMAIL=… LIVE_GMX_PASSWORD=… \
   cargo test -p mailcore --test interop_live -- --ignored --nocapture --test-threads=1
+```
+
+Moving mail between Gmail folders (labels), through the engine, on the same Gmail test account
+(`crates/mailcore/tests/gmail_move_live.rs`): one or several messages between the inbox and a
+label, out of All Mail (a change of labels, `X-GM-LABELS`), archiving from All Mail, and into the
+Trash. After each move the cache must list what Gmail lists in every folder involved, and the
+same labels. Gmail keeps a message moved out of All Mail there and drops a trashed one from every
+label, so the engine syncs the folders a move touched instead of guessing:
+
+```sh
+LIVE_GOOGLE_EMAIL=… LIVE_GOOGLE_REFRESH_TOKEN=… \
+  cargo test -p mailcore --test gmail_move_live -- --ignored --nocapture --test-threads=1
 ```
 
 Real-world mail corpus (downloaded into `target/testdata/`, never committed): the

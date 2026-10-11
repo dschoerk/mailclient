@@ -134,13 +134,13 @@ fn swipe_rows() {
     app.set_up(&account);
     app.wait_for("Finn: Swipe delete", "ListItem");
 
-    app.swipe_across("Finn: Swipe keep", "ListItem", 0.2);
-    app.swipe_across("Finn: Swipe archive", "ListItem", 0.45);
+    // Under the 30% where a swipe turns into "Move to" (SwipeTuning.more-distance).
+    app.swipe_across("Finn: Swipe archive", "ListItem", 0.2);
     app.wait_until("archived on the server", || server_subjects(&account, "Archive") == ["Swipe archive"]);
-    app.flick_across("Finn: Swipe delete", "ListItem", -0.45);
+    app.flick_across("Finn: Swipe delete", "ListItem", -0.25);
     app.wait_until("deleted on the server", || server_subjects(&account, "Trash") == ["Swipe delete"]);
     assert_eq!(server_subjects(&account, "INBOX"), ["Swipe keep"]);
-    assert!(app.exists("Finn: Swipe keep", "ListItem"), "short swipe removed the row");
+    assert!(app.exists("Finn: Swipe keep", "ListItem"), "untouched row gone");
     assert!(!app.exists("Finn: Swipe archive", "ListItem"), "archived row still listed");
     assert!(!app.exists("Finn: Swipe delete", "ListItem"), "deleted row still listed");
 }
@@ -406,8 +406,11 @@ fn mail_from_sender() {
     app.click("More from this sender", "Button");
     app.wait_until("Grace's mail filtered out", || !app.exists("Grace: About Frank", "ListItem"));
     assert!(app.exists("Frank: Garden party", "ListItem") && app.exists("Frank: Bring a chair", "ListItem"));
+    // A "from" pill, next to the folder's "in" pill; the search box stays free for text.
+    assert!(app.exists("Remove from: frank@example.org", "Button"), "no from pill");
+    assert!(app.exists("Remove in: Inbox", "Button"), "no in pill");
     let search = app.wait_for("Search", "TextInput");
-    assert_eq!(app.property(&search, "accessibleValue"), "from:frank@example.org");
+    assert_eq!(app.property(&search, "accessibleValue").as_str().unwrap_or(""), "");
     app.screenshot("mail_from_sender");
 }
 
@@ -481,17 +484,170 @@ fn undo_archive() {
     let app = App::launch();
     app.set_up(&account);
     if android() {
-        app.swipe_across("Finn: Undo me", "ListItem", 0.45);
+        app.swipe_across("Finn: Undo me", "ListItem", 0.2);
     } else {
         app.click("Finn: Undo me", "ListItem");
         app.click("Archive", "Button");
     }
-    app.wait_until("row gone", || !app.exists("Finn: Undo me", "ListItem"));
-    app.screenshot("undo_offer");
+    // The row stays as a strip with Undo.
+    app.wait_for("Archived Finn: Undo me", "ListItem");
+    if android() { e2e::device_screenshot("undo_offer") } else { app.screenshot("undo_offer"); }
     app.click("Undo", "Button");
     app.wait_for("Finn: Undo me", "ListItem");
+    assert!(!app.exists("Archived Finn: Undo me", "ListItem"), "strip still shown after Undo");
     // Past the Undo window: the held move must not have been sent.
     std::thread::sleep(std::time::Duration::from_secs(8));
     assert_eq!(server_subjects(&account, "INBOX"), ["Undo me"]);
     assert!(server_subjects(&account, "Archive").is_empty(), "undone move reached the server");
+}
+
+/// A row dragged far (slowly, not flung) offers the folders; the chosen one gets the message.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn drag_far_moves() {
+    if !android() {
+        return;
+    }
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive", "Projects"]);
+    deliver(&account, ("Finn", "finn@example.org"), "Move me", "To Projects.");
+    let app = App::launch();
+    app.set_up(&account);
+    app.drag_across("Finn: Move me", "ListItem", 0.7);
+    app.click("Move to Projects", "Button");
+    app.wait_for("Moved to Projects Finn: Move me", "ListItem");
+    app.wait_until("moved on the server", || server_subjects(&account, "Projects") == ["Move me"]);
+}
+
+/// Find similar on the strip of an archived row lists the sender's other mail.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn find_similar() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    deliver(&account, ("Finn", "finn@example.org"), "First from Finn", "One.");
+    deliver(&account, ("Finn", "finn@example.org"), "Second from Finn", "Two.");
+    deliver(&account, ("Ada", "ada@example.org"), "From Ada", "Three.");
+    let app = App::launch();
+    app.set_up(&account);
+    if android() {
+        app.swipe_across("Finn: First from Finn", "ListItem", 0.2);
+    } else {
+        app.click("Finn: First from Finn", "ListItem");
+        app.click("Archive", "Button");
+    }
+    app.click("Find similar", "Button");
+    app.wait_until("only Finn's mail listed", || !app.exists("Ada: From Ada", "ListItem"));
+    assert!(app.exists("Finn: Second from Finn", "ListItem"), "the sender's other mail is missing");
+    // The server still has the archived one in the inbox (the move waits for Undo); its search hit must not list it.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!app.exists("Finn: First from Finn", "ListItem"), "the archived message came back");
+    assert!(!app.exists("Archived Finn: First from Finn", "ListItem"), "the archived message came back as a strip");
+    if android() {
+        // Back leaves the search, not the app.
+        app.back();
+        app.wait_for("Ada: From Ada", "ListItem");
+    }
+}
+
+/// Typed `from:` and `in:` words become filter pills; the "in" pill is the open folder.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn search_filters() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive"]);
+    deliver(&account, ("Finn", "finn@example.org"), "Hello from Finn", "One.");
+    deliver(&account, ("Ada", "ada@example.org"), "Hello from Ada", "Two.");
+    let app = App::launch();
+    app.set_up(&account);
+    app.wait_for("Ada: Hello from Ada", "ListItem");
+    assert!(app.exists("Remove in: Inbox", "Button"), "the open folder has no in pill");
+
+    app.type_in("Search", "from:finn@example.org ");
+    app.wait_for("Remove from: finn@example.org", "Button");
+    app.wait_until("Ada's mail filtered out", || !app.exists("Ada: Hello from Ada", "ListItem"));
+    assert!(app.exists("Finn: Hello from Finn", "ListItem"));
+    let search = app.wait_for("Search", "TextInput");
+    assert_eq!(app.property(&search, "accessibleValue").as_str().unwrap_or(""), "", "the word stayed in the box");
+
+    assert!(!app.exists("in Inbox", "Text"), "folder tag shown inside one folder");
+    // Without the in pill: every folder, each row saying which.
+    app.click("Remove in: Inbox", "Button");
+    app.wait_until("in pill gone", || !app.exists("Remove in: Inbox", "Button"));
+    assert!(app.exists("Finn: Hello from Finn", "ListItem"));
+    app.wait_for("in Inbox", "Text");
+    if android() { e2e::device_screenshot("search_everywhere") } else { app.screenshot("search_everywhere"); }
+
+    app.type_in("Search", "in:inbox ");
+    app.wait_for("Remove in: Inbox", "Button");
+
+    app.click("Remove from: finn@example.org", "Button");
+    app.wait_for("Ada: Hello from Ada", "ListItem");
+}
+
+/// Ticked rows moved to a folder picked from "Move to".
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn bulk_move() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive", "Projects"]);
+    for subject in ["Move one", "Move two", "Stay here"] {
+        deliver(&account, ("Erin", "erin@example.org"), subject, "One of several.");
+    }
+    let app = App::launch();
+    app.set_up(&account);
+    app.wait_for("Erin: Stay here", "ListItem");
+    if android() {
+        app.long_press("Erin: Move one", "ListItem");
+        app.wait_for("1 selected", "Text");
+        app.click("Erin: Move two", "ListItem");
+    } else {
+        app.click("Select Erin: Move one", "Checkbox");
+        app.click("Select Erin: Move two", "Checkbox");
+    }
+    app.wait_for("2 selected", "Text");
+    app.click("Move selected", "Button");
+    assert!(!app.exists("Move to Inbox", "Button"), "offered the folder they are in");
+    app.click("Move to Projects", "Button");
+    app.wait_until("ticks cleared", || !app.exists("2 selected", "Text"));
+    app.wait_until("moved on the server", || {
+        let mut moved = server_subjects(&account, "Projects");
+        moved.sort();
+        moved == ["Move one", "Move two"]
+    });
+    assert_eq!(server_subjects(&account, "INBOX"), ["Stay here"]);
+}
+
+/// Searching all folders, a message moved elsewhere still matches: a strip first, then the
+/// message again, in its new folder.
+#[test]
+#[ignore = "needs scripts/test-mailserver.sh and an app built with --features slint/mcp"]
+fn move_while_searching_everywhere() {
+    init_server(&test_ca());
+    let account = test_account();
+    create_folders(&account, &["Sent", "Trash", "Archive", "Projects"]);
+    deliver(&account, ("Erin", "erin@example.org"), "Quarterly report", "Numbers.");
+    deliver(&account, ("Erin", "erin@example.org"), "Lunch", "Pizza?");
+    let app = App::launch();
+    app.set_up(&account);
+    app.wait_for("Erin: Lunch", "ListItem");
+    app.click("Remove in: Inbox", "Button");
+    app.type_in("Search", "quarterly");
+    app.wait_until("search applied", || !app.exists("Erin: Lunch", "ListItem"));
+    if android() {
+        app.long_press("Erin: Quarterly report", "ListItem");
+    } else {
+        app.click("Select Erin: Quarterly report", "Checkbox");
+    }
+    app.wait_for("1 selected", "Text");
+    app.click("Move selected", "Button");
+    app.click("Move to Projects", "Button");
+    app.wait_for("Moved to Projects Erin: Quarterly report", "ListItem");
+    // After the Undo window the move is sent and the copy in Projects fetched.
+    app.wait_for("in Projects", "Text");
+    assert!(app.exists("Erin: Quarterly report", "ListItem"), "the moved message is gone from the search");
 }

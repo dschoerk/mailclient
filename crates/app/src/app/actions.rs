@@ -15,61 +15,170 @@ impl Controller {
         // Whole seconds round down: one more keeps the change back for the full window.
         let ready_at = if held { mailcore::store::now() + UNDO_WINDOW.as_secs() as i64 + 1 } else { 0 };
         let result = match self.state.borrow_mut().accounts.get_mut(account) {
-            Some(a) => messages.iter().map(|m| a.store.apply_local_until(&m.folder, m.uid, &op, ready_at)).collect::<Result<Vec<_>, _>>(),
+            Some(a) => {
+                let gmail = a.config.is_gmail();
+                messages
+                    .iter()
+                    .map(|m| {
+                        // Gmail's All Mail: a move is a change of labels.
+                        let op = match &op {
+                            PendingOp::Move(dest) => engine::move_op(&a.store, gmail, m, dest)?,
+                            other => other.clone(),
+                        };
+                        a.store.apply_local_until(&m.folder, m.uid, &op, ready_at)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            }
             None => return,
         };
         let ids = match result {
             Ok(ids) => ids,
             Err(e) => return self.show_error(&e),
         };
-        self.reload_messages();
-        self.reload_folders();
         if !held {
+            self.reload_messages();
+            self.reload_folders();
             return self.send(account, Command::Flush);
         }
-        let text = match &op {
-            PendingOp::Expunge => "Deleted forever".to_string(),
+        let (kind, text) = match &op {
+            PendingOp::Expunge => ("delete", "Deleted forever".to_string()),
             PendingOp::Move(dest) => match self.state.borrow().accounts[account].store.folder_role(dest) {
-                Ok(mailcore::store::Role::Trash) => "Deleted".to_string(),
-                _ => format!("Moved to {dest}"),
+                Ok(Role::Trash) => ("delete", "Deleted".to_string()),
+                Ok(Role::Archive | Role::All) => ("archive", "Archived".to_string()),
+                _ => {
+                    let name = self.state.borrow().folder(account, dest).map(|f| f.display_name()).unwrap_or_else(|| dest.clone());
+                    ("move", format!("Moved to {name}"))
+                }
             },
             _ => unreachable!(),
         };
-        self.state.borrow_mut().undoable.push((account, ids));
-        self.window().set_undo_text(text.into());
-        self.undo_timer.start(slint::TimerMode::SingleShot, UNDO_WINDOW + std::time::Duration::from_secs(1), || {
+        {
+            let mut state = self.state.borrow_mut();
+            // The list rows the change empties stay in place as strips with Undo.
+            let rows = state
+                .messages
+                .iter()
+                .zip(&state.conversations)
+                .filter(|((a, _), c)| *a == account && c.iter().any(|c| messages.iter().any(|m| m.folder == c.folder && m.uid == c.uid)))
+                .map(|((_, m), c)| (m.clone(), c.clone()))
+                .collect();
+            let view = state.view();
+            state.undos.push(Undo { account, ids, kind, text, view, rows, expires: std::time::Instant::now() + UNDO_WINDOW });
+        }
+        self.reload_messages();
+        self.reload_folders();
+        self.arm_undo_timer();
+    }
+
+    /// Ends the next Undo offer when its time is up: its strips go, and its changes are sent.
+    fn arm_undo_timer(&self) {
+        let Some(next) = self.state.borrow().undos.iter().map(|u| u.expires).min() else { return };
+        // A second extra: the change's ready time is in whole seconds (see `apply`).
+        let wait = next.saturating_duration_since(std::time::Instant::now()) + std::time::Duration::from_secs(1);
+        self.undo_timer.start(slint::TimerMode::SingleShot, wait, || {
             with_controller(|c| {
-                c.state.borrow_mut().undoable.clear();
-                c.window().set_undo_text("".into());
-                // Also sends held changes of earlier actions that this one's offer replaced.
-                for account in 0..c.state.borrow().accounts.len() {
+                let now = std::time::Instant::now();
+                let expired: Vec<usize> = {
+                    let mut state = c.state.borrow_mut();
+                    let expired = state.undos.iter().filter(|u| u.expires <= now).map(|u| u.account).collect();
+                    state.undos.retain(|u| u.expires > now);
+                    expired
+                };
+                c.reload_messages();
+                for account in expired {
                     c.send(account, Command::Flush);
                 }
+                c.arm_undo_timer();
             });
         });
     }
 
-    /// Takes back the last move or delete, if it has not reached the server yet.
+    /// Takes back the last move or delete (`z`).
     pub(super) fn undo(&self) {
-        self.undo_timer.stop();
-        self.window().set_undo_text("".into());
-        let batches = std::mem::take(&mut self.state.borrow_mut().undoable);
-        let mut undone = 0;
-        for (account, ids) in batches {
-            match self.state.borrow().accounts.get(account).map(|a| a.store.undo(&ids)) {
-                Some(Ok(n)) => undone += n,
-                Some(Err(e)) => self.show_error(&e),
-                None => {}
-            }
+        let last = self.state.borrow().undos.len().checked_sub(1);
+        match last {
+            Some(i) => self.undo_at(i),
+            None => self.set_status("Nothing to undo"),
         }
-        self.reload_messages();
-        self.reload_folders();
-        self.set_status(if undone > 0 { "Undone" } else { "Too late to undo: already on the server" });
     }
 
-    /// A new move or delete replaces the Undo offer; the earlier one's changes are sent when it ends.
-    fn new_undo_offer(&self) {
-        self.state.borrow_mut().undoable.clear();
+    /// The Undo on a strip in the list.
+    pub(super) fn undo_row(&self, index: usize) {
+        let found = {
+            let state = self.state.borrow();
+            state.messages.get(index).and_then(|(a, m)| state.undo_of(*a, m))
+        };
+        if let Some(i) = found {
+            self.undo_at(i);
+        }
+    }
+
+    fn undo_at(&self, i: usize) {
+        let undo = self.state.borrow_mut().undos.remove(i);
+        let result = self.state.borrow().accounts.get(undo.account).map(|a| a.store.undo(&undo.ids));
+        self.reload_messages();
+        self.reload_folders();
+        match result {
+            Some(Ok(0)) => self.set_status("Too late to undo: already on the server"),
+            Some(Ok(_)) => self.set_status("Undone"),
+            Some(Err(e)) => self.show_error(&e),
+            None => {}
+        }
+    }
+
+    /// A row dragged far: offers the folders to move its conversation to.
+    pub(super) fn row_more(&self, index: usize) {
+        let group = {
+            let state = self.state.borrow();
+            let (Some((account, row)), Some(c)) = (state.messages.get(index), state.conversations.get(index)) else { return };
+            (*account, c.iter().filter(|m| m.folder == row.folder).cloned().collect())
+        };
+        self.offer_folders(vec![group]);
+    }
+
+    /// Opens "Move to" for messages of one or more accounts: the folders all of these accounts
+    /// have (by name), except one every message is in already.
+    fn offer_folders(&self, groups: Vec<(usize, Vec<MessageSummary>)>) {
+        let names: Vec<String> = {
+            let state = self.state.borrow();
+            let Some(folders) = groups.first().and_then(|(a, _)| state.accounts.get(*a)).map(|a| &a.folders) else { return };
+            folders
+                .iter()
+                .map(|f| f.name.clone())
+                .filter(|n| groups.iter().all(|(a, _)| state.accounts[*a].folders.iter().any(|f| &f.name == n)))
+                // Gmail's All Mail stays on offer: moving there archives (takes the labels off).
+                .filter(|n| {
+                    let all_mail = groups.iter().all(|(a, _)| {
+                        let account = &state.accounts[*a];
+                        account.config.is_gmail() && account.folders.iter().any(|f| &f.name == n && f.role == Role::All)
+                    });
+                    all_mail || !groups.iter().all(|(_, ms)| ms.iter().all(|m| &m.folder == n))
+                })
+                .collect()
+        };
+        // Shown by their readable names ("Entwürfe", not "[Gmail]/Entw&APw-rfe").
+        let shown: Vec<SharedString> = {
+            let state = self.state.borrow();
+            let account = groups[0].0;
+            names.iter().map(|n| state.folder(account, n).map(|f| f.display_name()).unwrap_or_else(|| n.clone()).into()).collect()
+        };
+        let window = self.window();
+        window.set_move_targets(ModelRc::new(VecModel::from(shown)));
+        window.set_move_open(true);
+        self.state.borrow_mut().moving = Some((groups, names));
+    }
+
+    pub(super) fn move_chosen(&self, index: usize) {
+        let Some((groups, names)) = self.state.borrow_mut().moving.take() else { return };
+        let Some(dest) = names.get(index) else { return };
+        // Moved rows are no longer ticked; other ticks (a row dragged while some were ticked) stay.
+        self.state.borrow_mut().checked.retain(|(a, folder, uid)| {
+            !groups.iter().any(|(account, ms)| account == a && ms.iter().any(|m| &m.folder == folder && m.uid == *uid))
+        });
+        for (account, messages) in groups {
+            self.apply(account, &messages, PendingOp::Move(dest.clone()));
+        }
+        self.update_checked_summary();
     }
 
     pub(super) fn toggle_selected(&self, flag: bool) {
@@ -100,12 +209,14 @@ impl Controller {
             Ok(op) => op,
             Err(e) => return self.show_error(&e),
         };
-        // Select the message that takes this one's place, like most mail clients.
-        self.new_undo_offer();
         self.apply(account, &targets, op);
-        let count = self.state.borrow().messages.len();
-        if count > 0 {
-            self.select_message(index.min(count - 1));
+        // Select the message that takes this one's place, like most mail clients; its own row is now a strip.
+        let next = {
+            let state = self.state.borrow();
+            (index..state.messages.len()).chain((0..index).rev()).find(|&i| !state.is_strip(i))
+        };
+        if let Some(next) = next {
+            self.select_message(next);
         }
     }
 
@@ -151,6 +262,18 @@ impl Controller {
     /// "delete", "clear". The ticking ends with the action.
     pub(super) fn bulk(&self, action: &str) {
         let rows = self.checked_rows();
+        if action == "move" {
+            // The ticks stay until a folder is picked: closing the list keeps them.
+            let mut groups: Vec<(usize, Vec<MessageSummary>)> = Vec::new();
+            for (account, row, conversation) in rows {
+                let messages = conversation.into_iter().filter(|m| m.folder == row.folder);
+                match groups.iter_mut().find(|(a, _)| *a == account) {
+                    Some((_, list)) => list.extend(messages),
+                    None => groups.push((account, messages.collect())),
+                }
+            }
+            return self.offer_folders(groups);
+        }
         self.state.borrow_mut().checked.clear();
         self.act_on(rows, action);
     }
@@ -198,7 +321,6 @@ impl Controller {
                 None => batches.push((account, op, targets)),
             }
         }
-        self.new_undo_offer();
         for (account, op, targets) in batches {
             self.apply(account, &targets, op);
         }

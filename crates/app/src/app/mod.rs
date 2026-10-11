@@ -161,8 +161,38 @@ struct State {
     form_attendees: Vec<mailcore::ical::Attendee>,
     /// The last calendar error of each account (by engine id), until its calendar works again.
     calendar_errors: HashMap<u64, String>,
-    /// The queued changes of the last move or delete, per account, while Undo is offered.
-    undoable: Vec<(usize, Vec<i64>)>,
+    /// The sender filter pill (`from:`).
+    search_from: Option<String>,
+    /// The "in" pill was removed: searches look in every folder of every account.
+    everywhere: bool,
+    /// Moves and deletes that can still be undone, oldest first.
+    undos: Vec<Undo>,
+    /// Messages waiting for "Move to" to be answered, per account, and the folders offered.
+    moving: Option<(Vec<(usize, Vec<MessageSummary>)>, Vec<String>)>,
+}
+
+/// What the list shows: the folder and the search. Undo strips stay in the view they were made in.
+#[derive(Clone, PartialEq)]
+struct View {
+    current: Option<Row>,
+    search: String,
+    search_from: Option<String>,
+    everywhere: bool,
+}
+
+/// A move or delete held back from the server while Undo is offered.
+struct Undo {
+    account: usize,
+    /// Its queued changes in the account's store.
+    ids: Vec<i64>,
+    /// "archive", "delete" or "move": the strip's color.
+    kind: &'static str,
+    text: String,
+    /// The list it was done in; its strips show only there.
+    view: View,
+    /// The list rows it emptied: newest message, conversation.
+    rows: Vec<(MessageSummary, Vec<MessageSummary>)>,
+    expires: std::time::Instant,
 }
 
 impl State {
@@ -178,12 +208,63 @@ impl State {
         conversation.iter().any(|m| self.checked.contains(&(account, m.folder.clone(), m.uid)))
     }
 
-    /// The list row whose conversation holds the selected message.
+    /// The list row whose conversation holds the selected message. A strip is not a message.
     fn selected_row(&self) -> Option<usize> {
         let (account, folder, uid) = self.selected.as_ref()?;
-        self.messages.iter().zip(&self.conversations).position(|((a, _), conversation)| {
-            a == account && conversation.iter().any(|m| &m.folder == folder && m.uid == *uid)
+        self.messages.iter().zip(&self.conversations).enumerate().position(|(i, ((a, _), conversation))| {
+            a == account && conversation.iter().any(|m| &m.folder == folder && m.uid == *uid) && !self.is_strip(i)
         })
+    }
+
+    fn view(&self) -> View {
+        View {
+            current: self.current.clone(),
+            search: self.search.clone(),
+            search_from: self.search_from.clone(),
+            everywhere: self.everywhere,
+        }
+    }
+
+    /// Text or a filter beyond the open folder narrows the list.
+    fn searching(&self) -> bool {
+        !self.search.is_empty() || self.search_from.is_some() || self.everywhere
+    }
+
+    /// The search text with the sender filter, as the store and the server read it.
+    fn search_query(&self) -> String {
+        match &self.search_from {
+            Some(from) => format!("from:{from} {}", self.search).trim().to_string(),
+            None => self.search.clone(),
+        }
+    }
+
+    /// Where a search looks in `account`: these folders (none listed: all of them), or nowhere (None).
+    /// Gmail's "all folders" is All Mail with Trash and Spam, the only mail outside it: each
+    /// message once, however many labels (folders) it has.
+    fn search_scope(&self, account: usize) -> Option<Vec<String>> {
+        if self.everywhere {
+            let a = self.accounts.get(account)?;
+            if a.config.is_gmail() && a.folders.iter().any(|f| f.role == Role::All) {
+                let outside = a.folders.iter().filter(|f| matches!(f.role, Role::All | Role::Trash | Role::Junk));
+                return Some(outside.map(|f| f.name.clone()).collect());
+            }
+            return Some(Vec::new());
+        }
+        match &self.current {
+            Some(Row::Folder(a, f)) if *a == account => Some(vec![f.clone()]),
+            Some(Row::Unified) => self.accounts.get(account)?.folders.iter().find(|f| f.role == Role::Inbox).map(|f| vec![f.name.clone()]),
+            _ => None,
+        }
+    }
+
+    /// The Undo whose strip the row `m` of `account` is.
+    fn undo_of(&self, account: usize, m: &MessageSummary) -> Option<usize> {
+        self.undos.iter().position(|u| u.account == account && u.rows.iter().any(|(r, _)| r.folder == m.folder && r.uid == m.uid))
+    }
+
+    /// The list row is a strip with Undo, not a message.
+    fn is_strip(&self, index: usize) -> bool {
+        self.messages.get(index).is_some_and(|(a, m)| self.undo_of(*a, m).is_some())
     }
 }
 
@@ -321,12 +402,14 @@ impl Controller {
         on!(on_load_older, |c| c.load_older());
         on!(on_show_sender, |c| {
             let Some((_, m)) = c.selected_summary() else { return };
-            if m.from_addr.is_empty() {
-                return;
-            }
-            let query = format!("from:{}", m.from_addr);
-            c.window().set_search_text(query.as_str().into());
-            c.search(&query);
+            c.show_mail_from(&m.from_addr);
+        });
+        on!(on_clear_search, |c| c.clear_search());
+        on!(on_remove_filter_from, |c| c.remove_filter_from());
+        on!(on_remove_filter_in, |c| c.remove_filter_in());
+        on!(on_similar_row, |c, index| {
+            let Some((_, m)) = c.state.borrow().messages.get(index as usize).cloned() else { return };
+            c.show_mail_from(&m.from_addr);
         });
         on!(on_refresh, |c| {
             let mut state = c.state.borrow_mut();
@@ -360,6 +443,9 @@ impl Controller {
         on!(on_archive, |c| c.remove_selected(true));
         on!(on_delete, |c| c.remove_selected(false));
         on!(on_undo, |c| c.undo());
+        on!(on_undo_row, |c, index| c.undo_row(index as usize));
+        on!(on_row_more, |c, index| c.row_more(index as usize));
+        on!(on_move_chosen, |c, index| c.move_chosen(index as usize));
         on!(on_toggle_seen, |c| c.toggle_selected(false));
         on!(on_toggle_flag, |c| c.toggle_selected(true));
         on!(on_load_remote_images, |c| c.load_remote_images());
@@ -464,7 +550,7 @@ impl Controller {
             Event::MessagesChanged(_) => {
                 let state = self.state.borrow();
                 // Any folder can add to the listed conversations (replies sit in Sent).
-                let relevant = !state.search.is_empty()
+                let relevant = state.searching()
                     || match &state.current {
                         Some(Row::Folder(a, _)) => *a == account,
                         Some(Row::Unified) => true,
@@ -476,7 +562,7 @@ impl Controller {
                 }
             }
             Event::SearchHits { query, hits } => {
-                if query == self.state.borrow().search {
+                if query == self.state.borrow().search_query() {
                     self.state.borrow_mut().search_hits.extend(hits.into_iter().map(|(f, uid)| (account, f, uid)));
                     self.reload_messages();
                 }

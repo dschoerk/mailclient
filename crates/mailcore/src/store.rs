@@ -149,6 +149,19 @@ pub struct MessageSummary {
     pub snippet: String,
     pub in_reply_to: String,
     pub references: String,
+    /// Gmail labels (`\Inbox`, `[Imap]/Archiv`), one per line, as the server names them; empty elsewhere.
+    pub labels: String,
+}
+
+/// A message's flags on the server, from a refresh of the cached ones.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Flags {
+    pub uid: u32,
+    pub seen: bool,
+    pub flagged: bool,
+    pub answered: bool,
+    /// Gmail labels, one per line; None from servers without them.
+    pub labels: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,6 +172,8 @@ pub enum PendingOp {
     Move(String),
     /// Mark \Deleted and expunge, for messages already in Trash.
     Expunge,
+    /// Gmail: adds and removes labels, which is how a message in All Mail moves.
+    Relabel { add: Vec<String>, remove: Vec<String> },
 }
 
 impl PendingOp {
@@ -169,6 +184,10 @@ impl PendingOp {
             PendingOp::SetAnswered => ("answered", String::new()),
             PendingOp::Move(dest) => ("move", dest.clone()),
             PendingOp::Expunge => ("expunge", String::new()),
+            PendingOp::Relabel { add, remove } => {
+                let lines: Vec<String> = add.iter().map(|l| format!("+{l}")).chain(remove.iter().map(|l| format!("-{l}"))).collect();
+                ("labels", lines.join("\n"))
+            }
         }
     }
 
@@ -179,6 +198,17 @@ impl PendingOp {
             "answered" => PendingOp::SetAnswered,
             "move" => PendingOp::Move(arg),
             "expunge" => PendingOp::Expunge,
+            "labels" => {
+                let (mut add, mut remove) = (Vec::new(), Vec::new());
+                for line in arg.lines() {
+                    match line.split_at_checked(1) {
+                        Some(("+", l)) => add.push(l.to_string()),
+                        Some(("-", l)) => remove.push(l.to_string()),
+                        _ => {}
+                    }
+                }
+                PendingOp::Relabel { add, remove }
+            }
             _ => return None,
         })
     }
@@ -189,7 +219,7 @@ pub struct Store {
 }
 
 const SUMMARY_COLUMNS: &str = "folder, uid, message_id, subject, from_name, from_addr, to_addrs, cc_addrs, \
-     date, seen, flagged, answered, has_attachments, snippet, in_reply_to, refs";
+     date, seen, flagged, answered, has_attachments, snippet, in_reply_to, refs, labels";
 
 fn summary_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
     Ok(MessageSummary {
@@ -209,11 +239,12 @@ fn summary_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
         snippet: row.get(13)?,
         in_reply_to: row.get(14)?,
         references: row.get(15)?,
+        labels: row.get(16)?,
     })
 }
 
 /// Schema version of a new cache; [`migrate`] brings older ones up to it.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// SQL condition on a message `m`: not waiting to be moved away or deleted.
 const KEPT: &str = "NOT EXISTS (SELECT 1 FROM pending_ops p WHERE p.folder = m.folder AND p.uid = m.uid AND p.kind IN ('move', 'expunge'))";
@@ -251,6 +282,14 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         if !exists {
             tx.execute("ALTER TABLE pending_ops ADD COLUMN ready_at INTEGER NOT NULL DEFAULT 0", [])?;
         }
+    }
+    if version < 4 {
+        let exists: bool = tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('messages') WHERE name = 'labels'", [], |r| r.get(0))?;
+        if !exists {
+            tx.execute("ALTER TABLE messages ADD COLUMN labels TEXT NOT NULL DEFAULT ''", [])?;
+        }
+        // The next sync then refreshes the flags of everything cached, Gmail labels with them.
+        tx.execute("UPDATE folder_sync SET modseq = NULL, exists_count = NULL", [])?;
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
@@ -298,6 +337,7 @@ impl Store {
                  snippet TEXT NOT NULL DEFAULT '',
                  in_reply_to TEXT NOT NULL DEFAULT '',
                  refs TEXT NOT NULL DEFAULT '',
+                 labels TEXT NOT NULL DEFAULT '',
                  raw BLOB,
                  PRIMARY KEY (folder, uid)
              );
@@ -549,9 +589,10 @@ impl Store {
         let tx = self.conn.transaction()?;
         {
             let mut upsert = tx.prepare(&format!(
-                "INSERT INTO messages ({SUMMARY_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                "INSERT INTO messages ({SUMMARY_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
                  ON CONFLICT(folder, uid) DO UPDATE SET
-                     seen = excluded.seen, flagged = excluded.flagged, answered = excluded.answered
+                     seen = excluded.seen, flagged = excluded.flagged, answered = excluded.answered,
+                     labels = excluded.labels
                  RETURNING rowid"
             ))?;
             let mut fts_exists = tx.prepare("SELECT 1 FROM messages_fts WHERE rowid = ?1")?;
@@ -576,7 +617,8 @@ impl Store {
                         m.has_attachments,
                         m.snippet,
                         m.in_reply_to,
-                        m.references
+                        m.references,
+                        m.labels
                     ],
                     |r| r.get(0),
                 )?;
@@ -595,7 +637,7 @@ impl Store {
 
     /// Updates flags from the server, skipping messages with local changes not yet
     /// pushed (the server state is stale for those). Returns whether any flag changed.
-    pub fn update_flags(&mut self, folder: &str, flags: &[(u32, bool, bool, bool)]) -> Result<bool> {
+    pub fn update_flags(&mut self, folder: &str, flags: &[Flags]) -> Result<bool> {
         let pending: std::collections::HashSet<u32> = {
             let mut stmt = self
                 .conn
@@ -610,9 +652,14 @@ impl Store {
                 "UPDATE messages SET seen = ?3, flagged = ?4, answered = ?5 WHERE folder = ?1 AND uid = ?2
                  AND (seen, flagged, answered) IS NOT (?3, ?4, ?5)",
             )?;
-            for (uid, seen, flagged, answered) in flags {
-                if !pending.contains(uid) {
-                    changed += stmt.execute(params![folder, uid, seen, flagged, answered])?;
+            // Labels a pending relabel changes are shown from the queue (see `labels`), so these stay current.
+            let mut labels = tx.prepare("UPDATE messages SET labels = ?3 WHERE folder = ?1 AND uid = ?2 AND labels != ?3")?;
+            for f in flags {
+                if !pending.contains(&f.uid) {
+                    changed += stmt.execute(params![folder, f.uid, f.seen, f.flagged, f.answered])?;
+                }
+                if let Some(l) = &f.labels {
+                    changed += labels.execute(params![folder, f.uid, l])?;
                 }
             }
         }
@@ -653,26 +700,36 @@ impl Store {
         Ok(rows)
     }
 
+    /// The folders holding this message, `folder` included: on Gmail one message is in several
+    /// (Inbox, All Mail, its labels), and a move or delete can change all of them.
+    pub fn folders_with_copies(&self, folder: &str, uid: u32) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT c.folder FROM messages m JOIN messages c ON c.message_id = m.message_id
+             WHERE m.folder = ?1 AND m.uid = ?2 AND m.message_id != ''
+             UNION SELECT ?1",
+        )?;
+        let folders = stmt.query_map(params![folder, uid], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(folders)
+    }
+
+    /// None also while it waits to be moved or deleted: the server still lists it there until then.
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<MessageSummary>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {SUMMARY_COLUMNS} FROM messages WHERE folder = ?1 AND uid = ?2"
+            "SELECT {SUMMARY_COLUMNS} FROM messages m WHERE folder = ?1 AND uid = ?2 AND {KEPT}"
         ))?;
         Ok(stmt
             .query_row(params![folder, uid], summary_from_row)
             .optional()?)
     }
 
-    /// Full-text search over subject, sender and downloaded bodies across all folders.
-    /// Full-text search over subject, sender and downloaded bodies. A `from:address` word
-    /// keeps only mail from exactly that sender (any case); the other words still match text.
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<MessageSummary>> {
+    /// Full-text search over subject, sender and downloaded bodies, in `folder` or all of them.
+    /// A `from:address` word keeps only mail from exactly that sender (any case); the other words
+    /// still match text. Nothing to match lists the folder's (or all) mail, newest first.
+    pub fn search(&self, query: &str, folder: Option<&str>, limit: usize) -> Result<Vec<MessageSummary>> {
         let (from, words): (Vec<&str>, Vec<&str>) =
             query.split_whitespace().partition(|w| w.len() > 5 && w[..5].eq_ignore_ascii_case("from:"));
         let from = from.last().map(|w| w[5..].to_lowercase());
         let fts_query = fts_query(&words.join(" "));
-        if fts_query.is_empty() && from.is_none() {
-            return Ok(Vec::new());
-        }
         let columns = SUMMARY_COLUMNS
             .split(", ")
             .map(|c| format!("m.{c}"))
@@ -684,11 +741,11 @@ impl Store {
             "SELECT {columns} FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?1"
         };
         let mut stmt = self.conn.prepare(&format!(
-            "{} AND {KEPT} AND (?2 IS NULL OR lower(m.from_addr) = ?2) ORDER BY m.date DESC LIMIT ?3",
+            "{} AND {KEPT} AND (?2 IS NULL OR lower(m.from_addr) = ?2) AND (?4 IS NULL OR m.folder = ?4) ORDER BY m.date DESC LIMIT ?3",
             text.replace("{columns}", &columns)
         ))?;
         let rows = stmt
-            .query_map(params![fts_query, from, limit as i64], summary_from_row)?
+            .query_map(params![fts_query, from, limit as i64, folder], summary_from_row)?
             .collect::<Result<_, _>>()?;
         Ok(rows)
     }
@@ -787,6 +844,8 @@ impl Store {
             }
             // Hidden from the lists while queued (see KEPT); the engine deletes it once the server has moved it.
             PendingOp::Move(_) | PendingOp::Expunge => {}
+            // Shown from the queue by `labels`, so Undo needs nothing restored.
+            PendingOp::Relabel { .. } => {}
         }
         let (kind, arg) = op.encode();
         self.conn.execute(
@@ -794,6 +853,24 @@ impl Store {
             params![folder, uid, kind, arg, ready_at],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// A message's Gmail labels as they will be once queued relabels are sent.
+    pub fn labels(&self, folder: &str, uid: u32) -> Result<Vec<String>> {
+        let stored: String = self
+            .conn
+            .query_row("SELECT labels FROM messages WHERE folder = ?1 AND uid = ?2", params![folder, uid], |r| r.get(0))
+            .optional()?
+            .unwrap_or_default();
+        let mut labels: Vec<String> = stored.lines().map(str::to_string).collect();
+        let mut stmt = self.conn.prepare("SELECT arg FROM pending_ops WHERE folder = ?1 AND uid = ?2 AND kind = 'labels' ORDER BY id")?;
+        for arg in stmt.query_map(params![folder, uid], |r| r.get::<_, String>(0))? {
+            if let Some(PendingOp::Relabel { add, remove }) = PendingOp::decode("labels", arg?) {
+                labels.retain(|l| !remove.contains(l));
+                labels.extend(add.into_iter().filter(|l| !labels.contains(l)).collect::<Vec<_>>());
+            }
+        }
+        Ok(labels)
     }
 
     /// Takes back queued changes not sent yet; returns how many were. A moved or deleted message
@@ -1027,7 +1104,7 @@ mod tests {
         // A gap in the rowids, which a VACUUM that renumbered them would close.
         store.delete_messages("INBOX", &[1]).unwrap();
         store.conn.execute_batch("VACUUM").unwrap();
-        let found: Vec<u32> = store.search("lunch", 10).unwrap().into_iter().map(|m| m.uid).collect();
+        let found: Vec<u32> = store.search("lunch", None, 10).unwrap().into_iter().map(|m| m.uid).collect();
         assert_eq!(found, [2]);
     }
 
@@ -1118,13 +1195,13 @@ mod tests {
             .set_body("INBOX", 2, b"raw", "", "let's meet at the pizzeria", false)
             .unwrap();
 
-        assert_eq!(store.search("quart", 10).unwrap()[0].uid, 1);
-        assert_eq!(store.search("pizzeria", 10).unwrap()[0].uid, 2);
-        assert_eq!(store.search("alice", 10).unwrap().len(), 2);
-        assert!(store.search("\"; DROP", 10).unwrap().is_empty());
+        assert_eq!(store.search("quart", None, 10).unwrap()[0].uid, 1);
+        assert_eq!(store.search("pizzeria", None, 10).unwrap()[0].uid, 2);
+        assert_eq!(store.search("alice", None, 10).unwrap().len(), 2);
+        assert!(store.search("\"; DROP", None, 10).unwrap().is_empty());
 
         store.delete_messages("INBOX", &[2]).unwrap();
-        assert!(store.search("pizzeria", 10).unwrap().is_empty());
+        assert!(store.search("pizzeria", None, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -1134,12 +1211,42 @@ mod tests {
         store.upsert_messages(&[msg(1, "Invoice"), bob(2, "Invoice"), bob(3, "Lunch")]).unwrap();
         // Alice's mail mentions Bob's address: a text search finds it, a sender search must not.
         store.set_body("INBOX", 1, b"raw", "", "forwarding bob@example.org's invoice", false).unwrap();
-        let uids = |q: &str| store.search(q, 10).unwrap().iter().map(|m| m.uid).collect::<Vec<_>>();
+        let uids = |q: &str| store.search(q, None, 10).unwrap().iter().map(|m| m.uid).collect::<Vec<_>>();
         assert_eq!(uids("from:bob@example.org"), [3, 2]);
         assert_eq!(uids("FROM:BOB@example.ORG invoice"), [2]);
         assert_eq!(uids("bob@example.org"), [3, 2, 1]);
         assert!(uids("from:nobody@example.org").is_empty());
         assert!(uids("from:'; DROP TABLE messages; --").is_empty());
+    }
+
+    #[test]
+    fn queued_relabels_show_in_labels() {
+        let mut store = store_with_inbox();
+        store.upsert_messages(&[MessageSummary { labels: "\\Inbox\nWork".into(), ..msg(1, "a") }]).unwrap();
+        let op = PendingOp::Relabel { add: vec!["Projects".into()], remove: vec!["\\Inbox".into(), "Work".into()] };
+        let (kind, arg) = op.encode();
+        assert_eq!(PendingOp::decode(kind, arg), Some(op.clone()));
+        let id = store.apply_local_until("INBOX", 1, &op, now() + 60).unwrap();
+        assert_eq!(store.labels("INBOX", 1).unwrap(), ["Projects"]);
+        // Not hidden: a relabelled message stays where it is listed.
+        assert_eq!(store.messages("INBOX", 10).unwrap().len(), 1);
+        store.undo(&[id]).unwrap();
+        assert_eq!(store.labels("INBOX", 1).unwrap(), ["\\Inbox", "Work"]);
+        // A refresh from the server replaces them.
+        store.update_flags("INBOX", &[Flags { uid: 1, labels: Some("Work".into()), ..Default::default() }]).unwrap();
+        assert_eq!(store.labels("INBOX", 1).unwrap(), ["Work"]);
+    }
+
+    #[test]
+    fn search_in_one_folder() {
+        let mut store = store_with_inbox();
+        store.upsert_messages(&[msg(1, "Invoice"), MessageSummary { folder: "Trash".into(), ..msg(2, "Invoice") }]).unwrap();
+        let uids = |q: &str, folder| store.search(q, folder, 10).unwrap().iter().map(|m| m.uid).collect::<Vec<_>>();
+        assert_eq!(uids("invoice", None), [2, 1]);
+        assert_eq!(uids("invoice", Some("Trash")), [2]);
+        assert_eq!(uids("from:alice@example.org", Some("INBOX")), [1]);
+        // Nothing to match: everything, the "in" filter alone.
+        assert_eq!(uids("", None), [2, 1]);
     }
 
     #[test]
@@ -1149,9 +1256,9 @@ mod tests {
         assert!(!store.sync_folders(&folders).unwrap());
         assert!(store.sync_folders(&folders[..1]).unwrap());
         store.upsert_messages(&[msg(1, "a")]).unwrap();
-        assert!(!store.update_flags("INBOX", &[(1, false, false, false)]).unwrap());
-        assert!(store.update_flags("INBOX", &[(1, true, false, false)]).unwrap());
-        assert!(!store.update_flags("INBOX", &[(1, true, false, false)]).unwrap());
+        assert!(!store.update_flags("INBOX", &[Flags { uid: 1, ..Default::default() }]).unwrap());
+        assert!(store.update_flags("INBOX", &[Flags { uid: 1, seen: true, ..Default::default() }]).unwrap());
+        assert!(!store.update_flags("INBOX", &[Flags { uid: 1, seen: true, ..Default::default() }]).unwrap());
     }
 
     #[test]
@@ -1176,7 +1283,7 @@ mod tests {
         assert!(store.raw("INBOX", 1).unwrap().is_none());
         assert!(store.raw("INBOX", 2).unwrap().is_some());
         assert!(store.uids_missing_body("INBOX", 10, 2).unwrap().is_empty());
-        assert_eq!(store.search("body1", 10).unwrap()[0].uid, 1);
+        assert_eq!(store.search("body1", None, 10).unwrap()[0].uid, 1);
     }
 
     #[test]
@@ -1200,7 +1307,7 @@ mod tests {
             .apply_local("INBOX", 1, &PendingOp::SetSeen(true))
             .unwrap();
         store
-            .update_flags("INBOX", &[(1, false, false, false)])
+            .update_flags("INBOX", &[Flags { uid: 1, ..Default::default() }])
             .unwrap();
         assert!(store.message("INBOX", 1).unwrap().unwrap().seen);
 
@@ -1222,6 +1329,7 @@ mod tests {
         let id = store.apply_local_until("INBOX", 1, &PendingOp::Move("Trash".into()), now() + 60).unwrap();
         assert!(store.messages("INBOX", 10).unwrap().is_empty());
         assert!(store.all_messages().unwrap().is_empty());
+        assert!(store.message("INBOX", 1).unwrap().is_none(), "a server search hit would bring it back");
         assert!(store.pending_ops().unwrap().is_empty(), "held op sent before its time");
         assert_eq!(store.undo(&[id]).unwrap(), 1);
         assert_eq!(store.messages("INBOX", 10).unwrap().len(), 1);

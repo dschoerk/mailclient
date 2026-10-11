@@ -14,7 +14,7 @@ use tokio_rustls::client::TlsStream;
 use crate::backend::{Backend, FolderState};
 use crate::config::{AccountConfig, Auth, Security};
 use crate::mime;
-use crate::store::{MessageSummary, PendingOp, Role};
+use crate::store::{Flags, MessageSummary, PendingOp, Role};
 
 pub type Session = async_imap::Session<TlsStream<TcpStream>>;
 
@@ -207,7 +207,10 @@ impl Imap {
         Ok(())
     }
 
-    const SUMMARY_QUERY: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])";
+    /// Gmail also reports each message's labels.
+    fn summary_query(&self) -> &'static str {
+        if self.gmail { "(UID FLAGS INTERNALDATE X-GM-LABELS BODY.PEEK[HEADER])" } else { "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])" }
+    }
 
     fn summary(folder: &str, fetch: &Fetch) -> Option<MessageSummary> {
         let uid = fetch.uid?;
@@ -218,6 +221,7 @@ impl Imap {
         s.seen = seen;
         s.flagged = flagged;
         s.answered = answered;
+        s.labels = labels_of(fetch).unwrap_or_default();
         Some(s)
     }
 
@@ -226,7 +230,7 @@ impl Imap {
         self.ensure_selected(folder).await?;
         let fetches: Vec<Fetch> = self
             .session
-            .uid_fetch(format!("{}:*", after + 1), Self::SUMMARY_QUERY)
+            .uid_fetch(format!("{}:*", after + 1), self.summary_query())
             .await?
             .try_collect()
             .await?;
@@ -253,7 +257,7 @@ impl Imap {
         let start = exists.saturating_sub(count) + 1;
         let fetches: Vec<Fetch> = self
             .session
-            .fetch(format!("{start}:*"), Self::SUMMARY_QUERY)
+            .fetch(format!("{start}:*"), self.summary_query())
             .await?
             .try_collect()
             .await?;
@@ -282,7 +286,7 @@ impl Imap {
         let start = end.saturating_sub(count).max(1);
         let fetches: Vec<Fetch> = self
             .session
-            .fetch(format!("{start}:{end}"), Self::SUMMARY_QUERY)
+            .fetch(format!("{start}:{end}"), self.summary_query())
             .await?
             .try_collect()
             .await?;
@@ -301,7 +305,7 @@ impl Imap {
         self.ensure_selected(folder).await?;
         let fetches: Vec<Fetch> = self
             .session
-            .uid_fetch(uid_set(uids), Self::SUMMARY_QUERY)
+            .uid_fetch(uid_set(uids), self.summary_query())
             .await?
             .try_collect()
             .await?;
@@ -314,11 +318,8 @@ impl Imap {
     }
 
     /// Current flags of all messages with UID in one of the inclusive `ranges`, as (uid, seen, flagged, answered).
-    pub async fn fetch_flags(
-        &mut self,
-        folder: &str,
-        ranges: &[(u32, u32)],
-    ) -> Result<Vec<(u32, bool, bool, bool)>> {
+    /// Current flags (and Gmail labels) of all messages with UID in one of the inclusive `ranges`.
+    pub async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<Flags>> {
         self.ensure_selected(folder).await?;
         let mut flags = Vec::new();
         // Scattered search hits make long sets; servers limit command lines to a few kB.
@@ -326,7 +327,7 @@ impl Imap {
             let set: Vec<String> = chunk.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}:{b}") }).collect();
             let fetches: Vec<Fetch> = self
                 .session
-                .uid_fetch(set.join(","), "(UID FLAGS)")
+                .uid_fetch(set.join(","), if self.gmail { "(UID FLAGS X-GM-LABELS)" } else { "(UID FLAGS)" })
                 .await?
                 .try_collect()
                 .await?;
@@ -335,7 +336,7 @@ impl Imap {
                 let (seen, flagged, answered) = flags_of(f);
                 f.uid
                     .filter(|uid| chunk.iter().any(|(a, b)| (a..=b).contains(&uid)))
-                    .map(|uid| (uid, seen, flagged, answered))
+                    .map(|uid| Flags { uid, seen, flagged, answered, labels: labels_of(f) })
             }));
         }
         Ok(flags)
@@ -382,6 +383,25 @@ impl Imap {
             .try_collect()
             .await?;
         self.confirm().await
+    }
+
+    /// Gmail: adds and removes labels (`X-GM-LABELS`); system ones (`\Inbox`) are atoms, the rest quoted.
+    pub async fn relabel(&mut self, folder: &str, uid: u32, add: &[String], remove: &[String]) -> Result<()> {
+        self.ensure_selected(folder).await?;
+        for (sign, labels) in [("+", add), ("-", remove)] {
+            if labels.is_empty() {
+                continue;
+            }
+            let list: Vec<String> = labels.iter().map(|l| if l.starts_with('\\') { l.clone() } else { quote(l) }).collect();
+            let _: Vec<_> = self
+                .session
+                .uid_store(uid.to_string(), format!("{sign}X-GM-LABELS ({})", list.join(" ")))
+                .await?
+                .try_collect()
+                .await?;
+            self.confirm().await?;
+        }
+        Ok(())
     }
 
     pub async fn move_message(&mut self, folder: &str, uid: u32, dest: &str) -> Result<()> {
@@ -527,7 +547,7 @@ impl Backend for Imap {
         Imap::fetch_headers(self, folder, uids).await
     }
 
-    async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<(u32, bool, bool, bool)>> {
+    async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<Flags>> {
         Imap::fetch_flags(self, folder, ranges).await
     }
 
@@ -546,6 +566,7 @@ impl Backend for Imap {
             PendingOp::SetAnswered => self.store_flag(folder, uid, "\\Answered", true).await,
             PendingOp::Move(dest) => self.move_message(folder, uid, dest).await,
             PendingOp::Expunge => self.expunge(folder, uid).await,
+            PendingOp::Relabel { add, remove } => self.relabel(folder, uid, add, remove).await,
         }
     }
 
@@ -602,6 +623,29 @@ impl async_imap::Authenticator for XOAuth2 {
         // A second challenge carries the server's error details; an empty reply ends the exchange.
         std::mem::take(&mut self.0)
     }
+}
+
+/// Gmail labels, one per line; None when the server sent none (not Gmail).
+fn labels_of(fetch: &Fetch) -> Option<String> {
+    fetch.gmail_labels().map(|labels| labels.iter().map(|l| unescape(l)).collect::<Vec<_>>().join("\n"))
+}
+
+/// A quoted IMAP string's content as the parser leaves it, escapes still in: Gmail sends
+/// `"\\\\Inbox"` for the label `\\Inbox`.
+fn unescape(quoted: &str) -> String {
+    let mut out = String::with_capacity(quoted.len());
+    let mut chars = quoted.chars().peekable();
+    while let Some(c) = chars.next() {
+        // Only the two escapes there are: an atom's lone `\\Inbox` stays as it is.
+        match (c, chars.peek()) {
+            ('\\', Some(&next @ ('\\' | '"'))) => {
+                out.push(next);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn flags_of(fetch: &Fetch) -> (bool, bool, bool) {
@@ -695,6 +739,14 @@ mod tests {
     fn uid_sets() {
         assert_eq!(uid_set(&[5, 1, 2, 3, 9, 12, 13]), "1:3,5,9,12:13");
         assert_eq!(uid_set(&[7]), "7");
+    }
+
+    #[test]
+    fn unescapes_quoted_labels() {
+        assert_eq!(unescape(r"\\Inbox"), r"\Inbox");
+        assert_eq!(unescape(r#"say \"hi\""#), r#"say "hi""#);
+        assert_eq!(unescape("[Imap]/Archiv"), "[Imap]/Archiv");
+        assert_eq!(unescape(r"\Important"), r"\Important");
     }
 
     #[test]

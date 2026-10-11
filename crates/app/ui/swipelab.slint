@@ -1,0 +1,186 @@
+// Prototype: try ways of judging a row swipe on the real MessageRow, with fake mail.
+// The settings are shared with the message list, so they also apply to the inbox.
+
+import { CheckBox, ListView, Palette, Slider } from "std-widgets.slint";
+import { MessageItem } from "types.slint";
+import { Theme, Divider, ToolButton } from "widgets.slint";
+import { MessageRow, SwipeTuning } from "lists.slint";
+
+component Tune inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> value;
+    in property <float> minimum;
+    in property <float> maximum;
+    in-out property <float> current;
+    spacing: 8px;
+    Text {
+        text: root.text;
+        width: 110px;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+    Slider {
+        minimum: root.minimum;
+        maximum: root.maximum;
+        value <=> root.current;
+        horizontal-stretch: 1;
+    }
+    Text {
+        text: root.value;
+        width: 70px;
+        font-size: 13px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+export component SwipeLab inherits Rectangle {
+    in property <length> inset-top;
+    in property <length> inset-bottom;
+    callback close();
+    /// A row's drag reached the more-options zone.
+    callback far-reached();
+    property <string> outcome: "Archive: swipe right. Delete: swipe left.";
+    property <int> archived;
+    property <int> deleted;
+    property <[MessageItem]> rows: [
+        { sender: "Maria Lopez", subject: "Offsite agenda", snippet: "Let's fix the agenda for the offsite.", date: "11:15", count: 1 },
+        { sender: "Tom Becker", subject: "Re: Offsite agenda", snippet: "Can we add 30 minutes for the hiring update?", date: "10:40", count: 1 },
+        { sender: "Trail Weekly", subject: "Autumn routes are open", snippet: "The lake loop and the ridge trail reopened.", date: "09:02", count: 1, seen: true },
+        { sender: "Jonas Weber", subject: "Bike tour on Sunday?", snippet: "Lake loop, meet at 9 at the bakery?", date: "Oct 10", count: 1 },
+        { sender: "GitHub", subject: "[mailclient] CI passed on main", snippet: "All checks have passed.", date: "Oct 9", count: 1, seen: true },
+        { sender: "Priya Shah", subject: "Design review notes", snippet: "The main open point is the onboarding flow.", date: "Oct 8", count: 1 },
+        { sender: "Acme Store", subject: "Your receipt for order #4821", snippet: "Thanks for your purchase.", date: "Oct 7", count: 1, seen: true },
+        { sender: "Mum", subject: "Sunday lunch?", snippet: "Are you coming on Sunday?", date: "Oct 6", count: 1 },
+        { sender: "Coach", subject: "Training cancelled", snippet: "Pitch is flooded.", date: "Oct 5", count: 1, seen: true },
+        { sender: "Alice", subject: "Standup moved to 10:00", snippet: "See you then.", date: "Oct 4", count: 1 },
+        { sender: "Bank", subject: "Your statement is ready", snippet: "Log in to view your October statement.", date: "Oct 3", count: 1, seen: true },
+        { sender: "Landlord", subject: "Heating check on Thursday", snippet: "The technician comes between 8 and 12.", date: "Oct 2", count: 1 },
+        { sender: "Newsletter", subject: "This week in Rust", snippet: "Hello and welcome to another issue.", date: "Oct 1", count: 1, seen: true },
+        { sender: "Clara", subject: "Photos from the hike", snippet: "Here are the best ones.", date: "Sep 30", count: 1 },
+    ];
+    background: Palette.background;
+    // Drawn over the mail view: keep touches from reaching it.
+    TouchArea { }
+
+    VerticalLayout {
+        padding-top: root.inset-top;
+        padding-bottom: root.inset-bottom;
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 8px;
+            alignment: start;
+            ToolButton {
+                text: "Close";
+                icon: @image-url("icons/arrow-left.svg");
+                show-text: false;
+                clicked => root.close();
+            }
+            Text {
+                text: "Swipe lab";
+                font-size: 20px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-bottom: 8px;
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 4px;
+                for name[i] in ["Distance", "Fling", "Coast"]: ToolButton {
+                    text: name;
+                    checked: SwipeTuning.mode == i;
+                    clicked => { SwipeTuning.mode = i; }
+                }
+            }
+            Text {
+                font-size: 12px;
+                color: Theme.muted;
+                wrap: word-wrap;
+                text: SwipeTuning.mode == 0 ? "Counts when the row was dragged past the distance. Speed is ignored (the old behaviour)."
+                    : SwipeTuning.mode == 1 ? "Counts past the distance, or when flung faster than the speed after at least the minimum. Flinging back cancels."
+                    : "The release speed is carried on for the coast time; counts when that end point is past the distance.";
+            }
+            Tune {
+                text: "Distance";
+                value: "\{round(SwipeTuning.distance * 100)}%";
+                minimum: 0.03;
+                maximum: 0.7;
+                current <=> SwipeTuning.distance;
+            }
+            if SwipeTuning.mode == 1: Tune {
+                text: "Fling speed";
+                value: "\{round(SwipeTuning.fling-speed * 100) / 100} px/ms";
+                minimum: 0.1;
+                maximum: 2.0;
+                current <=> SwipeTuning.fling-speed;
+            }
+            if SwipeTuning.mode == 1: Tune {
+                text: "Fling minimum";
+                value: "\{round(SwipeTuning.min-fling * 100)}%";
+                minimum: 0.03;
+                maximum: 0.4;
+                current <=> SwipeTuning.min-fling;
+            }
+            if SwipeTuning.mode == 2: Tune {
+                text: "Coast time";
+                value: "\{round(SwipeTuning.projection)} ms";
+                minimum: 0;
+                maximum: 500;
+                current <=> SwipeTuning.projection;
+            }
+            Tune {
+                text: "More options at";
+                value: "\{round(SwipeTuning.more-distance * 100)}%";
+                minimum: 0.3;
+                maximum: 0.9;
+                current <=> SwipeTuning.more-distance;
+            }
+            Tune {
+                text: "…if slower than";
+                value: "\{round(SwipeTuning.more-max-speed * 100) / 100} px/ms";
+                minimum: 0.1;
+                maximum: 2.0;
+                current <=> SwipeTuning.more-max-speed;
+            }
+            CheckBox {
+                text: "Slide the row out when it counts";
+                checked <=> SwipeTuning.fly-out;
+            }
+            Text {
+                text: SwipeTuning.last;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.outcome + "   (archived \{root.archived}, deleted \{root.deleted})";
+                font-size: 12px;
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+        }
+        Divider {
+            height: 1px;
+        }
+        ListView {
+            vertical-stretch: 1;
+            for m in root.rows: MessageRow {
+                msg: m;
+                swipeable: true;
+                swiped(archive) => {
+                    if archive {
+                        root.archived += 1;
+                    } else {
+                        root.deleted += 1;
+                    }
+                    root.outcome = (archive ? "Archived " : "Deleted ") + m.sender + " (rows come back here)";
+                }
+                far-reached => { root.far-reached(); }
+                more => { root.outcome = "More options for " + m.sender + " (the inbox opens Move to)"; }
+            }
+        }
+    }
+}

@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::config::AccountConfig;
-use crate::store::{MessageSummary, PendingOp, Role};
+use crate::store::{Flags, MessageSummary, PendingOp, Role};
 
 pub struct FolderState {
     pub exists: u32,
@@ -73,7 +73,7 @@ pub trait Backend: Sized + Send + 'static {
         &mut self,
         folder: &str,
         ranges: &[(u32, u32)],
-    ) -> impl Future<Output = Result<Vec<(u32, bool, bool, bool)>>> + Send;
+    ) -> impl Future<Output = Result<Vec<Flags>>> + Send;
 
     /// UIDs of the messages in `folder` matching the search box's text (words, `from:address`).
     fn search(&mut self, folder: &str, query: &str) -> impl Future<Output = Result<Vec<u32>>> + Send;

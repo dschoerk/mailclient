@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Required for the check's "only with network" constraint. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Haptic ticks (MainActivity.haptic); granted at install, no prompt. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <!-- Remote images in mail are often plain http; the HTML view loads them only once the user allows it. -->
     <application android:label="Mail" android:hasCode="true" android:debuggable="DEBUGGABLE" android:usesCleartextTraffic="true">
         <activity android:name="dev.mailclient.MainActivity" android:exported="true"

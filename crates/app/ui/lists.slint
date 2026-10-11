@@ -4,6 +4,52 @@ import { Palette } from "std-widgets.slint";
 import { FolderItem, MessageItem, ConversationItem } from "types.slint";
 import { Theme, Divider } from "widgets.slint";
 
+/// A button on the strip a removed row leaves: white outline on the strip's color.
+component StripButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    width: label.preferred-width + 28px;
+    height: 34px;
+    border-radius: 17px;
+    border-width: 1px;
+    border-color: white;
+    background: touch.pressed ? #ffffff40 : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    label := Text {
+        text: root.text;
+        color: white;
+        font-size: 13px;
+        font-weight: 600;
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+/// Prototype: how a released swipe is judged. Tuned live in the Swipe lab (Settings); every row uses it.
+export global SwipeTuning {
+    /// 0 distance only, 1 distance or fling, 2 projected end (where the row would coast to).
+    in-out property <int> mode: 2;
+    /// Of the row width.
+    in-out property <float> distance: 0.03;
+    /// Logical px per ms; 1.0 is 1000 px/s.
+    in-out property <float> fling-speed: 0.5;
+    /// A fling must still travel this much of the row width.
+    in-out property <float> min-fling: 0.1;
+    /// Mode 2: the release speed carried on for this long, in ms.
+    in-out property <float> projection: 0;
+    /// Dragged this far (of the row width) and let go there: more options (Move to) instead.
+    in-out property <float> more-distance: 0.3;
+    /// Released faster than this (px per ms), it is a fling: archive or delete, never more options.
+    in-out property <float> more-max-speed: 2.0;
+    /// A counted swipe slides the row out before it goes.
+    in-out property <bool> fly-out: true;
+    /// The last release, for the lab's readout.
+    in-out property <string> last: "Swipe a row";
+}
+
 export component FolderRow inherits Rectangle {
     in property <FolderItem> folder;
     in property <bool> selected;
@@ -140,9 +186,92 @@ export component MessageRow inherits Rectangle {
     /// Phones: swiping the row right archives it, left deletes it.
     in property <bool> swipeable;
     callback swiped(/* archive */ bool);
+    /// Dragged far and let go there: show more options (Move to).
+    callback more();
+    /// The strip's Undo.
+    callback undo();
+    /// The strip's Find similar: the sender's other mail.
+    callback similar();
+    /// The drag just reached the more-options zone (phones vibrate).
+    callback far-reached();
+    property <bool> removed: root.msg.removed != "";
+    // Dragged into the more-options zone.
+    // Once flying, the decision says it (an archive flies past that line too).
+    // While dragging, only a finger moving slowly there: a fling passing through stays green or red.
+    property <bool> far: root.flying != 0 ? abs(root.flying) == 2
+        : abs(front.x) > root.width * SwipeTuning.more-distance && abs(root.speed) < SwipeTuning.more-max-speed;
+    changed far => {
+        if root.far && root.flying == 0 {
+            root.far-reached();
+        }
+    }
     property <length> offset: swipe.swiping ? swipe.current-position.x - swipe.pressed-position.x : 0;
     // Far enough that letting go acts; a short swipe springs back.
-    property <bool> armed: abs(root.offset) > root.width * 0.35;
+    property <bool> armed: root.flying != 0 || abs(root.offset) > root.width * SwipeTuning.distance;
+    // Finger speed while swiping, in px per ms (signed), from samples at least 8 ms apart.
+    property <length> last-x;
+    property <duration> last-t;
+    property <float> speed;
+    property <bool> tracking;
+    // A counted swipe: the row slides out that way (1 archive, -1 delete), then `swiped` fires.
+    property <int> flying;
+    property <bool> flown;
+    // A reused row instance jumps back instead of sliding in from the side.
+    property <bool> snap;
+    changed msg => {
+        root.snap = true;
+        root.flying = 0;
+        root.flown = false;
+    }
+
+    function track(x: length) {
+        if !root.tracking {
+            root.tracking = true;
+            root.snap = false;
+            root.speed = 0;
+            root.last-x = swipe.pressed-position.x;
+            root.last-t = animation-tick();
+        }
+        let dt = (animation-tick() - root.last-t) / 1ms;
+        if dt >= 8 {
+            let v = (x - root.last-x) / 1px / dt;
+            root.speed = root.speed == 0 ? v : 0.6 * v + 0.4 * root.speed;
+            root.last-x = x;
+            root.last-t = animation-tick();
+        }
+    }
+
+    // 1 archive, -1 delete, 0 spring back. `v`: release speed in px per ms.
+    function decide(dx: length, v: float) -> int {
+        let w = root.width / 1px;
+        let d = dx / 1px;
+        let dir = d > 0 ? 1 : -1;
+        let along = v * dir;
+        let end = d + v * SwipeTuning.projection;
+        // Held far out and let go there (no fling): more options, whichever side.
+        let more = abs(d) > w * SwipeTuning.more-distance && abs(v) < SwipeTuning.more-max-speed;
+        let result = more ? 2 * dir : SwipeTuning.mode == 0 ? (abs(d) > w * SwipeTuning.distance ? dir : 0)
+            : SwipeTuning.mode == 1 ? (along < -SwipeTuning.fling-speed ? 0
+                : abs(d) > w * SwipeTuning.distance || (along > SwipeTuning.fling-speed && abs(d) > w * SwipeTuning.min-fling) ? dir : 0)
+            : (end * dir > 0 && abs(end) > w * SwipeTuning.distance ? dir : 0);
+        SwipeTuning.last = "moved \{round(abs(d) / w * 100)}% · speed \{round(v * 100) / 100} px/ms · coast to \{round(end / w * 100)}% → "
+            + (abs(result) == 2 ? "MORE" : result > 0 ? "ARCHIVE" : result < 0 ? "DELETE" : "back");
+        return result;
+    }
+
+    function act(dir: int) {
+        if dir == 0 {
+            return;
+        }
+        if SwipeTuning.fly-out {
+            root.snap = false;
+            root.flying = dir;
+        } else if abs(dir) == 2 {
+            root.more();
+        } else {
+            root.swiped(dir > 0);
+        }
+    }
     property <bool> long-pressed;
     property <bool> expanded: root.selected && root.thread.length > 1;
     // The mini timeline; the unfolded one replaces it.
@@ -150,36 +279,99 @@ export component MessageRow inherits Rectangle {
     property <length> head: root.strip ? 90px : 74px;
     property <color> line-color: root.msg.color.alpha > 0 ? root.msg.color : Theme.accent;
     accessible-role: list-item;
-    accessible-label: msg.sender + ": " + msg.subject;
+    accessible-label: (root.removed ? msg.removed-text + " " : "") + msg.sender + ": " + msg.subject;
     accessible-action-default => { root.clicked(); }
     height: root.head + (root.expanded ? root.thread.length * 30px + 8px : 0px);
-    // Revealed behind the row while it is swiped: green archives, red deletes.
+    // Revealed behind the row while it is swiped: green archives, red deletes, blue (far) more options.
     // The row's drawn position, not `offset`: after letting go it still slides back.
-    background: front.x > 0 ? #2e9d5b : #d93f3f;
-    if front.x != 0: Image {
+    background: root.removed ? (root.msg.removed == "archive" ? #2e9d5b : root.msg.removed == "delete" ? #d93f3f : #3b6fd4)
+        : root.far ? #3b6fd4 : front.x > 0 ? #2e9d5b : #d93f3f;
+    animate background { duration: 120ms; }
+    if front.x != 0 && !root.removed: Image {
         x: front.x > 0 ? 20px : root.width - 20px - self.width;
         y: (root.head - self.height) / 2;
         width: 24px;
-        source: front.x > 0 ? @image-url("icons/archive.svg") : @image-url("icons/trash.svg");
+        source: root.far ? @image-url("icons/folder.svg") : front.x > 0 ? @image-url("icons/archive.svg") : @image-url("icons/trash.svg");
         colorize: white;
         opacity: root.armed ? 1 : 0.5;
     }
+    // Undoable a while after it went: a ghost of the row, and Undo.
+    if root.removed: HorizontalLayout {
+        height: root.head;
+        y: 0;
+        padding-left: 20px;
+        padding-right: 12px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.msg.removed-text;
+                color: white;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.msg.sender + " · " + root.msg.subject;
+                color: white;
+                opacity: 0.65;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+        StripButton {
+            y: (root.head - self.height) / 2;
+            text: "Find similar";
+            clicked => { root.similar(); }
+        }
+        StripButton {
+            y: (root.head - self.height) / 2;
+            text: "Undo";
+            clicked => { root.undo(); }
+        }
+    }
     swipe := SwipeGestureHandler {
-        enabled: root.swipeable;
+        enabled: root.swipeable && !root.removed;
         handle-swipe-left: true;
         handle-swipe-right: true;
+        moved => { root.track(self.current-position.x); }
+        cancelled => { root.tracking = false; }
         // Released after `swiping` ends: measure from the positions.
         swiped => {
-            if abs(self.current-position.x - self.pressed-position.x) > root.width * 0.35 {
-                root.swiped(self.current-position.x > self.pressed-position.x);
+            root.tracking = false;
+            // A finger that stopped before letting go has no speed left.
+            let v = animation-tick() - root.last-t > 80ms ? 0 : root.speed;
+            root.act(root.decide(self.current-position.x - self.pressed-position.x, v));
+        }
+        Timer {
+            interval: 160ms;
+            running: root.flying != 0 && !root.flown;
+            triggered => {
+                root.flown = true;
+                if abs(root.flying) == 2 {
+                    root.more();
+                } else {
+                    root.swiped(root.flying > 0);
+                }
+            }
+        }
+        // Still here after flying out (an error, or the lab): slide back.
+        Timer {
+            interval: 1200ms;
+            running: root.flown;
+            triggered => {
+                root.flying = 0;
+                root.flown = false;
             }
         }
         front := Rectangle {
-            x: root.offset;
+            visible: !root.removed;
+            x: root.flying != 0 ? (abs(root.flying) == 2 ? root.flying / 2 : root.flying) * root.width : root.offset;
             width: root.width;
             height: root.height;
             background: Palette.background;
-            animate x { duration: swipe.swiping ? 0ms : 150ms; }
+            animate x { duration: swipe.swiping || root.snap ? 0ms : 150ms; }
             Rectangle {
                 // Expanded, the open message is marked on the timeline instead.
                 background: root.expanded ? Palette.foreground.with-alpha(0.03)
@@ -230,6 +422,20 @@ export component MessageRow inherits Rectangle {
                             font-weight: msg.seen ? 400 : 700;
                             overflow: elide;
                             horizontal-stretch: 1;
+                        }
+                        // Searching all folders: where each one is.
+                        if msg.folder-label != "": Rectangle {
+                            height: 16px;
+                            width: folder-tag.preferred-width + 10px;
+                            border-radius: 4px;
+                            background: Palette.foreground.with-alpha(0.08);
+                            accessible-role: text;
+                            accessible-label: "in " + msg.folder-label;
+                            folder-tag := Text {
+                                text: msg.folder-label;
+                                color: Theme.muted;
+                                font-size: 11px;
+                            }
                         }
                         if msg.count > 1: Text {
                             text: msg.count;
@@ -328,8 +534,12 @@ export component MessageRow inherits Rectangle {
                 height: root.head;
                 clicked => {
                     // A flick released within Slint's 100 ms gesture delay arrives as a click: still a swipe.
-                    if root.swipeable && abs(self.mouse-x - self.pressed-x) > root.width * 0.35 {
-                        root.swiped(self.mouse-x > self.pressed-x);
+                    // Its press is replayed only at the release, so the duration is unknown; under 100 ms
+                    // it was, which makes this the slowest speed it can have had.
+                    let dx = self.mouse-x - self.pressed-x;
+                    let dir = root.swipeable && abs(dx) > 8px ? root.decide(dx, dx / 1px / 100) : 0;
+                    if dir != 0 {
+                        root.act(dir);
                     // The release that ends a long press is not a click.
                     } else if !root.long-pressed {
                         root.clicked();

@@ -85,6 +85,19 @@ impl Controller {
     }
 
     pub(super) fn select_message(&self, index: usize) {
+        // Strips are skipped, onward in the direction the selection moves (j/k).
+        let index = {
+            let state = self.state.borrow();
+            let back = (index as i32) < self.window().get_current_message();
+            let mut i = index;
+            while state.is_strip(i) {
+                match if back { i.checked_sub(1) } else { Some(i + 1).filter(|&n| n < state.messages.len()) } {
+                    Some(n) => i = n,
+                    None => return,
+                }
+            }
+            i
+        };
         let Some((account, summary)) = self.state.borrow().messages.get(index).cloned() else { return };
         let key = (account, summary.folder.clone(), summary.uid);
         if self.state.borrow().selected.as_ref() == Some(&key) {

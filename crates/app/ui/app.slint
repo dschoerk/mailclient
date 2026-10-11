@@ -1,10 +1,11 @@
 import { Button, LineEdit, ListView, ScrollView, CheckBox, Palette, Spinner, TextEdit } from "std-widgets.slint";
 import { Webview } from "../src/webview/webview.slint";
 import { FolderItem, MessageItem, ConversationItem, AttachmentItem, ReaderPart, SetupData, AccountItem, CalendarDay, AgendaItem, EventForm, DayColumn, EventDetail, AttendeeItem } from "types.slint";
-import { Theme, Divider, ToolButton, FloatButton, TextField } from "widgets.slint";
+import { Theme, Divider, ToolButton, FloatButton, TextField, FilterPill } from "widgets.slint";
 import { FolderRow, MessageRow, TimelineItem } from "lists.slint";
 import { SetupView } from "setup.slint";
 import { SettingsView } from "settings.slint";
+import { SwipeLab } from "swipelab.slint";
 import { ComposeView } from "compose.slint";
 import { CalendarView } from "calendar.slint";
 
@@ -27,6 +28,10 @@ export component AppWindow inherits Window {
     /// The setup form edits an existing account.
     in property <bool> setup-editing;
     in-out property <bool> show-settings;
+    // Prototype: the Swipe lab, opened from Settings.
+    in-out property <bool> show-swipe-lab;
+    // A first Back at the top level: the next one within 2 s closes the app.
+    property <bool> back-armed;
     in property <[AccountItem]> accounts;
     in property <bool> use-webview;
     /// Android: a native WebView is laid over the reader area (html-x … html-visible).
@@ -60,13 +65,30 @@ export component AppWindow inherits Window {
     in property <int> current-folder: -1;
     in property <[MessageItem]> messages;
     in property <int> current-message: -1;
+    /// Only for a message opened from a file; otherwise the filter pills stand there.
     in property <string> list-title;
+    /// The "in" pill: the open folder ("" while searching everywhere).
+    in property <string> filter-in;
+    /// The "from" pill ("" when none).
+    in property <string> filter-from;
+    callback remove-filter-in();
+    callback remove-filter-from();
+    /// Back or Escape while searching: no text, no sender, the open folder again.
+    callback clear-search();
     in property <bool> searching;
 
     in property <string> status;
-    /// What the last move or delete did, while it can still be undone ("" hides Undo).
-    in property <string> undo-text;
+    /// Undoes the last move or delete (`z`).
     callback undo();
+    /// The Undo on a removed row's strip.
+    callback undo-row(int);
+    /// Find similar on a removed row's strip: mail from the same sender.
+    callback similar-row(int);
+    /// A row dragged far: pick a folder to move it to.
+    callback row-more(int);
+    in-out property <bool> move-open;
+    in property <[string]> move-targets;
+    callback move-chosen(int);
     /// Build number, date and profile, shown in the status bar.
     in property <string> version;
     /// A sync the user asked for is running.
@@ -333,7 +355,7 @@ export component AppWindow inherits Window {
                 if root.checked-count > 0 { root.bulk-action("delete"); } else { root.delete(); }
                 return accept;
             }
-            if event.text == "z" && root.undo-text != "" {
+            if event.text == "z" {
                 root.undo();
                 return accept;
             }
@@ -370,14 +392,23 @@ export component AppWindow inherits Window {
                 }
                 return accept;
             }
+            // Then the search: Back returns to the folder it filtered.
+            if event.text == Key.Back && root.searching {
+                root.clear-search();
+                return accept;
+            }
             if event.text == Key.Escape && root.checked-count > 0 {
                 root.bulk-action("clear");
                 return accept;
             }
             if event.text == Key.Escape {
-                search-box.text = "";
-                root.search("");
+                root.clear-search();
                 self.focus();
+                return accept;
+            }
+            // Android closes the app on an unhandled Back: only on a second one, so a stray Back is harmless.
+            if event.text == Key.Back && !root.back-armed {
+                root.back-armed = true;
                 return accept;
             }
             reject
@@ -427,7 +458,11 @@ export component AppWindow inherits Window {
                                 text <=> root.search-text;
                                 placeholder: "Search mail  ( / )";
                                 edited(text) => root.search(text);
-                                accepted => keys.focus();
+                                // Enter finishes a last from: or in: word too.
+                                accepted => {
+                                    root.search(root.search-text + " ");
+                                    keys.focus();
+                                }
                             }
                             ToolButton {
                                 text: "Sync";
@@ -436,7 +471,7 @@ export component AppWindow inherits Window {
                                 clicked => root.refresh();
                             }
                         }
-                        if root.checked-count == 0: HorizontalLayout {
+                        if root.checked-count == 0 && root.list-title != "": HorizontalLayout {
                             padding-left: 12px;
                             padding-bottom: 6px;
                             Text {
@@ -444,6 +479,25 @@ export component AppWindow inherits Window {
                                 font-weight: 600;
                                 font-size: 15px;
                                 overflow: elide;
+                            }
+                        }
+                        // The filters: the open folder ("in"), the sender ("from"); type from:… or in:… to add one.
+                        if root.checked-count == 0 && root.list-title == "" && root.has-account: HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            padding-bottom: 6px;
+                            spacing: 6px;
+                            alignment: start;
+                            FilterPill {
+                                kind: "in";
+                                value: root.filter-in != "" ? root.filter-in : "all folders";
+                                removable: root.filter-in != "";
+                                remove => { root.remove-filter-in(); }
+                            }
+                            if root.filter-from != "": FilterPill {
+                                kind: "from";
+                                value: root.filter-from;
+                                remove => { root.remove-filter-from(); }
                             }
                         }
                         // Actions on the ticked rows replace the title while any are ticked.
@@ -476,6 +530,12 @@ export component AppWindow inherits Window {
                                 icon-color: root.checked-all-flagged ? Theme.flag : Palette.foreground;
                                 show-text: false;
                                 clicked => root.bulk-action("flag");
+                            }
+                            ToolButton {
+                                text: "Move selected";
+                                icon: @image-url("icons/folder.svg");
+                                show-text: false;
+                                clicked => root.bulk-action("move");
                             }
                             ToolButton {
                                 text: "Archive selected";
@@ -520,6 +580,11 @@ export component AppWindow inherits Window {
                                     selecting: root.checked-count > 0;
                                     swipeable: root.narrow;
                                     swiped(archive) => { root.row-swiped(i, archive); }
+                                    more => { root.row-more(i); }
+                                    // The same short vibration as a long press.
+                                    far-reached => { root.row-held(); }
+                                    undo => { root.undo-row(i); }
+                                    similar => { root.similar-row(i); }
                                     clicked => {
                                         // Phones: while ticking, a tap ticks too.
                                         if root.narrow && root.checked-count > 0 {
@@ -1066,22 +1131,11 @@ export component AppWindow inherits Window {
                 height: 1px;
             }
             HorizontalLayout {
-                // Taller while Undo is offered: a finger-sized button.
-                height: root.undo-text != "" ? 36px : 24px;
+                height: 24px;
                 padding-left: 10px;
                 padding-right: 10px;
                 spacing: 8px;
-                if root.undo-text != "": Text {
-                    text: root.undo-text;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                if root.undo-text != "": ToolButton {
-                    text: "Undo";
-                    clicked => { root.undo(); }
-                }
-                if root.undo-text == "": Text {
+                Text {
                     text: root.status;
                     color: Theme.muted;
                     font-size: 12px;
@@ -1152,7 +1206,7 @@ export component AppWindow inherits Window {
                     ListView {
                         for folder[i] in root.folders: FolderRow {
                             folder: folder;
-                            selected: i == root.current-folder && !root.searching;
+                            selected: i == root.current-folder;
                             clicked => {
                                 root.show-folders = false;
                                 root.folder-selected(i);
@@ -1197,10 +1251,96 @@ export component AppWindow inherits Window {
         add-account => root.add-account();
         edit-account(i) => root.edit-account(i);
         remove-account(i) => root.remove-account(i);
+        swipe-lab => { root.show-swipe-lab = true; }
         close => {
             root.show-settings = false;
             keys.focus();
         }
+    }
+
+    back-timer := Timer {
+        interval: 2s;
+        running: root.back-armed;
+        triggered => { root.back-armed = false; }
+    }
+    if root.back-armed: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - root.safe-area-insets.bottom - 72px;
+        width: back-hint.preferred-width + 32px;
+        height: 36px;
+        border-radius: 18px;
+        background: #323232;
+        back-hint := Text {
+            text: "Press Back again to close";
+            color: white;
+            font-size: 13px;
+        }
+    }
+
+    // Phones: where a row dragged far goes.
+    if root.move-open: Rectangle {
+        background: #0008;
+        TouchArea {
+            clicked => { root.move-open = false; }
+        }
+        Rectangle {
+            width: min(parent.width - 32px, 360px);
+            height: min(parent.height - 160px, 64px + root.move-targets.length * 48px);
+            background: Palette.background;
+            border-radius: 12px;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #0006;
+            // Keeps taps on the card from closing it.
+            TouchArea { }
+            VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+                Text {
+                    text: "Move to";
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+                ListView {
+                    for name[i] in root.move-targets: Rectangle {
+                        height: 48px;
+                        accessible-role: button;
+                        accessible-label: "Move to " + name;
+                        accessible-action-default => {
+                            root.move-open = false;
+                            root.move-chosen(i);
+                        }
+                        background: target-touch.pressed ? Palette.foreground.with-alpha(0.08) : transparent;
+                        border-radius: 6px;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            spacing: 10px;
+                            Image {
+                                width: 18px;
+                                source: @image-url("icons/folder.svg");
+                                colorize: Theme.muted;
+                            }
+                            Text {
+                                text: name;
+                                vertical-alignment: center;
+                            }
+                        }
+                        target-touch := TouchArea {
+                            clicked => {
+                                root.move-open = false;
+                                root.move-chosen(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-swipe-lab: SwipeLab {
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        close => { root.show-swipe-lab = false; }
+        far-reached => { root.row-held(); }
     }
 
     if root.show-calendar: CalendarView {

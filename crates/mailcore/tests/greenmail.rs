@@ -119,7 +119,7 @@ fn send_sync_flag_delete_idle() {
     );
 
     // Server search finds it by body text.
-    engine.send(Command::Search("first body".into()));
+    engine.send(Command::Search { query: "first body".into(), folder: None });
     let Event::SearchHits { hits, .. } = wait_event(&|e| matches!(e, Event::SearchHits { .. })) else { unreachable!() };
     assert_eq!(hits, [("INBOX".to_string(), msg.uid)]);
 
@@ -163,7 +163,7 @@ fn send_sync_flag_delete_idle() {
         server_flags(msg.uid)
             .1
             .iter()
-            .any(|f| f.0 == msg.uid && f.2),
+            .any(|f| f.uid == msg.uid && f.flagged),
         "flag not on server"
     );
 

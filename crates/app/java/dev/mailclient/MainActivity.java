@@ -81,9 +81,19 @@ public final class MainActivity extends NativeActivity {
         });
     }
 
-    /** Long-press feedback; follows the system haptics setting and needs no VIBRATE permission. */
+    /**
+     * A short, firm tick (long press, a swipe reaching its next stage). Through the vibrator: some
+     * phones (OnePlus) play the view's LONG_PRESS feedback faintly or not at all.
+     */
     public void haptic() {
-        runOnUiThread(() -> getWindow().getDecorView().performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS));
+        runOnUiThread(() -> {
+            android.os.Vibrator vibrator = getSystemService(android.os.Vibrator.class);
+            if (Build.VERSION.SDK_INT >= 29 && vibrator != null && vibrator.hasVibrator()) {
+                vibrator.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_HEAVY_CLICK));
+            } else {
+                getWindow().getDecorView().performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            }
+        });
     }
 
     private void offerToOpen(String name, Uri uri, String type) {

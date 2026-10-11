@@ -102,6 +102,11 @@ impl ConfigFile {
 }
 
 impl AccountConfig {
+    /// Gmail: folders are labels, and All Mail holds every message once.
+    pub fn is_gmail(&self) -> bool {
+        self.imap_host.to_lowercase().ends_with("gmail.com")
+    }
+
     /// Best-effort server settings for a mail address, used to prefill the setup form.
     pub fn guess(email: &str) -> AccountConfig {
         let domain = email

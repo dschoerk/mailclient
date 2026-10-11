@@ -60,6 +60,8 @@ export component SettingsView inherits Rectangle {
     callback edit-account(int);
     callback remove-account(int);
     callback close();
+    /// Prototype: opens the Swipe lab.
+    callback swipe-lab();
     /// The account whose removal awaits confirmation.
     property <int> confirm-remove: -1;
     background: Palette.background;
@@ -139,6 +141,10 @@ export component SettingsView inherits Rectangle {
                         hint: "Each link in HTML mail gets a label with the site it opens, red when the link text names a different site.";
                         checked <=> root.show-link-targets;
                         toggled => root.changed();
+                    }
+                    Button {
+                        text: "Swipe lab (prototype)";
+                        clicked => root.swipe-lab();
                     }
 
                     SectionTitle {

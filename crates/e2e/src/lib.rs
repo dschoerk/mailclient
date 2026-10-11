@@ -220,6 +220,11 @@ impl App {
         self.touch_drag(label, role, dx, 300);
     }
 
+    /// The same, slowly (1.5 s): a drag that ends where the finger is, not a fling.
+    pub fn drag_across(&self, label: &str, role: &str, dx: f64) {
+        self.touch_drag(label, role, dx, 1500);
+    }
+
     /// The same, as a quick flick that ends within Slint's 100 ms gesture delay.
     pub fn flick_across(&self, label: &str, role: &str, dx: f64) {
         self.touch_drag(label, role, dx, 60);

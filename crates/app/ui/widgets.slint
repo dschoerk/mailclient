@@ -170,3 +170,53 @@ export component Field inherits HorizontalLayout {
         edited(t) => root.edited(t);
     }
 }
+
+/// A search filter under the search box: "in: Inbox", "from: ann@example.org", with × to drop it.
+export component FilterPill inherits Rectangle {
+    in property <string> kind;
+    in property <string> value;
+    in property <bool> removable: true;
+    callback remove();
+    height: 28px;
+    border-radius: 14px;
+    background: Theme.accent.with-alpha(0.13);
+    accessible-role: text;
+    accessible-label: root.kind + ": " + root.value;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: root.removable ? 3px : 10px;
+        spacing: 4px;
+        Text {
+            text: root.kind + ":";
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value;
+            font-size: 12px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+            max-width: 220px;
+        }
+        if root.removable: Rectangle {
+            width: 22px;
+            height: 22px;
+            y: 3px;
+            border-radius: 11px;
+            background: x-touch.pressed ? Palette.foreground.with-alpha(0.15) : transparent;
+            accessible-role: button;
+            accessible-label: "Remove " + root.kind + ": " + root.value;
+            accessible-action-default => { root.remove(); }
+            Image {
+                width: 12px;
+                source: @image-url("icons/x.svg");
+                colorize: Palette.foreground;
+            }
+            x-touch := TouchArea {
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}

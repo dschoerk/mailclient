@@ -29,6 +29,13 @@ export struct MessageItem {
     dots: [bool],
     /// Ticked for an action on several conversations at once.
     checked: bool,
+    /// Archived, deleted or moved a moment ago and still undoable: the row is a strip with Undo.
+    /// "archive", "delete", "move" or "".
+    removed: string,
+    /// What happened, on the strip ("Archived", "Moved to Projects").
+    removed-text: string,
+    /// The message's folder, shown while the list spans all folders ("" otherwise).
+    folder-label: string,
 }
 
 export struct ConversationItem {
