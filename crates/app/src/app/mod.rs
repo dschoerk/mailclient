@@ -133,6 +133,10 @@ struct State {
     checked: HashSet<Key>,
     body: Option<Body>,
     search: String,
+    /// Messages the server search for `search` found, cached by the engines.
+    search_hits: Vec<Key>,
+    /// The list and its length when older mail was last requested, so scrolling asks once per batch.
+    older_requested: Option<(Row, usize)>,
     remote_allowed: HashSet<Key>,
     /// Bodies requested from the engine and not there yet.
     fetching: HashSet<Key>,
@@ -177,6 +181,8 @@ pub struct Controller {
     composer: RefCell<Option<Rc<Composer>>>,
     next_send_id: std::cell::Cell<u64>,
     next_account_id: std::cell::Cell<u64>,
+    /// Holds off the server search until typing pauses.
+    search_timer: slint::Timer,
     #[cfg(feature = "servo")]
     viewer: RefCell<Option<Rc<crate::webview::MailView>>>,
 }
@@ -194,6 +200,7 @@ impl Controller {
             composer: RefCell::new(None),
             next_send_id: std::cell::Cell::new(1),
             next_account_id: std::cell::Cell::new(1),
+            search_timer: slint::Timer::default(),
             #[cfg(feature = "servo")]
             viewer: RefCell::new(None),
         });
@@ -287,6 +294,7 @@ impl Controller {
         on!(on_message_selected, |c, index| c.select_message(index as usize));
         on!(on_conversation_selected, |c, index| c.select_in_conversation(index as usize));
         on!(on_search, |c, text| c.search(&text));
+        on!(on_load_older, |c| c.load_older());
         on!(on_show_sender, |c| {
             let Some((_, m)) = c.selected_summary() else { return };
             if m.from_addr.is_empty() {
@@ -415,6 +423,12 @@ impl Controller {
                     };
                 drop(state);
                 if relevant {
+                    self.reload_messages();
+                }
+            }
+            Event::SearchHits { query, hits } => {
+                if query == self.state.borrow().search {
+                    self.state.borrow_mut().search_hits.extend(hits.into_iter().map(|(f, uid)| (account, f, uid)));
                     self.reload_messages();
                 }
             }

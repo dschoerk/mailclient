@@ -258,6 +258,12 @@ impl Store {
              CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
                  DELETE FROM messages_fts WHERE rowid = old.rowid;
              END;
+             CREATE TABLE IF NOT EXISTS folder_sync (
+                 folder TEXT PRIMARY KEY REFERENCES folders(name) ON DELETE CASCADE,
+                 synced_from INTEGER,
+                 modseq INTEGER,
+                 exists_count INTEGER
+             );
              CREATE TABLE IF NOT EXISTS pending_ops (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  folder TEXT NOT NULL,
@@ -266,6 +272,13 @@ impl Store {
                  arg TEXT NOT NULL DEFAULT ''
              );",
         )?;
+        // Caches from before folder_sync hold one contiguous window per folder.
+        if conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 0 {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO folder_sync (folder, synced_from) SELECT folder, MIN(uid) FROM messages GROUP BY folder;
+                 PRAGMA user_version = 1;",
+            )?;
+        }
         Ok(Store { conn })
     }
 
@@ -384,6 +397,8 @@ impl Store {
                 .execute("DELETE FROM messages WHERE folder = ?1", [folder])?;
             self.conn
                 .execute("DELETE FROM pending_ops WHERE folder = ?1", [folder])?;
+            self.conn
+                .execute("DELETE FROM folder_sync WHERE folder = ?1", [folder])?;
         }
         self.conn.execute(
             "UPDATE folders SET uidvalidity = ?2 WHERE name = ?1",
@@ -402,12 +417,45 @@ impl Store {
         )?)
     }
 
-    pub fn min_uid(&self, folder: &str) -> Result<Option<u32>> {
-        Ok(self.conn.query_row(
-            "SELECT MIN(uid) FROM messages WHERE folder = ?1",
-            [folder],
-            |r| r.get(0),
-        )?)
+    /// Lowest UID of the folder's synced window: every server message from it up is cached.
+    /// Older cached messages are search hits, cached one by one. None before the first sync.
+    pub fn synced_from(&self, folder: &str) -> Result<Option<u32>> {
+        Ok(self
+            .conn
+            .query_row("SELECT synced_from FROM folder_sync WHERE folder = ?1", [folder], |r| r.get(0))
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_synced_from(&self, folder: &str, uid: u32) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO folder_sync (folder, synced_from) VALUES (?1, ?2)
+             ON CONFLICT(folder) DO UPDATE SET synced_from = excluded.synced_from",
+            params![folder, uid],
+        )?;
+        Ok(())
+    }
+
+    /// (HIGHESTMODSEQ, message count) the folder's last finished sync saw.
+    pub fn sync_mark(&self, folder: &str) -> Result<Option<(u64, u32)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT modseq, exists_count FROM folder_sync WHERE folder = ?1 AND modseq IS NOT NULL",
+                [folder],
+                |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn set_sync_mark(&self, folder: &str, mark: Option<(u64, u32)>) -> Result<()> {
+        let (modseq, exists) = (mark.map(|m| m.0 as i64), mark.map(|m| m.1));
+        self.conn.execute(
+            "INSERT INTO folder_sync (folder, modseq, exists_count) VALUES (?1, ?2, ?3)
+             ON CONFLICT(folder) DO UPDATE SET modseq = excluded.modseq, exists_count = excluded.exists_count",
+            params![folder, modseq, exists],
+        )?;
+        Ok(())
     }
 
     pub fn uids(&self, folder: &str) -> Result<Vec<u32>> {
@@ -582,15 +630,27 @@ impl Store {
             .flatten())
     }
 
-    /// UIDs of the newest messages in a folder whose body has not been downloaded.
-    pub fn uids_missing_body(&self, folder: &str, limit: usize) -> Result<Vec<u32>> {
+    /// UIDs of up to `limit` messages among the newest `within` of a folder whose body has not been downloaded.
+    pub fn uids_missing_body(&self, folder: &str, limit: usize, within: usize) -> Result<Vec<u32>> {
         let mut stmt = self.conn.prepare(
-            "SELECT uid FROM messages WHERE folder = ?1 AND raw IS NULL ORDER BY date DESC LIMIT ?2",
+            "SELECT uid FROM (SELECT uid, raw FROM messages WHERE folder = ?1 ORDER BY date DESC, uid DESC LIMIT ?3)
+             WHERE raw IS NULL LIMIT ?2",
         )?;
         let uids = stmt
-            .query_map(params![folder, limit as i64], |r| r.get(0))?
+            .query_map(params![folder, limit as i64, within as i64], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
         Ok(uids)
+    }
+
+    /// Drops downloaded bodies beyond the newest `keep` of a folder. Their text stays
+    /// searchable; opening one downloads it again.
+    pub fn evict_bodies(&self, folder: &str, keep: usize) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET raw = NULL WHERE folder = ?1 AND raw IS NOT NULL AND uid NOT IN
+             (SELECT uid FROM messages WHERE folder = ?1 ORDER BY date DESC, uid DESC LIMIT ?2)",
+            params![folder, keep as i64],
+        )?;
+        Ok(())
     }
 
     pub fn set_body(
@@ -816,6 +876,34 @@ mod tests {
         assert!(!store.check_uidvalidity("INBOX", 7).unwrap());
         assert!(store.check_uidvalidity("INBOX", 8).unwrap());
         assert!(store.messages("INBOX", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn old_bodies_are_evicted_and_not_prefetched_again() {
+        let mut store = store_with_inbox();
+        store.upsert_messages(&[msg(1, "old"), msg(2, "mid"), msg(3, "new")]).unwrap();
+        assert_eq!(store.uids_missing_body("INBOX", 10, 2).unwrap(), [3, 2]);
+        for uid in 1..=3 {
+            store.set_body("INBOX", uid, b"raw", "", &format!("body{uid}"), false).unwrap();
+        }
+        store.evict_bodies("INBOX", 2).unwrap();
+        assert!(store.raw("INBOX", 1).unwrap().is_none());
+        assert!(store.raw("INBOX", 2).unwrap().is_some());
+        assert!(store.uids_missing_body("INBOX", 10, 2).unwrap().is_empty());
+        assert_eq!(store.search("body1", 10).unwrap()[0].uid, 1);
+    }
+
+    #[test]
+    fn sync_state_resets_with_uidvalidity() {
+        let store = &mut store_with_inbox();
+        store.check_uidvalidity("INBOX", 7).unwrap();
+        assert_eq!(store.synced_from("INBOX").unwrap(), None);
+        store.set_synced_from("INBOX", 40).unwrap();
+        store.set_sync_mark("INBOX", Some((90060115205545359, 12))).unwrap();
+        assert_eq!(store.synced_from("INBOX").unwrap(), Some(40));
+        assert_eq!(store.sync_mark("INBOX").unwrap(), Some((90060115205545359, 12)));
+        store.check_uidvalidity("INBOX", 8).unwrap();
+        assert_eq!((store.synced_from("INBOX").unwrap(), store.sync_mark("INBOX").unwrap()), (None, None));
     }
 
     #[test]

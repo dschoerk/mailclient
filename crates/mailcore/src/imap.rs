@@ -61,6 +61,9 @@ pub struct Imap {
     session: Session,
     selected: Option<String>,
     has_move: bool,
+    has_condstore: bool,
+    /// Gmail's extensions, with its own search syntax (X-GM-RAW).
+    gmail: bool,
 }
 
 impl Imap {
@@ -112,11 +115,12 @@ impl Imap {
             anyhow!("IMAP login failed: {e}{hint}")
         })?;
         let caps = session.capabilities().await?;
-        let has_move = caps.has_str("MOVE");
         Ok(Imap {
             session,
             selected: None,
-            has_move,
+            has_move: caps.has_str("MOVE"),
+            has_condstore: caps.has_str("CONDSTORE"),
+            gmail: caps.has_str("X-GM-EXT-1"),
         })
     }
 
@@ -175,11 +179,12 @@ impl Imap {
     }
 
     pub async fn select(&mut self, folder: &str) -> Result<FolderState> {
-        let mailbox = self
-            .session
-            .select(folder)
-            .await
-            .with_context(|| format!("selecting {folder}"))?;
+        let mailbox = if self.has_condstore {
+            self.session.select_condstore(folder).await
+        } else {
+            self.session.select(folder).await
+        }
+        .with_context(|| format!("selecting {folder}"))?;
         self.selected = Some(folder.to_string());
         // Every SELECT response carries UIDVALIDITY (RFC 3501); none means the reply was cut off.
         if mailbox.uid_validity.is_none() {
@@ -191,6 +196,7 @@ impl Imap {
         Ok(FolderState {
             exists: mailbox.exists,
             uid_validity: mailbox.uid_validity,
+            highest_modseq: mailbox.highest_modseq,
         })
     }
 
@@ -258,30 +264,89 @@ impl Imap {
             .collect())
     }
 
-    /// Current flags of all messages with UID in `from..=to`, as (uid, seen, flagged, answered).
-    pub async fn fetch_flags(
-        &mut self,
-        folder: &str,
-        from: u32,
-        to: u32,
-    ) -> Result<Vec<(u32, bool, bool, bool)>> {
+    /// Headers of the `count` messages just before UID `before`, by sequence number.
+    pub async fn fetch_older(&mut self, folder: &str, before: u32, count: u32) -> Result<Vec<MessageSummary>> {
         self.ensure_selected(folder).await?;
+        // Sequence number of the first message from `before` up, even when `before` itself is gone.
+        let first = self.session.search(format!("UID {before}:*")).await?.into_iter().min();
+        self.confirm().await?;
+        // Up to `first` itself: "n:*" matches the last message even when its UID is below n
+        // (RFC 3501). Servers that match nothing instead mean every message is older.
+        let end = match first {
+            Some(first) => first,
+            None => self.select(folder).await?.exists,
+        };
+        if end == 0 {
+            return Ok(Vec::new());
+        }
+        let start = end.saturating_sub(count).max(1);
         let fetches: Vec<Fetch> = self
             .session
-            .uid_fetch(format!("{from}:{to}"), "(UID FLAGS)")
+            .fetch(format!("{start}:{end}"), Self::SUMMARY_QUERY)
             .await?
             .try_collect()
             .await?;
         self.confirm().await?;
         Ok(fetches
             .iter()
-            .filter_map(|f| {
+            .filter_map(|f| Self::summary(folder, f))
+            .filter(|s| s.uid < before)
+            .collect())
+    }
+
+    pub async fn fetch_headers(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<MessageSummary>> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ensure_selected(folder).await?;
+        let fetches: Vec<Fetch> = self
+            .session
+            .uid_fetch(uid_set(uids), Self::SUMMARY_QUERY)
+            .await?
+            .try_collect()
+            .await?;
+        self.confirm().await?;
+        Ok(fetches
+            .iter()
+            .filter_map(|f| Self::summary(folder, f))
+            .filter(|s| uids.contains(&s.uid))
+            .collect())
+    }
+
+    /// Current flags of all messages with UID in one of the inclusive `ranges`, as (uid, seen, flagged, answered).
+    pub async fn fetch_flags(
+        &mut self,
+        folder: &str,
+        ranges: &[(u32, u32)],
+    ) -> Result<Vec<(u32, bool, bool, bool)>> {
+        self.ensure_selected(folder).await?;
+        let mut flags = Vec::new();
+        // Scattered search hits make long sets; servers limit command lines to a few kB.
+        for chunk in ranges.chunks(500) {
+            let set: Vec<String> = chunk.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}:{b}") }).collect();
+            let fetches: Vec<Fetch> = self
+                .session
+                .uid_fetch(set.join(","), "(UID FLAGS)")
+                .await?
+                .try_collect()
+                .await?;
+            self.confirm().await?;
+            flags.extend(fetches.iter().filter_map(|f| {
                 let (seen, flagged, answered) = flags_of(f);
                 f.uid
-                    .filter(|uid| (from..=to).contains(uid))
+                    .filter(|uid| chunk.iter().any(|(a, b)| (a..=b).contains(&uid)))
                     .map(|uid| (uid, seen, flagged, answered))
-            })
-            .collect())
+            }));
+        }
+        Ok(flags)
+    }
+
+    /// UIDs of the messages in `folder` matching the search box's text.
+    pub async fn search(&mut self, folder: &str, query: &str) -> Result<Vec<u32>> {
+        self.ensure_selected(folder).await?;
+        let uids = self.session.uid_search(search_criteria(query, self.gmail)).await?;
+        self.confirm().await?;
+        Ok(uids.into_iter().collect())
     }
 
     /// Full RFC 822 source of messages, without setting \Seen.
@@ -386,6 +451,8 @@ impl Imap {
             session,
             selected,
             has_move,
+            has_condstore,
+            gmail,
         } = self;
         let mut handle = session.idle();
         handle.init().await.context("starting IDLE")?;
@@ -404,6 +471,8 @@ impl Imap {
                 session,
                 selected,
                 has_move,
+                has_condstore,
+                gmail,
             },
             changed,
         ))
@@ -450,13 +519,20 @@ impl Backend for Imap {
         Imap::fetch_latest(self, folder, exists, count).await
     }
 
-    async fn fetch_flags(
-        &mut self,
-        folder: &str,
-        from: u32,
-        to: u32,
-    ) -> Result<Vec<(u32, bool, bool, bool)>> {
-        Imap::fetch_flags(self, folder, from, to).await
+    async fn fetch_older(&mut self, folder: &str, before: u32, count: u32) -> Result<Vec<MessageSummary>> {
+        Imap::fetch_older(self, folder, before, count).await
+    }
+
+    async fn fetch_headers(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<MessageSummary>> {
+        Imap::fetch_headers(self, folder, uids).await
+    }
+
+    async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<(u32, bool, bool, bool)>> {
+        Imap::fetch_flags(self, folder, ranges).await
+    }
+
+    async fn search(&mut self, folder: &str, query: &str) -> Result<Vec<u32>> {
+        Imap::search(self, folder, query).await
     }
 
     async fn fetch_bodies(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
@@ -566,6 +642,26 @@ fn role_from_name(name: &str) -> Role {
     }
 }
 
+/// SEARCH criteria for the search box's text: Gmail's own syntax there, elsewhere every word
+/// in the headers or body, and `from:address` in From.
+fn search_criteria(query: &str, gmail: bool) -> String {
+    // A line break would end the command early; quotes and backslashes are escaped.
+    let quote = |s: &str| format!("\"{}\"", s.replace(|c: char| c.is_control(), " ").replace('\\', "\\\\").replace('"', "\\\""));
+    let criteria = if gmail {
+        format!("X-GM-RAW {}", quote(query))
+    } else {
+        query
+            .split_whitespace()
+            .map(|w| match w.get(..5) {
+                Some(p) if p.eq_ignore_ascii_case("from:") && w.len() > 5 => format!("FROM {}", quote(&w[5..])),
+                _ => format!("TEXT {}", quote(w)),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if query.is_ascii() { criteria } else { format!("CHARSET UTF-8 {criteria}") }
+}
+
 /// Compresses sorted UIDs into an IMAP sequence set like "1:5,9,12:13".
 fn uid_set(uids: &[u32]) -> String {
     let mut sorted = uids.to_vec();
@@ -598,6 +694,13 @@ mod tests {
     fn uid_sets() {
         assert_eq!(uid_set(&[5, 1, 2, 3, 9, 12, 13]), "1:3,5,9,12:13");
         assert_eq!(uid_set(&[7]), "7");
+    }
+
+    #[test]
+    fn search_criteria_quote_input() {
+        assert_eq!(search_criteria("from:a@b.org lunch", false), r#"FROM "a@b.org" TEXT "lunch""#);
+        assert_eq!(search_criteria("say \"hi\"\r\nX", true), r#"X-GM-RAW "say \"hi\"  X""#);
+        assert_eq!(search_criteria("Grüße", false), r#"CHARSET UTF-8 TEXT "Grüße""#);
     }
 
     #[test]
