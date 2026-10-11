@@ -12,6 +12,8 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
+import android.print.PrintAttributes;
+import android.print.PrintManager;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -131,6 +133,21 @@ public final class MailWebView {
         });
     }
 
+    /**
+     * The system print dialog for the open message, laid out by its WebView as shown; the dialog
+     * also offers Save as PDF. Nothing happens while the message is still loading.
+     */
+    public static void print(Activity activity, String title) {
+        activity.runOnUiThread(() -> {
+            WebView v = conversation != null ? conversation.views[conversation.current] : view;
+            if (v == null) {
+                return;
+            }
+            PrintManager printer = (PrintManager) activity.getSystemService(Context.PRINT_SERVICE);
+            printer.print(title, v.createPrintDocumentAdapter(title), new PrintAttributes.Builder().build());
+        });
+    }
+
     public static void clear(Activity activity) {
         activity.runOnUiThread(() -> {
             content = new Content(new byte[0][], "", false, new HashMap<>());
@@ -179,6 +196,8 @@ public final class MailWebView {
         final View[] rows;
         final View[] bars;
         final WebView[] views;
+        /** The open message. */
+        final int current;
         int marked;
         /** The user touched the stack: it no longer follows the open message as views grow. */
         boolean touched;
@@ -189,6 +208,7 @@ public final class MailWebView {
             rows = new View[n];
             bars = new View[n];
             views = new WebView[n];
+            this.current = current;
             marked = current;
             scroll = new ScrollView(activity);
             scroll.setBackgroundColor(Color.WHITE);

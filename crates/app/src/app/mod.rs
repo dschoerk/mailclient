@@ -308,6 +308,8 @@ impl Controller {
         on!(on_close_message, |c| c.close_message());
         on!(on_view_source, |c| c.toggle_source());
         on!(on_save_eml, |c| c.save_eml());
+        on!(on_save_pdf, |c| c.save_pdf());
+        on!(on_print, |c| c.print());
         on!(on_settings_changed, |c| {
             let w = c.window();
             let settings = config::Settings {

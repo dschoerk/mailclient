@@ -150,6 +150,10 @@ export component AppWindow inherits Window {
     /// Shows or hides the open message's source.
     callback view-source();
     callback save-eml();
+    callback save-pdf();
+    callback print();
+    /// The reader's row of message tools (source, .eml, PDF, print) is open.
+    in-out property <bool> tools-open;
     callback settings-changed();
 
     // ---- composing (inline; phones show it as its own page) ----
@@ -208,9 +212,13 @@ export component AppWindow inherits Window {
         }
 
         key-pressed(event) => {
-            // Ctrl+U as in Thunderbird and browsers.
+            // Ctrl+U and Ctrl+P as in Thunderbird and browsers.
             if !root.needs-setup && !root.show-settings && !root.composing && event.modifiers.control && (event.text == "u" || event.text == "U") {
                 root.view-source();
+                return accept;
+            }
+            if !root.needs-setup && !root.show-settings && !root.composing && root.has-message && event.modifiers.control && (event.text == "p" || event.text == "P") {
+                root.print();
                 return accept;
             }
             if root.needs-setup || event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
@@ -570,19 +578,13 @@ export component AppWindow inherits Window {
                                     show-text: false;
                                     clicked => root.toggle-seen();
                                 }
-                                // Power-user tools; phones leave room for the draft's labelled Edit button.
+                                // Phones leave room for the draft's labelled Edit button.
                                 if !root.narrow || !root.msg-is-draft: ToolButton {
-                                    text: root.source-open ? "Hide source" : "View source";
-                                    icon: @image-url("icons/code.svg");
+                                    text: root.tools-open ? "Fewer tools" : "More tools";
+                                    icon: @image-url("icons/ellipsis.svg");
                                     show-text: false;
-                                    icon-color: root.source-open ? Theme.accent : Palette.foreground;
-                                    clicked => root.view-source();
-                                }
-                                if !root.narrow || !root.msg-is-draft: ToolButton {
-                                    text: "Save as .eml";
-                                    icon: @image-url("icons/download.svg");
-                                    show-text: false;
-                                    clicked => root.save-eml();
+                                    icon-color: root.tools-open ? Theme.accent : Palette.foreground;
+                                    clicked => { root.tools-open = !root.tools-open; }
                                 }
                                 // Phones have these in the thumb bar at the bottom.
                                 if !root.narrow: ToolButton {
@@ -596,6 +598,37 @@ export component AppWindow inherits Window {
                                     icon: @image-url("icons/trash.svg");
                                     show-text: parent.labels;
                                     clicked => root.delete();
+                                }
+                            }
+                            // In the layout rather than a popup: Android's native message view would cover a popup.
+                            if root.tools-open: HorizontalLayout {
+                                spacing: 2px;
+                                ToolButton {
+                                    text: root.source-open ? "Hide source" : "View source";
+                                    short-text: root.source-open ? "Message" : "Source";
+                                    icon: @image-url("icons/code.svg");
+                                    icon-color: root.source-open ? Theme.accent : Palette.foreground;
+                                    clicked => root.view-source();
+                                }
+                                ToolButton {
+                                    text: "Save as .eml";
+                                    short-text: root.narrow ? ".eml" : "";
+                                    icon: @image-url("icons/download.svg");
+                                    clicked => root.save-eml();
+                                }
+                                ToolButton {
+                                    text: "Save as PDF";
+                                    short-text: root.narrow ? "PDF" : "";
+                                    icon: @image-url("icons/file-down.svg");
+                                    clicked => root.save-pdf();
+                                }
+                                ToolButton {
+                                    text: "Print";
+                                    icon: @image-url("icons/printer.svg");
+                                    clicked => root.print();
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
                                 }
                             }
                             Text {

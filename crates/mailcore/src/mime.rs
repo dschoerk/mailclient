@@ -597,15 +597,16 @@ pub fn source_text(raw: &[u8], limit: usize) -> String {
     )
 }
 
-/// A file name for saving a message: its subject without characters file systems reject.
-pub fn eml_file_name(subject: &str) -> String {
+/// A file name for saving a message as `extension`: its subject without characters file systems reject.
+pub fn message_file_name(subject: &str, extension: &str) -> String {
     let name: String = subject
         .chars()
         .map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { '_' } else { c })
         .collect();
     let name = name.trim().trim_matches('.');
     let name: String = name.chars().take(100).collect();
-    if name.is_empty() { "message.eml".into() } else { format!("{}.eml", name.trim_end()) }
+    let name = name.trim_end();
+    format!("{}.{extension}", if name.is_empty() { "message" } else { name })
 }
 
 /// Run by the app (never by the page, whose scripts the CSP sandbox blocks) after the user scrolled a
@@ -1204,9 +1205,10 @@ iVBORw0KGgo=\r\n\
         let cut = source_text(b"line one\nline two\nline three", 12);
         assert!(cut.starts_with("line one\n\n[…"), "{cut}");
         assert!(cut.contains("19 more bytes"), "{cut}");
-        assert_eq!(eml_file_name("Re: a/b? <c>"), "Re_ a_b_ _c_.eml");
-        assert_eq!(eml_file_name("  ..  "), "message.eml");
-        assert_eq!(eml_file_name(""), "message.eml");
-        assert_eq!(eml_file_name(&"x".repeat(300)).len(), 104);
+        assert_eq!(message_file_name("Re: a/b? <c>", "eml"), "Re_ a_b_ _c_.eml");
+        assert_eq!(message_file_name("notes.eml draft", "pdf"), "notes.eml draft.pdf");
+        assert_eq!(message_file_name("  ..  ", "eml"), "message.eml");
+        assert_eq!(message_file_name("", "pdf"), "message.pdf");
+        assert_eq!(message_file_name(&"x".repeat(300), "eml").len(), 104);
     }
 }

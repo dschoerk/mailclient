@@ -68,6 +68,16 @@ fn strings<'e>(env: &mut Env<'e>, items: &[String]) -> jni::errors::Result<jni::
     Ok(array)
 }
 
+/// The system print dialog for the open message (it also offers Save as PDF).
+pub fn print(title: &str) {
+    call("print", |env, activity| {
+        let title = env.new_string(title)?;
+        let class = class(env, activity)?;
+        env.call_static_method(class, "print", "(Landroid/app/Activity;Ljava/lang/String;)V", &[activity.into(), (&title).into()])?;
+        Ok(())
+    });
+}
+
 pub fn clear() {
     call("clear", |env, activity| {
         let class = class(env, activity)?;

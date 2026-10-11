@@ -7,6 +7,7 @@ pub mod config;
 pub mod engine;
 pub mod imap;
 pub mod mime;
+pub mod pdf;
 pub mod smtp;
 pub mod store;
 pub mod thread;

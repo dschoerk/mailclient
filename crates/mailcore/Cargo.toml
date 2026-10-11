@@ -28,6 +28,10 @@ ring = "0.17"
 url = "2.5"
 serde_json = "1"
 keyring = "4.2"
+pdf-writer = "0.15"
+subsetter = { version = "0.2.6", default-features = false }
+ttf-parser = "0.25"
+fontdb = "0.24"
 
 [dev-dependencies]
 tempfile = "3"
