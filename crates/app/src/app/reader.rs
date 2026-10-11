@@ -130,6 +130,7 @@ impl Controller {
             state.body = None;
         }
         self.window().set_current_message(-1);
+        self.window().set_source_open(false);
         self.clear_reader();
     }
 
@@ -203,6 +204,10 @@ impl Controller {
                 Err(e) => return self.show_error(&e),
             }
         }
+        // An open source view follows the selection, so j/k step through sources.
+        if window.get_source_open() {
+            window.set_msg_source(raws[current].as_deref().map_or("Loading…".into(), source_text).into());
+        }
         // Each arrives with BodyReady, which renders again.
         for (m, _) in conversation.iter().zip(&raws).filter(|(_, raw)| raw.is_none()) {
             if self.state.borrow_mut().fetching.insert((account, m.folder.clone(), m.uid)) {
@@ -260,6 +265,17 @@ impl Controller {
         );
         #[cfg(any(feature = "servo", target_os = "android"))]
         {
+            // Only the shown HTML gets the badges; the stored body stays clean for quoting.
+            let marked: Vec<Option<Body>>;
+            let (bodies, body) = if window.get_show_link_targets() {
+                marked = bodies
+                    .iter()
+                    .map(|b| b.as_ref().map(|b| Body { html: b.html.as_deref().map(mime::mark_link_targets), ..b.clone() }))
+                    .collect();
+                (&marked, marked[current].as_ref().expect("checked above"))
+            } else {
+                (&bodies, &body)
+            };
             let csp = mime::content_security_policy(allow_remote);
             // shortcut: one map for all messages; Content-IDs are meant to be globally unique.
             let inline_parts: HashMap<String, (String, Vec<u8>)> =
@@ -267,7 +283,7 @@ impl Controller {
             #[cfg(feature = "servo")]
             if let Some(view) = self.viewer.borrow().as_ref() {
                 let (document, anchor) = if conversation.len() == 1 {
-                    (mime::render_document(&body), String::new())
+                    (mime::render_document(body), String::new())
                 } else {
                     let parts: Vec<(String, Option<&Body>)> =
                         headings.iter().cloned().zip(bodies.iter().map(Option::as_ref)).collect();
@@ -330,6 +346,29 @@ impl Controller {
         }
     }
 
+    /// Shows the open message's raw source in place of its body, or the body again.
+    pub(super) fn toggle_source(&self) {
+        let window = self.window();
+        if window.get_source_open() || !window.get_has_message() {
+            window.set_source_open(false);
+            return;
+        }
+        window.set_source_open(true);
+        self.render_selected();
+    }
+
+    /// Saves the open message as it came from the server, as an `.eml` file.
+    pub(super) fn save_eml(&self) {
+        let Some((account, summary)) = self.selected_summary() else { return };
+        let raw = match self.raw_of(account, &summary) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return self.set_status("The message is still downloading"),
+            Err(e) => return self.show_error(&e),
+        };
+        let name = mime::eml_file_name(&summary.subject);
+        self.save_in_background(name, "message/rfc822".into(), raw, "saving message");
+    }
+
     pub(super) fn save_attachment(&self, index: usize) {
         let Some((account, summary)) = self.selected_summary() else { return };
         let Ok(Some(raw)) = self.raw_of(account, &summary) else { return };
@@ -343,16 +382,20 @@ impl Controller {
         else {
             return;
         };
+        match mime::attachment_data(&raw, index) {
+            Some(data) => self.save_in_background(name, mime_type, data, "saving attachment"),
+            None => self.set_status("⚠ attachment not found"),
+        }
+    }
+
+    /// Asks where to save `data` and reports the outcome in the status bar.
+    fn save_in_background(&self, name: String, mime_type: String, data: Vec<u8>, what: &'static str) {
         let weak = self.window.clone();
         let _ = slint::spawn_local(async move {
-            let result = match mime::attachment_data(&raw, index) {
-                Some(data) => crate::platform::save_file(&name, &mime_type, data).await,
-                None => Err(anyhow!("attachment not found")),
-            };
-            let result = match result {
+            let result = match crate::platform::save_file(&name, &mime_type, data).await {
                 Ok(None) => return,
                 Ok(Some(saved)) => Ok(format!("Saved {saved}")),
-                Err(e) => Err(anyhow!("saving attachment: {e:#}")),
+                Err(e) => Err(anyhow!("{what}: {e:#}")),
             };
             if let Some(window) = weak.upgrade() {
                 window.set_status(match result {
@@ -362,4 +405,11 @@ impl Controller {
             }
         });
     }
+}
+
+/// Larger sources are cut: a text view of megabytes of base64 helps nobody and is slow to lay out.
+const SOURCE_LIMIT: usize = 512 * 1024;
+
+fn source_text(raw: &[u8]) -> String {
+    mime::source_text(raw, SOURCE_LIMIT)
 }

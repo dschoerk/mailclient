@@ -99,11 +99,21 @@ What the mail client can do today. For ideas that are not built yet see
 - **Remote images** are blocked by default. A banner offers "Load images" for the open
   message.
 - **Links**: `mailto:` links open the composer, and other links open in your web browser.
+- **Where links go** (Settings → "Show where links go", off by default): every link in HTML
+  mail gets a small label with the site it opens. When the link text names a different site
+  (text `www.paypal.com`, link to `paypal.com.evil.io`) the label turns red with a ⚠.
+  Look-alike Unicode domains show in their `xn--…` form.
 - **Copying text**: select text in a message and copy it: drag with the mouse and Ctrl+C on
   the desktop; long press, then Copy, on Android.
 - **Attachments** are listed with their name and size, and can be saved to disk.
 - **Open a single file**: `mailclient message.eml` opens a message file. No account is
   needed.
+- **View source** (code button, or Ctrl+U): shows the message exactly as it came from the
+  server, all headers included, in place of the body. It follows the selection, so `j`/`k`
+  step through sources; Esc or the button again closes it. Very large messages are cut
+  after 512 KB.
+- **Save as .eml** (download button): saves the whole message as a file, named after its
+  subject, for other mail programs, bug reports or archiving.
 
 ### Safety of HTML mail
 
@@ -175,7 +185,8 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 | `s` | Flag / unflag |
 | `x` | Tick the current conversation; `e`, `#`, `u`, `s` then act on all ticked ones |
 | `/` | Search |
-| Esc | Clear the search |
+| Ctrl+U | View source / back to the message |
+| Esc | Close the source view, else clear the search |
 | Ctrl+Enter | Send (in the compose window) |
 | Back (Android) | Close the message or the folder panel |
 
