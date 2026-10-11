@@ -7,6 +7,38 @@ rendered by an embedded [Servo](https://servo.org) engine with scripting disable
 
 Status: **v0.1**: one IMAP/SMTP account, Linux desktop; Android in progress.
 
+## Screenshots
+
+**Conversations.** One row per conversation; the open one unfolds into a timeline, and the
+reader shows all its messages one below the other.
+
+![Conversation on the desktop](docs/screenshots/desktop-conversation.png)
+
+**HTML mail, safely.** Newsletters render in an embedded engine with scripts off; remote
+images stay blocked until you click "Load images".
+
+![HTML newsletter with remote images blocked](docs/screenshots/desktop-html.png)
+
+**Invitations and calendar.** Invitations from Gmail, Outlook and others show a card with
+Accept / Maybe / Decline; the answer is mailed to the organizer and the event lands in the calendar.
+
+| Invitation | Calendar (week view) |
+|---|---|
+| ![Invitation card](docs/screenshots/desktop-invitation.png) | ![Calendar week view](docs/screenshots/desktop-calendar.png) |
+
+**Compose** plain-text mail with attachments; drafts are saved when you close the window.
+
+![Composer](docs/screenshots/desktop-compose.png)
+
+**Android.** The same app on phones: folders in a drawer, swipe to archive or delete,
+HTML in the system WebView under the same rules.
+
+| Inbox | Conversation | HTML mail | Invitation | Compose |
+|---|---|---|---|---|
+| ![Android inbox](docs/screenshots/android-inbox.png) | ![Android conversation](docs/screenshots/android-conversation.png) | ![Android html](docs/screenshots/android-html.png) | ![Android invitation](docs/screenshots/android-invitation.png) | ![Android compose](docs/screenshots/android-compose.png) |
+
+The screenshots show made-up mail on the local GreenMail test server (see "End-to-end tests").
+
 ## Features
 
 - Account setup with server guesses for common providers; login verified before saving.
