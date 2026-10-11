@@ -1,12 +1,18 @@
 package dev.mailclient;
 
+import android.app.AlertDialog;
 import android.app.NativeActivity;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -41,13 +47,35 @@ public final class MainActivity extends NativeActivity {
         });
     }
 
-    /** Lets the user choose where to save `data`, suggested as `name`. */
+    /** Saves `data` as `name` in Downloads and offers to open it; before Android 10 (no MediaStore.Downloads), lets the user choose where. */
     public void saveFile(String name, String mime, byte[] data) {
+        String type = mime.isEmpty() ? "application/octet-stream" : mime;
+        if (Build.VERSION.SDK_INT >= 29) {
+            new Thread(() -> {
+                try {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                    values.put(MediaStore.MediaColumns.MIME_TYPE, type);
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (uri == null) throw new java.io.IOException("Downloads is not available");
+                    try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                        out.write(data);
+                    }
+                    // Android renames on a clash ("x (1).pdf"): report the name it chose.
+                    String saved = displayName(uri);
+                    report(new String[] {saved + " in Downloads"}, null);
+                    runOnUiThread(() -> offerToOpen(saved, uri, type));
+                } catch (Exception e) {
+                    report(null, e.toString());
+                }
+            }).start();
+            return;
+        }
         runOnUiThread(() -> {
             saving = data;
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType(mime.isEmpty() ? "application/octet-stream" : mime);
+            intent.setType(type);
             intent.putExtra(Intent.EXTRA_TITLE, name);
             startActivityForResult(intent, SAVE);
         });
@@ -56,6 +84,21 @@ public final class MainActivity extends NativeActivity {
     /** Long-press feedback; follows the system haptics setting and needs no VIBRATE permission. */
     public void haptic() {
         runOnUiThread(() -> getWindow().getDecorView().performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS));
+    }
+
+    private void offerToOpen(String name, Uri uri, String type) {
+        new AlertDialog.Builder(this)
+            .setMessage("Saved " + name + " in Downloads.")
+            .setPositiveButton("Open", (dialog, which) -> {
+                Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try {
+                    startActivity(view);
+                } catch (ActivityNotFoundException e) {
+                    Toast.makeText(this, "No app can open " + name, Toast.LENGTH_LONG).show();
+                }
+            })
+            .setNegativeButton("Close", null)
+            .show();
     }
 
     /** Syncs every account (Rust side); registered once the Rust UI runs. */

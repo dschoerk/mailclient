@@ -302,7 +302,7 @@ pub async fn pick_files() -> Result<Vec<PathBuf>> {
     Ok(paths.unwrap_or_default().into_iter().map(PathBuf::from).collect())
 }
 
-/// Saves `data` where the user chooses, suggested as `name`; the saved file's name, or `None` when cancelled.
+/// Saves `data` as `name` in Downloads (before Android 10: where the user chooses); where it went, or `None` when cancelled.
 pub async fn save_file(name: &str, mime_type: &str, data: Vec<u8>) -> Result<Option<String>> {
     let saved = picker(|env, activity| {
         let (name, mime_type, data) = (env.new_string(name)?, env.new_string(mime_type)?, env.byte_array_from_slice(&data)?);
