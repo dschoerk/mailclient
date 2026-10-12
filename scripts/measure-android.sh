@@ -31,6 +31,9 @@ case "${1:-}" in
       activity="$(launcher "$pkg")"
       times=()
       what="first frame"
+      # Not counted: the first launch after an install also loads the new code from storage.
+      adb shell am start -W -n "$activity" >/dev/null
+      sleep 5
       for _ in $(seq "$runs"); do
         adb shell am force-stop "$pkg"
         adb logcat -c
@@ -44,13 +47,13 @@ case "${1:-}" in
           IFS=: read -r sec ms <<<"$full"
           times+=($((${sec:-0} * 1000 + ms)))
           what="fully drawn"
-        else
+        elif [[ -n "$first" ]]; then
           times+=("$first")
         fi
       done
       adb shell am force-stop "$pkg"
       mapfile -t sorted < <(printf '%s\n' "${times[@]}" | sort -n)
-      echo "$pkg: median ${sorted[$((runs / 2))]} ms, min ${sorted[0]} ms, max ${sorted[-1]} ms to $what ($runs cold starts)"
+      echo "$pkg: median ${sorted[$((${#sorted[@]} / 2))]} ms, min ${sorted[0]} ms, max ${sorted[-1]} ms to $what (${#sorted[@]} of $runs cold starts timed)"
     done
     ;;
   power)
