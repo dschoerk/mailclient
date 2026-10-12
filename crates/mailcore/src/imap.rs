@@ -342,6 +342,44 @@ impl Imap {
         Ok(flags)
     }
 
+    /// Gmail's conversation id (X-GM-THRID) of each of these messages; none from other servers.
+    /// async-imap parses the attribute but has no accessor for it, so this FETCH reads the responses itself.
+    pub async fn fetch_threads(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<(u32, u64)>> {
+        use async_imap::imap_proto::{AttributeValue, Response, Status};
+        if !self.gmail || uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ensure_selected(folder).await?;
+        let mut threads = Vec::new();
+        for chunk in uids.chunks(500) {
+            let id = self.session.run_command(format!("UID FETCH {} (UID X-GM-THRID)", uid_set(chunk))).await?;
+            loop {
+                let response = self.session.read_response().await?.ok_or_else(|| anyhow!("connection to server lost"))?;
+                match response.parsed() {
+                    Response::Fetch(_, attrs) => {
+                        let uid = attrs.iter().find_map(|a| match a {
+                            AttributeValue::Uid(uid) => Some(*uid),
+                            _ => None,
+                        });
+                        let thread = attrs.iter().find_map(|a| match a {
+                            AttributeValue::GmailThrId(t) => Some(*t),
+                            _ => None,
+                        });
+                        threads.extend(uid.zip(thread));
+                    }
+                    Response::Done { tag, status, outcome } if *tag == id => match status {
+                        Status::Ok => break,
+                        // A refusal, like async-imap reports one (see `is_rejection`).
+                        _ => return Err(async_imap::error::Error::No(outcome.information.as_deref().unwrap_or_default().to_string()).into()),
+                    },
+                    // Unsolicited EXISTS and the like: the next sync sees them.
+                    _ => {}
+                }
+            }
+        }
+        Ok(threads)
+    }
+
     /// UIDs of the messages in `folder` matching the search box's text.
     pub async fn search(&mut self, folder: &str, query: &str) -> Result<Vec<u32>> {
         self.ensure_selected(folder).await?;
@@ -549,6 +587,10 @@ impl Backend for Imap {
 
     async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<Flags>> {
         Imap::fetch_flags(self, folder, ranges).await
+    }
+
+    async fn fetch_threads(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<(u32, u64)>> {
+        Imap::fetch_threads(self, folder, uids).await
     }
 
     async fn search(&mut self, folder: &str, query: &str) -> Result<Vec<u32>> {

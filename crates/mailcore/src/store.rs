@@ -151,6 +151,8 @@ pub struct MessageSummary {
     pub references: String,
     /// Gmail labels (`\Inbox`, `[Imap]/Archiv`), one per line, as the server names them; empty elsewhere.
     pub labels: String,
+    /// Gmail's conversation id (X-GM-THRID); 0 elsewhere, and until it is fetched.
+    pub thread: u64,
 }
 
 /// A message's flags on the server, from a refresh of the cached ones.
@@ -219,7 +221,7 @@ pub struct Store {
 }
 
 const SUMMARY_COLUMNS: &str = "folder, uid, message_id, subject, from_name, from_addr, to_addrs, cc_addrs, \
-     date, seen, flagged, answered, has_attachments, snippet, in_reply_to, refs, labels";
+     date, seen, flagged, answered, has_attachments, snippet, in_reply_to, refs, labels, thread";
 
 fn summary_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
     Ok(MessageSummary {
@@ -240,11 +242,13 @@ fn summary_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
         in_reply_to: row.get(14)?,
         references: row.get(15)?,
         labels: row.get(16)?,
+        // SQLite integers are signed; the id's bits are kept as they are.
+        thread: row.get::<_, i64>(17)? as u64,
     })
 }
 
 /// Schema version of a new cache; [`migrate`] brings older ones up to it.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// SQL condition on a message `m`: not waiting to be moved away or deleted.
 const KEPT: &str = "NOT EXISTS (SELECT 1 FROM pending_ops p WHERE p.folder = m.folder AND p.uid = m.uid AND p.kind IN ('move', 'expunge'))";
@@ -290,6 +294,14 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         }
         // The next sync then refreshes the flags of everything cached, Gmail labels with them.
         tx.execute("UPDATE folder_sync SET modseq = NULL, exists_count = NULL", [])?;
+    }
+    if version < 5 {
+        // A cache older than the messages table got it, column included, from init. Gmail's cached
+        // mail gets its conversation ids on the next sync (`uids_without_thread`).
+        let exists: bool = tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('messages') WHERE name = 'thread'", [], |r| r.get(0))?;
+        if !exists {
+            tx.execute("ALTER TABLE messages ADD COLUMN thread INTEGER NOT NULL DEFAULT 0", [])?;
+        }
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
@@ -339,6 +351,7 @@ impl Store {
                  refs TEXT NOT NULL DEFAULT '',
                  labels TEXT NOT NULL DEFAULT '',
                  raw BLOB,
+                 thread INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY (folder, uid)
              );
              CREATE INDEX IF NOT EXISTS messages_by_date ON messages(folder, date DESC);
@@ -589,7 +602,7 @@ impl Store {
         let tx = self.conn.transaction()?;
         {
             let mut upsert = tx.prepare(&format!(
-                "INSERT INTO messages ({SUMMARY_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                "INSERT INTO messages ({SUMMARY_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
                  ON CONFLICT(folder, uid) DO UPDATE SET
                      seen = excluded.seen, flagged = excluded.flagged, answered = excluded.answered,
                      labels = excluded.labels
@@ -618,7 +631,8 @@ impl Store {
                         m.snippet,
                         m.in_reply_to,
                         m.references,
-                        m.labels
+                        m.labels,
+                        m.thread as i64
                     ],
                     |r| r.get(0),
                 )?;
@@ -665,6 +679,26 @@ impl Store {
         }
         tx.commit()?;
         Ok(changed > 0)
+    }
+
+    /// Cached messages in `folder` whose conversation id is not known yet.
+    pub fn uids_without_thread(&self, folder: &str) -> Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare("SELECT uid FROM messages WHERE folder = ?1 AND thread = 0")?;
+        let uids = stmt.query_map([folder], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(uids)
+    }
+
+    /// Records the conversation id of messages in `folder`: (uid, id).
+    pub fn set_threads(&mut self, folder: &str, threads: &[(u32, u64)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE messages SET thread = ?3 WHERE folder = ?1 AND uid = ?2")?;
+            for (uid, thread) in threads {
+                stmt.execute(params![folder, uid, *thread as i64])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn delete_messages(&mut self, folder: &str, uids: &[u32]) -> Result<()> {

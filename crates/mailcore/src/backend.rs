@@ -75,6 +75,10 @@ pub trait Backend: Sized + Send + 'static {
         ranges: &[(u32, u32)],
     ) -> impl Future<Output = Result<Vec<Flags>>> + Send;
 
+    /// (uid, conversation id) of these messages, for servers that group conversations themselves
+    /// (Gmail); empty elsewhere.
+    fn fetch_threads(&mut self, folder: &str, uids: &[u32]) -> impl Future<Output = Result<Vec<(u32, u64)>>> + Send;
+
     /// UIDs of the messages in `folder` matching the search box's text (words, `from:address`).
     fn search(&mut self, folder: &str, query: &str) -> impl Future<Output = Result<Vec<u32>>> + Send;
 

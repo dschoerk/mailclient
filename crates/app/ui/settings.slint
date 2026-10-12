@@ -50,6 +50,8 @@ export component SettingsView inherits Rectangle {
     in-out property <bool> left-handed;
     in-out property <bool> floating-buttons;
     in property <[AccountItem]> accounts;
+    /// The colors an account can have.
+    in property <[color]> palette;
     /// Removing shifts account indices under an open composer.
     in property <bool> composing;
     /// Phones: room for the status and navigation bars.
@@ -59,11 +61,15 @@ export component SettingsView inherits Rectangle {
     callback add-account();
     callback edit-account(int);
     callback remove-account(int);
+    /// Account, palette index.
+    callback account-color(int, int);
     callback close();
     /// Prototype: opens the Swipe lab.
     callback swipe-lab();
     /// The account whose removal awaits confirmation.
     property <int> confirm-remove: -1;
+    /// The account whose color choice is open.
+    property <int> picking-color: -1;
     background: Palette.background;
     // Drawn over the mail view: keep clicks from reaching it.
     TouchArea { }
@@ -169,7 +175,20 @@ export component SettingsView inherits Rectangle {
                     for account[i] in root.accounts: VerticalLayout {
                         spacing: 10px;
                         HorizontalLayout {
-                            spacing: 8px;
+                            spacing: 10px;
+                            Rectangle {
+                                width: 24px;
+                                height: 24px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 12px;
+                                background: account.color;
+                                accessible-role: button;
+                                accessible-label: "Color of " + account.email;
+                                accessible-action-default => { root.picking-color = root.picking-color == i ? -1 : i; }
+                                TouchArea {
+                                    clicked => { root.picking-color = root.picking-color == i ? -1 : i; }
+                                }
+                            }
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 alignment: center;
@@ -195,6 +214,30 @@ export component SettingsView inherits Rectangle {
                                 text: "Remove";
                                 enabled: !root.composing;
                                 clicked => { root.confirm-remove = i; }
+                            }
+                        }
+                        if root.picking-color == i: HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            for c[k] in root.palette: Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 14px;
+                                background: c;
+                                border-width: c == account.color ? 3px : 0px;
+                                border-color: Palette.foreground;
+                                accessible-role: button;
+                                accessible-label: "Color " + (k + 1);
+                                accessible-action-default => {
+                                    root.picking-color = -1;
+                                    root.account-color(i, k);
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.picking-color = -1;
+                                        root.account-color(i, k);
+                                    }
+                                }
                             }
                         }
                         if root.confirm-remove == i: Rectangle {

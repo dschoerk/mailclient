@@ -36,6 +36,8 @@ export struct MessageItem {
     removed-text: string,
     /// The message's folder, shown while the list spans all folders ("" otherwise).
     folder-label: string,
+    /// The message's account, shown while the list holds several accounts' mail ("" otherwise).
+    account: string,
 }
 
 export struct ConversationItem {
@@ -79,6 +81,7 @@ export struct SetupData {
 export struct AccountItem {
     name: string,
     email: string,
+    color: color,
 }
 
 /// An event in a day of the month grid.

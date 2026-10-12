@@ -44,8 +44,10 @@ The screenshots show made-up mail on the local GreenMail test server (see "End-t
 - Account setup with server guesses for common providers; login verified before saving.
   Password stored in the system keyring (Secret Service).
 - Multiple accounts (Settings: add, edit, sign in again, remove), each with its own sync engine and cache,
-  and an "All inboxes" view; a colored bar in the message list marks each account.
-- Conversations: the list shows one row per conversation (by `References`/`In-Reply-To`),
+  and an "All inboxes" view; a colored bar and the account's address in the message list mark each
+  account. Each account's color can be picked in Settings.
+- Conversations: the list shows one row per conversation (by `References`/`In-Reply-To`; on Gmail
+  by Gmail's own conversations, `X-GM-THRID`),
   the open one unfolds into a timeline of its messages, and the reader shows them all
   one below the other, including your replies from Sent.
 - Folder list with special-use detection, unread counts.
@@ -58,7 +60,8 @@ The screenshots show made-up mail on the local GreenMail test server (see "End-t
   (tick them at the row's left edge, by long press on phones, or with `x`). On phones a row swiped
   right is archived, swiped left deleted (a quick flick is enough); dragged past a third of the way
   and held, it turns blue and offers the folders to move it to. Changes apply instantly and are
-  queued for the server, so they also work offline. The row's place shows what happened for
+  queued for the server, so they also work offline; a banner says when an account cannot reach its
+  server, why, and how many changes wait for it. The row's place shows what happened for
   5 seconds, with Undo (or `z`) and Find similar (the sender's mail in this folder); only then is
   the change sent.
 - Full-text search (SQLite FTS5) over subject, sender and downloaded bodies, in the open folder.
@@ -72,6 +75,8 @@ The screenshots show made-up mail on the local GreenMail test server (see "End-t
   file attachments. Sent mail is filed to the Sent folder (Gmail does this itself).
 - Drafts: closing the composer (or Back on Android) saves to Drafts, plus an autosave every
   15 s; reopen with "Edit draft". Sending or discarding removes the draft.
+- Unsubscribe from mailing lists (`List-Unsubscribe`): one click where the list supports it
+  (RFC 8058), else a mail to the list or its page in the browser.
 - Save attachments; `mailto:` links open the composer; other links open in the
   system browser. Optionally every link shows the site it goes to, in red when its text
   names another site.
@@ -273,6 +278,15 @@ cargo test -p mailcore --test corpus -- --ignored corpus_parses     # parse + sa
 cargo test -p mailcore --test corpus -- --ignored load_into_greenmail # browse as corpus@localhost (~9 min)
 ```
 
+Startup time and battery use on Android, compared with other mail apps on the same device
+(Gmail is on the emulator image), with [scripts/measure-android.sh](scripts/measure-android.sh):
+
+```sh
+scripts/measure-android.sh startup 10 dev.mailclient.app com.google.android.gm   # cold starts
+scripts/measure-android.sh power reset     # then use the phone for a while (a night, for background checks)
+scripts/measure-android.sh power dev.mailclient.app com.google.android.gm
+```
+
 Debugging aids:
 
 - `MAILCLIENT_PASSWORD=…` overrides the keyring.
@@ -320,7 +334,7 @@ crates/app        Slint UI
   A CalDAV server must use the account's username and password and accept Basic auth. Each sync
   re-reads ±1 year instead of asking for changes only. Tested against Radicale, not yet against
   Microsoft, Nextcloud or iCloud; Google with the live test (`google_live`).
-- Conversations are grouped by headers only, not by subject, and per account.
+- Conversations are grouped by headers only (Gmail: as Gmail groups them), not by subject, and per account.
 - No CONDSTORE/QRESYNC yet; flag changes are found by re-fetching flags of cached
   messages (fine for the 500-message window).
 - Windows/macOS: the Servo rendering path from the Slint example is kept but untested,

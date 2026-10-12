@@ -31,6 +31,20 @@ pub fn run() -> anyhow::Result<()> {
     }
     let window = AppWindow::new()?;
     app::Controller::install(&window, eml)?;
+    // The first frame shows the inbox from the cache: Android's "Fully drawn" time, which
+    // scripts/measure-android.sh reads (its own launch time ends at the splash screen).
+    #[cfg(target_os = "android")]
+    {
+        let reported = std::cell::Cell::new(false);
+        let notified = window.window().set_rendering_notifier(move |state, _| {
+            if matches!(state, slint::RenderingState::AfterRendering) && !reported.replace(true) {
+                platform::fully_drawn();
+            }
+        });
+        if let Err(e) = notified {
+            log::warn!("no startup time: {e}");
+        }
+    }
     #[cfg(feature = "servo")]
     if let Some(path) = std::env::var_os("MAILCLIENT_SNAPSHOT") {
         schedule_snapshot(&window, path.into());

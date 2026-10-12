@@ -126,6 +126,13 @@ pub fn open_url(url: &str) -> Result<()> {
     with_context(|env, context| start_view(env, context, url)).map_err(|e| anyhow!("opening {url}: {e}"))
 }
 
+/// Tells Android the app's first screen is drawn (Activity.reportFullyDrawn).
+pub fn fully_drawn() {
+    if let Err(e) = on_activity(|env, activity| env.call_method(activity, "reportFullyDrawn", "()V", &[]).map(drop)) {
+        log::warn!("cannot report the first frame: {e}");
+    }
+}
+
 /// The system's long-press vibration, if the user has haptics on.
 pub fn haptic() {
     if let Err(e) = on_activity(|env, activity| env.call_method(activity, "haptic", "()V", &[]).map(drop)) {

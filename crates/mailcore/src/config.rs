@@ -47,6 +47,9 @@ pub struct AccountConfig {
     /// CalDAV server or calendar URL for password accounts; Google and Microsoft accounts find theirs.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub caldav_url: String,
+    /// The account's color in the lists, `#rrggbb`; empty: one picked by its place.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +178,7 @@ impl AccountConfig {
                 Auth::Password
             },
             caldav_url: caldav.to_string(),
+            color: String::new(),
         }
     }
 

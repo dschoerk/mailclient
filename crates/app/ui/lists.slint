@@ -521,10 +521,24 @@ export component MessageRow inherits Rectangle {
                             font-size: 12px;
                         }
                     }
-                    Text {
-                        text: msg.subject;
-                        font-weight: msg.seen ? 400 : 600;
-                        overflow: elide;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: msg.subject;
+                            font-weight: msg.seen ? 400 : 600;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        // Several accounts in one list: whose mail it is.
+                        if msg.account != "": Text {
+                            text: msg.account;
+                            color: root.line-color;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            max-width: root.width / 3;
+                            accessible-label: "account " + msg.account;
+                        }
                     }
                     Text {
                         text: msg.snippet;

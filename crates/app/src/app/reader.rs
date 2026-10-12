@@ -230,6 +230,7 @@ impl Controller {
         }
         if raws[current].is_none() {
             window.set_msg_loading(true);
+            window.set_msg_unsubscribe("".into());
             window.set_invite_kind("".into());
             window.set_msg_text("".into());
             window.set_msg_parts(ModelRc::default());
@@ -254,6 +255,12 @@ impl Controller {
         let html_view = cfg!(any(feature = "servo", target_os = "android"));
         window.set_msg_remote_blocked(has_remote && !allow_remote && html_view);
         window.set_msg_text(body.text.clone().into());
+        window.set_msg_unsubscribe(match &body.unsubscribe {
+            Some(mime::Unsubscribe::OneClick(_)) => "one-click",
+            Some(mime::Unsubscribe::Mail(_)) => "mail",
+            Some(mime::Unsubscribe::Web(_)) => "web",
+            None => "",
+        }.into());
         let headings: Vec<String> = conversation
             .iter()
             .map(|m| format!("{} — {}", format::person(&m.from_name, &m.from_addr), format::full_date(m.date)))
@@ -340,25 +347,56 @@ impl Controller {
 
     #[cfg_attr(not(any(feature = "servo", target_os = "android")), allow(dead_code))]
     pub(super) fn open_link(&self, url: &str) {
-        if let Some(mailto) = url.strip_prefix("mailto:") {
-            let (to, query) = mailto.split_once('?').unwrap_or((mailto, ""));
-            let mut draft = Draft { to: mime::percent_decode(to), ..Default::default() };
-            for pair in query.split('&') {
-                if let Some((k, v)) = pair.split_once('=') {
-                    let v = mime::percent_decode(&v.replace('+', " "));
-                    match k.to_ascii_lowercase().as_str() {
-                        "subject" => draft.subject = v,
-                        "cc" => draft.cc = v,
-                        "body" => draft.body = v,
-                        _ => {}
-                    }
-                }
-            }
+        if let Some(draft) = mailto_draft(url) {
             self.open_composer(self.compose_account(), draft, None);
         } else if (url.starts_with("https://") || url.starts_with("http://"))
             && let Err(e) = crate::platform::open_url(url)
         {
             self.show_error(&e);
+        }
+    }
+
+    /// Leaves the open message's mailing list the way its headers offer: one click, a mail, or the list's page.
+    pub(super) fn unsubscribe(&self) {
+        let Some((account, m)) = self.selected_summary() else { return };
+        let raw = match self.raw_of(account, &m) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return,
+            Err(e) => return self.show_error(&e),
+        };
+        match mime::body_from_raw(&raw).unsubscribe {
+            Some(mime::Unsubscribe::OneClick(url)) => {
+                self.set_status("Unsubscribing…");
+                std::thread::spawn(move || {
+                    let result = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(anyhow::Error::from).and_then(|rt| {
+                        rt.block_on(mailcore::http::request(
+                            "POST",
+                            &url,
+                            &[("Content-Type", "application/x-www-form-urlencoded")],
+                            b"List-Unsubscribe=One-Click",
+                        ))
+                    });
+                    with_controller(move |c| match result {
+                        // Some lists answer the POST with a redirect to a goodbye page: handled too.
+                        Ok(r) if r.ok() || (300..400).contains(&r.status) => c.set_status("Unsubscribed"),
+                        Ok(r) => c.set_status(format!("⚠ Unsubscribing failed: the list's server answered {}", r.status)),
+                        Err(e) => c.show_error(&e.context("unsubscribing")),
+                    });
+                });
+            }
+            Some(mime::Unsubscribe::Mail(url)) => {
+                let Some(mut draft) = mailto_draft(&url) else { return };
+                let Some(from) = self.state.borrow().accounts.get(account).map(|a| a.config.email.clone()) else { return };
+                if draft.subject.is_empty() {
+                    draft.subject = "unsubscribe".into();
+                }
+                draft.message_id = mime::new_message_id(&from);
+                let id = self.next_send_id.replace(self.next_send_id.get() + 1);
+                self.send(account, Command::Send { id, draft, replied_to: None });
+                self.set_status("Unsubscribe request sent");
+            }
+            Some(mime::Unsubscribe::Web(url)) => self.open_link(&url),
+            None => {}
         }
     }
 
@@ -501,4 +539,23 @@ async fn pdf_in_background(printable: mailcore::pdf::Printable) -> Result<Vec<u8
         let _ = tx.send(mailcore::pdf::system_font().and_then(|font| mailcore::pdf::message_pdf(&printable, font)));
     });
     rx.await.map_err(|_| anyhow!("the PDF could not be made"))?
+}
+
+/// The message a `mailto:` URL describes; None for other URLs.
+fn mailto_draft(url: &str) -> Option<Draft> {
+    let mailto = url.get(..7).filter(|p| p.eq_ignore_ascii_case("mailto:")).map(|_| &url[7..])?;
+    let (to, query) = mailto.split_once('?').unwrap_or((mailto, ""));
+    let mut draft = Draft { to: mime::percent_decode(to), ..Default::default() };
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            let v = mime::percent_decode(&v.replace('+', " "));
+            match k.to_ascii_lowercase().as_str() {
+                "subject" => draft.subject = v,
+                "cc" => draft.cc = v,
+                "body" => draft.body = v,
+                _ => {}
+            }
+        }
+    }
+    Some(draft)
 }

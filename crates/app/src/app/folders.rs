@@ -9,15 +9,21 @@ const SERVER_SEARCH_DELAY: std::time::Duration = std::time::Duration::from_milli
 /// Messages shown in a list row's mini timeline; longer conversations show "+N" before them.
 const MAX_DOTS: usize = 12;
 
-/// Account colors (RGB) for the bar in the message list, by the order accounts were added.
-const ACCOUNT_COLORS: [u32; 8] = [0x2f6fde, 0xe8730c, 0x2e9e5b, 0x8e44ad, 0xd64545, 0x1a9ba1, 0xd6457f, 0x9a6b3f];
+/// Account colors (RGB) for the bar in the message list, by the order accounts were added; Settings offers them too.
+pub(super) const ACCOUNT_COLORS: [u32; 8] = [0x2f6fde, 0xe8730c, 0x2e9e5b, 0x8e44ad, 0xd64545, 0x1a9ba1, 0xd6457f, 0x9a6b3f];
 
-/// Color of account `index` out of `count`; none with a single account, where there is nothing to tell apart.
-pub(super) fn account_color(index: usize, count: usize) -> slint::Color {
-    if count < 2 {
-        return slint::Color::from_argb_encoded(0);
-    }
+pub(super) fn palette_color(index: usize) -> slint::Color {
     slint::Color::from_argb_encoded(0xff00_0000 | ACCOUNT_COLORS[index % ACCOUNT_COLORS.len()])
+}
+
+/// Color of account `index`: the one chosen in Settings, else one by its place. A single account
+/// without a chosen color gets none (nothing to tell apart), unless `always`.
+pub(super) fn account_color(accounts: &[Account], index: usize, always: bool) -> slint::Color {
+    match accounts.get(index).and_then(|a| calendar::hex_color(&a.config.color)) {
+        Some(chosen) => chosen,
+        None if accounts.len() < 2 && !always => slint::Color::from_argb_encoded(0),
+        None => palette_color(index),
+    }
 }
 
 impl Controller {
@@ -30,6 +36,10 @@ impl Controller {
             Err(e) => return self.show_error(&e),
         };
         let count = loaded.len();
+        let colors: Vec<slint::Color> = {
+            let state = self.state.borrow();
+            (0..count).map(|i| account_color(&state.accounts, i, false)).collect()
+        };
         let mut rows = Vec::new();
         let mut items = Vec::new();
         if count > 1 {
@@ -49,7 +59,7 @@ impl Controller {
                     items.push(FolderItem {
                         role: "account".into(),
                         label: account.config.email.clone().into(),
-                        color: account_color(i, count),
+                        color: colors[i],
                         ..Default::default()
                     });
                 }
@@ -65,7 +75,7 @@ impl Controller {
                             f.unread as i32
                         },
                         depth: f.depth() as i32,
-                        color: account_color(i, count),
+                        color: colors[i],
                     });
                 }
                 account.folders = folders;
@@ -362,7 +372,8 @@ impl Controller {
         };
         let items: Vec<MessageItem> = {
             let state = self.state.borrow();
-            let count = state.accounts.len();
+            // A list holding several accounts' mail names each row's account.
+            let mixed = state.accounts.len() > 1 && (state.everywhere || matches!(state.current, Some(Row::Unified)));
             let show_recipients = |account: usize, folder: &str| {
                 state.folder(account, folder).is_some_and(|f| matches!(f.role, Role::Sent | Role::Drafts))
             };
@@ -389,7 +400,8 @@ impl Controller {
                     flagged: conversation.iter().any(|c| c.flagged),
                     answered: m.answered,
                     attachments: conversation.iter().any(|c| c.has_attachments),
-                    color: account_color(*a, count),
+                    color: account_color(&state.accounts, *a, false),
+                    account: if mixed { state.accounts[*a].config.email.clone().into() } else { Default::default() },
                     count: conversation.len() as i32,
                     checked: state.is_checked(*a, conversation),
                     dots: if conversation.len() > 1 {
@@ -431,6 +443,8 @@ impl Controller {
             index
         };
         self.update_checked_summary();
+        // Changes just queued or sent change the count of those waiting.
+        self.show_problems();
         self.window().set_current_message(selected_index.map(|i| i as i32).unwrap_or(-1));
         if selected_index.is_none() {
             if self.window().get_has_message() {

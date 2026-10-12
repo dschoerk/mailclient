@@ -121,6 +121,8 @@ impl Engine {
                     let creds = match Credentials::load(&account) {
                         Ok(c) => Arc::new(c),
                         Err(e) => {
+                            // Without a password the account cannot connect: the UI shows why.
+                            on_event(Event::Online(false));
                             on_event(Event::Error(e.to_string()));
                             return;
                         }
@@ -673,6 +675,15 @@ impl<B: Backend> Worker<B> {
             }
         }
         self.store.set_sync_mark(folder, mark)?;
+        // Gmail groups conversations itself; new mail and mail cached before the ids were kept get theirs.
+        if self.account.is_gmail() {
+            let missing = self.store.uids_without_thread(folder)?;
+            if !missing.is_empty() {
+                let threads = self.conn().await?.fetch_threads(folder, &missing).await?;
+                self.store.set_threads(folder, &threads)?;
+                changed |= !threads.is_empty();
+            }
+        }
         if changed {
             self.emit(Event::MessagesChanged(folder.to_string()));
             self.emit(Event::FoldersChanged);
@@ -929,6 +940,10 @@ mod tests {
                 .iter()
                 .map(|m| Flags { uid: m.uid, seen: m.seen, flagged: m.flagged, answered: m.answered, labels: Some(m.labels.clone()) })
                 .collect())
+        }
+
+        async fn fetch_threads(&mut self, _: &str, _: &[u32]) -> Result<Vec<(u32, u64)>> {
+            Ok(Vec::new())
         }
 
         async fn search(&mut self, _: &str, _: &str) -> Result<Vec<u32>> {

@@ -47,6 +47,8 @@ impl Controller {
                 auth => auth,
             },
             caldav_url: if data.oauth { String::new() } else { data.caldav_url.trim().to_string() },
+            // Chosen in Settings, not in the form: `setup_submit` keeps an edited account's.
+            color: String::new(),
         };
         if !account.email.contains('@') {
             return Err(anyhow!("enter a valid email address"));
@@ -84,12 +86,15 @@ impl Controller {
     pub(super) fn setup_submit(&self) {
         let window = self.window();
         let data = window.get_setup();
-        let account = match Self::account_from_setup(&data) {
+        let mut account = match Self::account_from_setup(&data) {
             Ok(a) => a,
             Err(e) => return window.set_setup_error(e.to_string().into()),
         };
         let editing = self.state.borrow().editing;
         let old = editing.and_then(|i| self.state.borrow().accounts.get(i).map(|a| a.config.clone()));
+        if let Some(old) = &old {
+            account.color = old.color.clone();
+        }
         if old.is_none() && self.state.borrow().accounts.iter().any(|a| a.config.email.eq_ignore_ascii_case(&account.email)) {
             return window.set_setup_error("This account is already set up".into());
         }
@@ -158,7 +163,7 @@ impl Controller {
         let store = Store::open(&db).with_context(|| format!("opening {}", db.display()))?;
         let id = self.next_account_id.replace(self.next_account_id.get() + 1);
         let engine = Engine::start(config.clone(), db, move |event| with_controller(move |c| c.on_event(id, event)));
-        Ok(Account { id, config, engine, store, folders: Vec::new(), online: true })
+        Ok(Account { id, config, engine, store, folders: Vec::new(), online: true, error: None })
     }
 
     pub(super) fn start(&self, account: AccountConfig) -> Result<()> {
@@ -245,13 +250,35 @@ impl Controller {
         }
     }
 
+    /// Settings: the account's color becomes `palette` entry `choice`.
+    pub(super) fn set_account_color(&self, index: usize, choice: usize) {
+        let config = {
+            let mut state = self.state.borrow_mut();
+            let Some(account) = state.accounts.get_mut(index) else { return };
+            account.config.color = format!("#{:06x}", folders::ACCOUNT_COLORS[choice % folders::ACCOUNT_COLORS.len()]);
+            account.config.clone()
+        };
+        if let Err(e) = config::save_account(&config) {
+            self.show_error(&e);
+        }
+        self.refresh_accounts();
+        self.reload_folders();
+        self.reload_messages();
+        self.render_calendar();
+    }
+
     /// Shows the accounts in Settings and the sidebar label.
     fn refresh_accounts(&self) {
         let state = self.state.borrow();
         let items: Vec<AccountItem> = state
             .accounts
             .iter()
-            .map(|a| AccountItem { name: a.config.name.clone().into(), email: a.config.email.clone().into() })
+            .enumerate()
+            .map(|(i, a)| AccountItem {
+                name: a.config.name.clone().into(),
+                email: a.config.email.clone().into(),
+                color: folders::account_color(&state.accounts, i, true),
+            })
             .collect();
         let label = match state.accounts.as_slice() {
             [] => String::new(),

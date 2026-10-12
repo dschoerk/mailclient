@@ -32,11 +32,18 @@ public final class SyncJob extends JobService {
             .build());
     }
 
+    /** One check at a time: the alarm and the job may come together. */
+    static synchronized void check(Context context) {
+        System.loadLibrary("mailclient_app");
+        checkMail(context, context.getFilesDir().getPath());
+    }
+
     @Override
     public boolean onStartJob(JobParameters params) {
+        // After a reboot the job is the first to run: it starts the alarms again.
+        SyncAlarm.schedule(this);
         new Thread(() -> {
-            System.loadLibrary("mailclient_app");
-            checkMail(getApplicationContext(), getFilesDir().getPath());
+            check(getApplicationContext());
             jobFinished(params, false);
         }).start();
         return true;

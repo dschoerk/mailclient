@@ -63,7 +63,7 @@ fn when(e: &Event) -> String {
     text
 }
 
-fn hex_color(s: &str) -> Option<slint::Color> {
+pub(super) fn hex_color(s: &str) -> Option<slint::Color> {
     let rgb = u32::from_str_radix(s.trim().strip_prefix('#')?.get(..6)?, 16).ok()?;
     Some(slint::Color::from_argb_encoded(0xff00_0000 | rgb))
 }
@@ -224,13 +224,9 @@ impl Controller {
     /// Every account's events overlapping `from..to`, with the color to draw them in.
     fn calendar_events(&self, from: i64, to: i64) -> Vec<Shown> {
         let state = self.state.borrow();
-        let count = state.accounts.len();
         let mut all = Vec::new();
         for (i, account) in state.accounts.iter().enumerate() {
-            let fallback = match folders::account_color(i, count) {
-                c if c.alpha() == 0 => folders::account_color(0, 2),
-                c => c,
-            };
+            let fallback = folders::account_color(&state.accounts, i, true);
             match account.store.events(from, to) {
                 Ok(events) => all.extend(
                     events.into_iter().map(|stored| Shown { account: i, color: hex_color(&stored.color).unwrap_or(fallback), stored }),

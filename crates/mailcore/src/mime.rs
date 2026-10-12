@@ -36,6 +36,33 @@ pub struct Body {
     pub has_remote_content: bool,
     /// The iCalendar text of an invitation, reply or cancellation.
     pub calendar: Option<String>,
+    /// How to leave the mailing list it came from.
+    pub unsubscribe: Option<Unsubscribe>,
+}
+
+/// A way off a mailing list, from `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Unsubscribe {
+    /// POST `List-Unsubscribe=One-Click` to this HTTPS URL: done without a page or a mail.
+    OneClick(String),
+    /// Send a mail to this `mailto:` URL.
+    Mail(String),
+    /// A page to finish it on, in the browser.
+    Web(String),
+}
+
+/// The best way to unsubscribe the headers offer: one click, else a mail, else a web page.
+fn unsubscribe(list_unsubscribe: &str, post: Option<&str>) -> Option<Unsubscribe> {
+    let urls: Vec<&str> = list_unsubscribe.split('<').skip(1).filter_map(|s| s.split_once('>')).map(|(url, _)| url.trim()).collect();
+    let https = urls.iter().find(|u| u.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")));
+    let one_click = post.is_some_and(|p| p.replace(char::is_whitespace, "").eq_ignore_ascii_case("List-Unsubscribe=One-Click"));
+    if let Some(url) = https.filter(|_| one_click) {
+        return Some(Unsubscribe::OneClick(url.to_string()));
+    }
+    if let Some(mail) = urls.iter().find(|u| u.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("mailto:"))) {
+        return Some(Unsubscribe::Mail(mail.to_string()));
+    }
+    https.map(|url| Unsubscribe::Web(url.to_string()))
 }
 
 fn first_addr(addr: Option<&Address>) -> (String, String) {
@@ -244,6 +271,7 @@ pub fn body_from_raw(raw: &[u8]) -> Body {
         inline_parts,
         has_remote_content,
         calendar,
+        unsubscribe: msg.header_raw("List-Unsubscribe").and_then(|l| unsubscribe(l, msg.header_raw("List-Unsubscribe-Post"))),
     }
 }
 
@@ -956,6 +984,20 @@ pub fn reply_draft(kind: ReplyKind, original: &MessageSummary, body_text: &str, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finds_the_best_way_to_unsubscribe() {
+        use super::Unsubscribe::*;
+        let both = "<mailto:leave@list.example?subject=unsubscribe>,\r\n <https://list.example/u/1>";
+        assert_eq!(super::unsubscribe(both, Some("List-Unsubscribe=One-Click")), Some(OneClick("https://list.example/u/1".into())));
+        assert_eq!(super::unsubscribe(both, None), Some(Mail("mailto:leave@list.example?subject=unsubscribe".into())));
+        assert_eq!(super::unsubscribe("<https://list.example/u/1>", None), Some(Web("https://list.example/u/1".into())));
+        // Plain http is never posted to, and text outside <> is no URL.
+        assert_eq!(super::unsubscribe("<http://list.example/u>", Some("List-Unsubscribe=One-Click")), None);
+        assert_eq!(super::unsubscribe("https://list.example/u", None), None);
+        let raw = b"From: a@list.example\r\nList-Unsubscribe: <https://list.example/u/2>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nSubject: Hi\r\n\r\nHello\r\n";
+        assert_eq!(super::body_from_raw(raw).unsubscribe, Some(OneClick("https://list.example/u/2".into())));
+    }
+
     use super::*;
 
     #[test]

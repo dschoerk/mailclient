@@ -105,6 +105,8 @@ struct Account {
     store: Store,
     folders: Vec<Folder>,
     online: bool,
+    /// Why the account cannot connect, until it does again.
+    error: Option<String>,
 }
 
 /// A row of the folder sidebar. Removing an account resets every index-keyed piece of state.
@@ -311,6 +313,8 @@ impl Controller {
         window.set_msg_attachments(ModelRc::from(controller.attachment_model.clone()));
         window.set_conversation(ModelRc::from(controller.conversation_model.clone()));
         window.set_use_webview(cfg!(feature = "servo"));
+        let palette: Vec<slint::Color> = (0..folders::ACCOUNT_COLORS.len()).map(folders::palette_color).collect();
+        window.set_account_palette(ModelRc::new(VecModel::from(palette)));
         let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
         window.set_version(format!("Build {} · {} · {profile}", env!("BUILD_NUMBER"), env!("BUILD_DATE")).into());
         // Android builds use Slint's Material style, which starts field text further in.
@@ -395,6 +399,7 @@ impl Controller {
         });
         on!(on_edit_account, |c, index| c.edit_account(index as usize));
         on!(on_remove_account, |c, index| c.remove_account(index as usize));
+        on!(on_account_color, |c, index, choice| c.set_account_color(index as usize, choice as usize));
         on!(on_folder_selected, |c, index| c.select_folder(index as usize));
         on!(on_message_selected, |c, index| c.select_message(index as usize));
         on!(on_conversation_selected, |c, index| c.select_in_conversation(index as usize));
@@ -470,6 +475,7 @@ impl Controller {
         on!(on_calendar_refresh, |c| c.sync_calendars());
         on!(on_invite_respond, |c, answer| c.invite_respond(&answer));
         on!(on_view_source, |c| c.toggle_source());
+        on!(on_unsubscribe, |c| c.unsubscribe());
         on!(on_save_eml, |c| c.save_eml());
         on!(on_save_pdf, |c| c.save_pdf());
         on!(on_print, |c| c.print());
@@ -514,6 +520,28 @@ impl Controller {
         self.set_status(format!("⚠ {e:#}"));
     }
 
+    /// The banner over the list: an account that cannot reach its server, why, and the changes
+    /// waiting for it (they show as done, but the server has not heard of them).
+    fn show_problems(&self) {
+        let state = self.state.borrow();
+        let window = self.window();
+        // shortcut: names the first failing account only; the next one shows once it is fixed.
+        let Some((index, account, error)) = state.accounts.iter().enumerate().find_map(|(i, a)| Some((i, a, a.error.as_ref()?))) else {
+            window.set_problem_title("".into());
+            return;
+        };
+        let what = if error.contains("login failed") || error.contains("password") { "Cannot sign in to" } else { "Cannot connect to" };
+        let mut title = format!("{what} {}", account.config.email);
+        match account.store.pending_ops().map(|ops| ops.len()).unwrap_or(0) {
+            0 => {}
+            1 => title.push_str(" · 1 change not sent yet"),
+            n => title.push_str(&format!(" · {n} changes not sent yet")),
+        }
+        window.set_problem_title(title.into());
+        window.set_problem_detail(error.as_str().into());
+        window.set_problem_account(index as i32);
+    }
+
     // ---- engine events ----
 
     fn on_event(&self, id: u64, event: Event) {
@@ -528,16 +556,27 @@ impl Controller {
         }
         match event {
             Event::Status(s) => self.set_status(s),
-            Event::Error(e) => self.set_status(format!("⚠ {e}")),
+            Event::Error(e) => {
+                self.set_status(format!("⚠ {e}"));
+                // Offline, every error is the connection's: the banner keeps it in full.
+                if let Some(a) = self.state.borrow_mut().accounts.get_mut(account).filter(|a| !a.online) {
+                    a.error = Some(e);
+                }
+                self.show_problems();
+            }
             Event::Online(online) => {
                 let all_online = {
                     let mut state = self.state.borrow_mut();
                     if let Some(a) = state.accounts.get_mut(account) {
                         a.online = online;
+                        if online {
+                            a.error = None;
+                        }
                     }
                     state.accounts.iter().all(|a| a.online)
                 };
                 self.window().set_online(all_online);
+                self.show_problems();
             }
             Event::FoldersChanged => self.reload_folders(),
             Event::NewMail(messages) => {

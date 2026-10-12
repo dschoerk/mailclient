@@ -436,6 +436,7 @@ pub fn test_account() -> AccountConfig {
         smtp_security: Security::Tls,
         auth: mailcore::Auth::Password,
         caldav_url: String::new(),
+        color: String::new(),
     }
 }
 

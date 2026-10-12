@@ -44,7 +44,10 @@ What the mail client can do today. For ideas that are not built yet see
 - **Settings** also hold the theme (system, light, dark), new-mail notifications on or
   off, and "Always load remote images".
 - **All inboxes**: one list with the inboxes of all accounts. A colored bar on each row
-  shows which account the message belongs to.
+  and the account's address next to the subject show which account the message belongs to
+  (also when searching all folders).
+- **Account colors**: tap the dot before an account in Settings to pick its color. Accounts
+  without a chosen color get one by their place in the list.
 
 ## Folders
 
@@ -64,8 +67,9 @@ What the mail client can do today. For ideas that are not built yet see
 - **New mail** is pushed on the inbox through IMAP IDLE. If that fails, the client checks
   every 5 minutes. The "Sync" button checks right away.
 - **New mail on Android in the background**: no push, to save battery. A background job
-  checks the inboxes about every 15 minutes, when Android allows it (Doze batches and
-  delays it), and notifies about new mail. Coming back to the app syncs right away; while
+  checks the inboxes about every 15 minutes and notifies about new mail. While the phone
+  sleeps (Doze), which holds such jobs back for hours, an alarm allowed to wake it takes
+  over at the same pace, so mail arriving at night is announced within 15 to 25 minutes. Coming back to the app syncs right away; while
   it is open, IDLE pushes as on the desktop. The check keeps running after the app is
   swiped away and after a reboot.
 - **Notifications**: new unread mail arriving in an inbox while the app runs shows a system
@@ -76,11 +80,14 @@ What the mail client can do today. For ideas that are not built yet see
   connection.
 - **Changes apply at once**: read/unread, flag, archive and delete show immediately and
   are queued for the server. The queue is sent when the connection comes back.
+- **Connection problems** show in a banner over the list: which account cannot connect or
+  sign in, and how many changes are still waiting for its server. Tapping it shows the
+  server's own error message, with Retry and Edit account.
 
 ## Message list and conversations
 
 - **One row per conversation**: messages are grouped by their `References` and
-  `In-Reply-To` headers. Each row shows the sender, subject, a preview of the text, the
+  `In-Reply-To` headers; on Gmail as Gmail groups them (its conversation id, `X-GM-THRID`). Each row shows the sender, subject, a preview of the text, the
   date, and icons for unread, flagged, answered and attachments.
 - **Mini timeline**: conversation rows show one dot per message (the newest 12), filled
   while unread.
@@ -98,6 +105,10 @@ What the mail client can do today. For ideas that are not built yet see
   text, with links you can click.
 - **Remote images** are blocked by default. A banner offers "Load images" for the open
   message.
+- **Unsubscribe**: mail from a mailing list that says how to leave it (`List-Unsubscribe`)
+  shows "Unsubscribe" next to the recipients. After a confirmation the client unsubscribes
+  in one click where the list supports it (RFC 8058), else mails the list's unsubscribe
+  address from your account, else opens the list's page in the browser.
 - **Links**: `mailto:` links open the composer, and other links open in your web browser.
 - **Where links go** (Settings → "Show where links go", off by default): every link in HTML
   mail gets a small label with the site it opens. When the link text names a different site
@@ -226,6 +237,6 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 
 - Removing an account from inside the app. For now, edit `config.toml`.
 - Address autocomplete, and rich-text (HTML) writing.
-- Grouping conversations by subject, or across accounts.
+- Grouping conversations by subject (except on Gmail, which does it itself), or across accounts.
 - CONDSTORE/QRESYNC. Flag changes are found by fetching the flags of cached messages
   again.

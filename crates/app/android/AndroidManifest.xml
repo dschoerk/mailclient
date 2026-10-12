@@ -33,5 +33,7 @@
         <!-- Own process: the background check sets up the Rust side's Android context, which the UI's would clash with. -->
         <service android:name="dev.mailclient.SyncJob" android:exported="false" android:process=":sync"
             android:permission="android.permission.BIND_JOB_SERVICE"/>
+        <!-- Wakes the check in Doze too (see SyncAlarm.java). -->
+        <receiver android:name="dev.mailclient.SyncAlarm" android:exported="false" android:process=":sync"/>
     </application>
 </manifest>

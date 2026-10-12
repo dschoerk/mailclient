@@ -33,6 +33,7 @@ export component AppWindow inherits Window {
     // A first Back at the top level: the next one within 2 s closes the app.
     property <bool> back-armed;
     in property <[AccountItem]> accounts;
+    in property <[color]> account-palette;
     in property <bool> use-webview;
     /// Android: a native WebView is laid over the reader area (html-x … html-visible).
     in property <bool> html-overlay;
@@ -94,11 +95,20 @@ export component AppWindow inherits Window {
     /// A sync the user asked for is running.
     in property <bool> syncing;
     in property <bool> online: true;
+    /// An account cannot reach its server: the banner over the list ("" none), the error, and the account.
+    in property <string> problem-title;
+    in property <string> problem-detail;
+    in property <int> problem-account;
+    property <bool> problem-open;
     in property <bool> has-account;
 
     in property <bool> has-message;
     in property <string> msg-subject;
     in property <string> msg-from;
+    /// The message offers a way off its mailing list: "one-click", "mail", "web" or "".
+    in property <string> msg-unsubscribe;
+    property <bool> unsubscribe-confirm;
+    changed msg-unsubscribe => { root.unsubscribe-confirm = false; }
     in property <string> msg-to;
     in property <string> msg-cc;
     in property <string> msg-date;
@@ -145,6 +155,7 @@ export component AppWindow inherits Window {
     callback add-account();
     callback edit-account(int);
     callback remove-account(int);
+    callback account-color(int, int);
     callback folder-selected(int);
     callback message-selected(int);
     callback conversation-selected(int);
@@ -155,6 +166,7 @@ export component AppWindow inherits Window {
     in-out property <string> search-text;
     /// Searches for all mail from the open message's sender.
     callback show-sender();
+    callback unsubscribe();
     callback refresh();
     callback compose();
     callback reply();
@@ -550,6 +562,50 @@ export component AppWindow inherits Window {
                                 clicked => root.bulk-action("delete");
                             }
                         }
+                        if root.problem-title != "": Rectangle {
+                            background: Theme.flag.with-alpha(0.18);
+                            accessible-role: button;
+                            accessible-label: root.problem-title;
+                            accessible-description: root.problem-detail;
+                            accessible-action-default => { root.problem-open = !root.problem-open; }
+                            TouchArea {
+                                clicked => { root.problem-open = !root.problem-open; }
+                            }
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 6px;
+                                Text {
+                                    text: "⚠ " + root.problem-title;
+                                    font-weight: 600;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                                // Tapped open: the server's own words, to fix it or to report it.
+                                if root.problem-open: Text {
+                                    text: root.problem-detail;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                if root.problem-open: HorizontalLayout {
+                                    alignment: end;
+                                    spacing: 8px;
+                                    Button {
+                                        text: "Retry";
+                                        clicked => {
+                                            root.problem-open = false;
+                                            root.refresh();
+                                        }
+                                    }
+                                    Button {
+                                        text: "Edit account";
+                                        clicked => {
+                                            root.problem-open = false;
+                                            root.edit-account(root.problem-account);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Divider {
                             height: 1px;
                         }
@@ -809,11 +865,58 @@ export component AppWindow inherits Window {
                                     color: Theme.muted;
                                 }
                             }
-                            Text {
-                                text: "To: " + root.msg-to + (root.msg-cc != "" ? "   Cc: " + root.msg-cc : "");
-                                color: Theme.muted;
-                                font-size: 12px;
-                                overflow: elide;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "To: " + root.msg-to + (root.msg-cc != "" ? "   Cc: " + root.msg-cc : "");
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                if root.msg-unsubscribe != "": Text {
+                                    text: "Unsubscribe";
+                                    color: Theme.accent;
+                                    font-size: 12px;
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        accessible-role: button;
+                                        accessible-label: "Unsubscribe";
+                                        accessible-action-default => { self.clicked(); }
+                                        clicked => { root.unsubscribe-confirm = !root.unsubscribe-confirm; }
+                                    }
+                                }
+                            }
+                            if root.unsubscribe-confirm: Rectangle {
+                                border-radius: 6px;
+                                background: Palette.foreground.with-alpha(0.06);
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 8px;
+                                    Text {
+                                        text: root.msg-unsubscribe == "one-click" ? "Unsubscribe from this mailing list? The sender's server is told right away."
+                                            : root.msg-unsubscribe == "mail" ? "Unsubscribe from this mailing list? A mail asking for it is sent to the list from your account."
+                                            : "Unsubscribe from this mailing list? The list's page opens in your browser to finish there.";
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    HorizontalLayout {
+                                        alignment: end;
+                                        spacing: 8px;
+                                        Button {
+                                            text: "Cancel";
+                                            clicked => { root.unsubscribe-confirm = false; }
+                                        }
+                                        Button {
+                                            text: "Unsubscribe";
+                                            primary: true;
+                                            clicked => {
+                                                root.unsubscribe-confirm = false;
+                                                root.unsubscribe();
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             if root.invite-kind != "": Rectangle {
                                 border-radius: 6px;
@@ -1244,6 +1347,7 @@ export component AppWindow inherits Window {
         left-handed <=> root.left-handed;
         floating-buttons <=> root.floating-buttons;
         accounts: root.accounts;
+        palette: root.account-palette;
         composing: root.composing;
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
@@ -1251,6 +1355,7 @@ export component AppWindow inherits Window {
         add-account => root.add-account();
         edit-account(i) => root.edit-account(i);
         remove-account(i) => root.remove-account(i);
+        account-color(i, k) => root.account-color(i, k);
         swipe-lab => { root.show-swipe-lab = true; }
         close => {
             root.show-settings = false;

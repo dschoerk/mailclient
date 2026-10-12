@@ -50,6 +50,7 @@ fn send_sync_flag_delete_idle() {
         smtp_security: Security::Tls,
         auth: mailcore::Auth::Password,
         caldav_url: String::new(),
+        color: String::new(),
     };
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("cache.sqlite");

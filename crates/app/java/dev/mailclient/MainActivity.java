@@ -119,6 +119,7 @@ public final class MainActivity extends NativeActivity {
         super.onCreate(state);
         try {
             SyncJob.schedule(this);
+            SyncAlarm.schedule(this);
         } catch (RuntimeException e) {
             // The app works without background checks; the error lands in logcat.
             android.util.Log.w("mailclient", "cannot schedule the mail check", e);
