@@ -12,6 +12,16 @@ export PATH="$JAVA_HOME/bin:$PATH"
 tools="$ANDROID_HOME/build-tools/35.0.0"
 android_jar="$ANDROID_HOME/platforms/android-35/android.jar"
 
+# ANDROID_KEYSTORE/ANDROID_KEYSTORE_PASS sign releases; otherwise the debug key, created like Gradle does.
+ks="${ANDROID_KEYSTORE:-$HOME/.android/debug.keystore}"
+if [[ -z "${ANDROID_KEYSTORE:-}" && ! -f "$ks" ]]; then
+  mkdir -p "$(dirname "$ks")"
+  keytool -genkeypair -keystore "$ks" -storepass android -keypass android -alias androiddebugkey \
+    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+fi
+# cargo-apk refuses a release build without a key of its own; its APK is signed again below anyway.
+export CARGO_APK_RELEASE_KEYSTORE="$ks" CARGO_APK_RELEASE_KEYSTORE_PASSWORD="${ANDROID_KEYSTORE_PASS:-android}"
+
 (cd "$root/crates/app" && cargo apk build --lib "$@")
 profile=debug
 [[ " $* " == *" --release "* ]] && profile=release
@@ -36,12 +46,5 @@ unaligned="$work/unaligned.apk"
 (cd "$apk" && "$tools/aapt" add "$unaligned" lib/*/*.so >/dev/null)
 (cd "$work/dex" && "$tools/aapt" add "$unaligned" classes.dex >/dev/null)
 "$tools/zipalign" -f -p 4 "$unaligned" "$apk/mailclient_app.apk"
-# ANDROID_KEYSTORE/ANDROID_KEYSTORE_PASS sign releases; otherwise the debug key, created like Gradle does.
-ks="${ANDROID_KEYSTORE:-$HOME/.android/debug.keystore}"
-if [[ -z "${ANDROID_KEYSTORE:-}" && ! -f "$ks" ]]; then
-  mkdir -p "$(dirname "$ks")"
-  keytool -genkeypair -keystore "$ks" -storepass android -keypass android -alias androiddebugkey \
-    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-fi
 "$tools/apksigner" sign --ks "$ks" --ks-pass "pass:${ANDROID_KEYSTORE_PASS:-android}" "$apk/mailclient_app.apk"
 echo "Built $apk/mailclient_app.apk"
