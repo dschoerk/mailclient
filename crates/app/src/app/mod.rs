@@ -148,6 +148,8 @@ struct State {
     selected: Option<Key>,
     /// Ticked rows, by one of their messages (a row's newest message changes when replies arrive).
     checked: HashSet<Key>,
+    /// New mail arrived in the open inbox, animated by the next reload of the list.
+    fresh: HashSet<Key>,
     body: Option<Body>,
     search: String,
     /// Messages the server search for `search` found, cached by the engines.
@@ -594,6 +596,18 @@ impl Controller {
             }
             Event::FoldersChanged => self.reload_folders(),
             Event::NewMail(messages) => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    let open = !state.searching()
+                        && match &state.current {
+                            Some(Row::Folder(a, folder)) => *a == account && state.is_inbox(account, folder),
+                            Some(Row::Unified) => true,
+                            _ => false,
+                        };
+                    if open {
+                        state.fresh.extend(messages.iter().map(|m| (account, m.folder.clone(), m.uid)));
+                    }
+                }
                 // An answer to an invitation is mail too: the server's calendar may have changed.
                 self.send(account, Command::SyncCalendars);
                 if self.window().get_notifications() {

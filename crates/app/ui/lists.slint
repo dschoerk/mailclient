@@ -234,6 +234,30 @@ export component MessageRow inherits Rectangle {
         root.gliding = false;
         root.flying = 0;
         root.flown = false;
+        if root.msg.fresh {
+            root.arrive();
+        }
+    }
+    // New mail landing in the open list: the row's content drops in and the row glows, fading out.
+    // Reads the animation tick only while arriving, like the glide.
+    property <bool> arriving;
+    property <duration> arrive-start;
+    property <float> arrive-s: root.arriving ? min(1, (animation-tick() - root.arrive-start) / 1500ms) : 1;
+    // The drop takes the first fifth, easing out.
+    property <float> drop: 1 - min(1, root.arrive-s * 5);
+    function arrive() {
+        root.arrive-start = animation-tick();
+        root.arriving = true;
+    }
+    init => {
+        if root.msg.fresh {
+            root.arrive();
+        }
+    }
+    Timer {
+        interval: 1500ms;
+        running: root.arriving;
+        triggered => { root.arriving = false; }
     }
 
     function track(x: length) {
@@ -423,6 +447,8 @@ export component MessageRow inherits Rectangle {
             width: root.width;
             height: root.height;
             background: Palette.background;
+            // The arriving content drops in from above its row, not over the one above.
+            clip: root.arriving;
             Rectangle {
                 // Expanded, the open message is marked on the timeline instead.
                 background: root.expanded ? Palette.foreground.with-alpha(0.03)
@@ -430,9 +456,12 @@ export component MessageRow inherits Rectangle {
                     : touch.has-hover ? Palette.foreground.with-alpha(0.04) : transparent;
                 animate background { duration: 120ms; easing: ease-out; }
             }
+            if root.arriving: Rectangle {
+                background: Theme.accent.with-alpha(0.2 * (1 - root.arrive-s));
+            }
             HorizontalLayout {
                 height: root.head;
-                y: 0;
+                y: root.arriving ? -24px * root.drop * root.drop * root.drop : 0;
                 padding: 10px;
                 padding-left: 6px;
                 spacing: 6px;

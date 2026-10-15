@@ -404,6 +404,7 @@ impl Controller {
                     account: if mixed { state.accounts[*a].config.email.clone().into() } else { Default::default() },
                     count: conversation.len() as i32,
                     checked: state.is_checked(*a, conversation),
+                    fresh: conversation.iter().any(|c| state.fresh.contains(&(*a, c.folder.clone(), c.uid))),
                     dots: if conversation.len() > 1 {
                         let newest = &conversation[conversation.len().saturating_sub(MAX_DOTS)..];
                         ModelRc::new(VecModel::from(newest.iter().map(|c| c.seen).collect::<Vec<_>>()))
@@ -426,6 +427,8 @@ impl Controller {
         let selected_index = {
             let mut state = self.state.borrow_mut();
             (state.messages, state.conversations) = rows.into_iter().map(|(a, m, c)| ((a, m), c)).unzip();
+            // Animated once: the next reload shows them as they are.
+            state.fresh.clear();
             // Rows that left the list (another folder, moved, deleted) are no longer ticked.
             let listed: HashSet<Key> = state
                 .messages

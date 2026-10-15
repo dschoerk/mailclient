@@ -38,6 +38,8 @@ export struct MessageItem {
     folder-label: string,
     /// The message's account, shown while the list holds several accounts' mail ("" otherwise).
     account: string,
+    /// New mail that arrived while its inbox was open: the row slides in and glows once.
+    fresh: bool,
 }
 
 export struct ConversationItem {
