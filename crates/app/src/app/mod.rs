@@ -119,6 +119,8 @@ struct Account {
     store: Store,
     folders: Vec<Folder>,
     online: bool,
+    /// Its IDLE connection is up: new mail shows without waiting for a poll.
+    push: bool,
     /// Why the account cannot connect, until it does again.
     error: Option<String>,
 }
@@ -593,6 +595,21 @@ impl Controller {
                 };
                 self.window().set_online(all_online);
                 self.show_problems();
+            }
+            Event::Push(on) => {
+                let text = {
+                    let mut state = self.state.borrow_mut();
+                    if let Some(a) = state.accounts.get_mut(account) {
+                        a.push = on;
+                    }
+                    let pushing = state.accounts.iter().filter(|a| a.push).count();
+                    match pushing {
+                        0 => "No push".to_string(),
+                        n if n == state.accounts.len() => "Push".to_string(),
+                        n => format!("Push {n}/{}", state.accounts.len()),
+                    }
+                };
+                self.window().set_push_state(text.into());
             }
             Event::FoldersChanged => self.reload_folders(),
             Event::NewMail(messages) => {

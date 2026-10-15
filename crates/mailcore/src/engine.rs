@@ -83,6 +83,9 @@ pub enum Event {
     Status(String),
     Error(String),
     Online(bool),
+    /// The second connection waits in IDLE on the inbox (true), so new mail shows at once; false
+    /// while it is down, when new mail waits for the next poll.
+    Push(bool),
     FoldersChanged,
     MessagesChanged(String),
     /// Unread messages that arrived in the inbox since the last sync (not on the first sync).
@@ -138,7 +141,7 @@ impl Engine {
                         }
                     };
                     // The only backend so far; a protocol choice in AccountConfig would branch here.
-                    tokio::spawn(idle_loop::<Imap>(account.clone(), creds.clone(), idle_tx));
+                    tokio::spawn(idle_loop::<Imap>(account.clone(), creds.clone(), idle_tx, on_event.clone()));
                     Worker::<Imap> {
                         account,
                         creds,
@@ -886,11 +889,13 @@ async fn idle_loop<B: Backend>(
     account: AccountConfig,
     creds: Arc<Credentials>,
     tx: mpsc::UnboundedSender<Command>,
+    on_event: Arc<dyn Fn(Event) + Send + Sync>,
 ) {
     let mut backoff = Duration::from_secs(10);
     loop {
         let result: Result<()> = async {
             let mut conn = B::connect(&account, &creds.secret().await?).await?;
+            on_event(Event::Push(true));
             backoff = Duration::from_secs(10);
             loop {
                 let (next, changed) = conn.wait_for_change("INBOX", IDLE_TIMEOUT).await?;
@@ -908,6 +913,7 @@ async fn idle_loop<B: Backend>(
         if tx.is_closed() {
             return;
         }
+        on_event(Event::Push(false));
         if let Err(e) = result {
             log::info!("IDLE connection lost: {e:#}; retrying in {backoff:?}");
         }

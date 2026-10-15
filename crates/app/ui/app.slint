@@ -95,6 +95,8 @@ export component AppWindow inherits Window {
     /// A sync the user asked for is running.
     in property <bool> syncing;
     in property <bool> online: true;
+    /// Whether new mail is pushed (IDLE): "Push", "No push", or "Push 1/2" with several accounts.
+    in property <string> push-state;
     /// An account cannot reach its server: the banner over the list ("" none), the error, and the account.
     in property <string> problem-title;
     in property <string> problem-detail;
@@ -1255,6 +1257,12 @@ export component AppWindow inherits Window {
                 if root.has-account: Text {
                     text: root.online ? "● Online" : "○ Offline";
                     color: root.online ? #3a3 : Theme.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                if root.has-account && root.push-state != "": Text {
+                    text: root.push-state;
+                    color: root.push-state == "Push" ? #3a3 : Theme.muted;
                     font-size: 12px;
                     vertical-alignment: center;
                 }

@@ -163,7 +163,7 @@ impl Controller {
         let store = Store::open(&db).with_context(|| format!("opening {}", db.display()))?;
         let id = self.next_account_id.replace(self.next_account_id.get() + 1);
         let engine = Engine::start(config.clone(), db, move |event| with_controller(move |c| c.on_event(id, event)));
-        Ok(Account { id, config, engine, store, folders: Vec::new(), online: true, error: None })
+        Ok(Account { id, config, engine, store, folders: Vec::new(), online: true, push: false, error: None })
     }
 
     pub(super) fn start(&self, account: AccountConfig) -> Result<()> {
