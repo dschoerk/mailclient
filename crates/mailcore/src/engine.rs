@@ -146,6 +146,7 @@ impl Engine {
                         conn: None,
                         used: SystemTime::now(),
                         active: None,
+                        background: false,
                         on_event,
                     }
                     .run(rx)
@@ -174,15 +175,31 @@ pub async fn check_inbox(account: &AccountConfig, db_path: &std::path::Path) -> 
     let store = Store::open(db_path)?;
     // Never synced: the app's first sync fills the cache, without notifying.
     let Some(inbox) = store.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+    // Kept while the process lives, so an OAuth access token serves the checks of its hour
+    // instead of being fetched anew for each.
+    static CREDENTIALS: std::sync::Mutex<Vec<(String, Arc<Credentials>)>> = std::sync::Mutex::new(Vec::new());
+    let secret = account.password()?;
+    let kept = CREDENTIALS.lock().unwrap().iter().find(|(email, _)| *email == account.email).map(|(_, c)| c.clone());
+    let creds = match kept {
+        Some(c) if c.are_for(account, &secret).await => c,
+        _ => {
+            let c = Arc::new(Credentials::with_secret(account, secret));
+            let mut kept = CREDENTIALS.lock().unwrap();
+            kept.retain(|(email, _)| *email != account.email);
+            kept.push((account.email.clone(), c.clone()));
+            c
+        }
+    };
     let arrived = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = arrived.clone();
     let mut worker = Worker::<Imap> {
         account: account.clone(),
-        creds: Arc::new(Credentials::load(account)?),
+        creds,
         store,
         conn: None,
         used: SystemTime::now(),
         active: None,
+        background: true,
         on_event: Arc::new(move |e| {
             if let Event::NewMail(m) = e {
                 sink.lock().unwrap().extend(m);
@@ -192,6 +209,10 @@ pub async fn check_inbox(account: &AccountConfig, db_path: &std::path::Path) -> 
     let result = worker.sync_folder(&inbox).await;
     if let Some(conn) = worker.conn.take() {
         conn.logout().await;
+    }
+    if result.is_err() {
+        // Maybe a token the server stopped taking early: the next check signs in afresh.
+        CREDENTIALS.lock().unwrap().retain(|(email, _)| *email != account.email);
     }
     result?;
     Ok(std::mem::take(&mut *arrived.lock().unwrap()))
@@ -274,6 +295,8 @@ struct Worker<B: Backend> {
     /// When `conn` was last asked for.
     used: SystemTime,
     active: Option<String>,
+    /// A background check (Android, app closed): no bodies downloaded ahead beyond the new mail's.
+    background: bool,
     on_event: Arc<dyn Fn(Event) + Send + Sync>,
 }
 
@@ -652,14 +675,19 @@ impl<B: Backend> Worker<B> {
 
         // An arrival, flag change or expunge moves one of the two (an expunge may only lower the count).
         let mark = state.highest_modseq.map(|m| (m, state.exists));
+        let last = self.store.sync_mark(folder)?;
+        let mut arrived = 0;
         match self.store.synced_from(folder)? {
-            Some(_) if mark.is_some() && self.store.sync_mark(folder)? == mark => {}
+            Some(_) if mark.is_some() && last == mark => {}
             Some(from) => {
+                // Cleared until this sync is done: the count below must describe the cache it was taken with.
+                self.store.set_sync_mark(folder, None)?;
                 let cached = self.store.uids(folder)?;
                 let max = cached.iter().copied().max().unwrap_or(from.saturating_sub(1));
                 let new = self.conn().await?.fetch_new(folder, max).await?;
                 self.store.upsert_messages(&new)?;
                 changed |= !new.is_empty();
+                arrived = new.len();
                 let unread: Vec<MessageSummary> = new.into_iter().filter(|m| !m.seen).collect();
                 if announce && !unread.is_empty() && self.store.folder_role(folder)? == Role::Inbox {
                     self.emit(Event::NewMail(unread));
@@ -667,11 +695,32 @@ impl<B: Backend> Worker<B> {
                 // The synced window, plus search hits below it one by one.
                 let mut ranges = vec![(from, max.max(from))];
                 ranges.extend(cached.iter().filter(|uid| **uid < from).map(|uid| (*uid, *uid)));
-                let flags = self.conn().await?.fetch_flags(folder, &ranges).await?;
-                let on_server: std::collections::HashSet<u32> = flags.iter().map(|f| f.uid).collect();
-                let gone: Vec<u32> = cached.into_iter().filter(|uid| !on_server.contains(uid)).collect();
-                self.store.delete_messages(folder, &gone)?;
-                changed |= !gone.is_empty();
+                let (flags, on_server) = match (last, mark) {
+                    // CONDSTORE (RFC 7162): only the flags changed since the last sync. It does not
+                    // report expunges: none happened when the count adds up (every message is either
+                    // cached or above the newest cached UID); otherwise a UID SEARCH lists who is left.
+                    (Some((modseq, exists)), Some(_)) => {
+                        let flags = self.conn().await?.fetch_flags(folder, &ranges, Some(modseq)).await?;
+                        let on_server = if state.exists == exists + arrived as u32 {
+                            None
+                        } else {
+                            Some(self.conn().await?.existing_uids(folder, &ranges).await?)
+                        };
+                        (flags, on_server)
+                    }
+                    // Servers without CONDSTORE (Exchange, GMX, Yahoo): every flag in the window.
+                    _ => {
+                        let flags = self.conn().await?.fetch_flags(folder, &ranges, None).await?;
+                        let on_server = flags.iter().map(|f| f.uid).collect();
+                        (flags, Some(on_server))
+                    }
+                };
+                if let Some(on_server) = on_server {
+                    let on_server: std::collections::HashSet<u32> = on_server.into_iter().collect();
+                    let gone: Vec<u32> = cached.into_iter().filter(|uid| !on_server.contains(uid)).collect();
+                    self.store.delete_messages(folder, &gone)?;
+                    changed |= !gone.is_empty();
+                }
                 changed |= self.store.update_flags(folder, &flags)?;
             }
             None => {
@@ -702,7 +751,14 @@ impl<B: Backend> Worker<B> {
             self.emit(Event::FoldersChanged);
         }
 
-        let missing = self.store.uids_missing_body(folder, PREFETCH_BODIES, KEEP_BODIES)?;
+        // Not in an all-mail folder (Gmail), which repeats the other folders' mail; in a background
+        // check only the new mail's, which a tap on the notification opens.
+        let prefetch = match self.store.folder_role(folder)? {
+            Role::All => 0,
+            _ if self.background => arrived,
+            _ => PREFETCH_BODIES,
+        };
+        let missing = self.store.uids_missing_body(folder, prefetch, KEEP_BODIES)?;
         if !missing.is_empty() {
             self.download_bodies(folder, &missing).await?;
             self.emit(Event::MessagesChanged(folder.to_string()));
@@ -892,6 +948,23 @@ mod tests {
         sends: usize,
         /// Moves so far: moved copies get UIDs from 1001 up, never reusing one (as servers must).
         moves: u32,
+        /// HIGHESTMODSEQ of every folder, for a server with CONDSTORE; `None` without.
+        modseq: Option<u64>,
+        /// Mod-sequence of each message's last flag change, by UID.
+        changed: HashMap<u32, u64>,
+        /// Flags the last `fetch_flags` returned, and the `existing_uids` calls so far.
+        flags_returned: usize,
+        uid_searches: usize,
+    }
+
+    impl Server {
+        /// Records a change to message `uid`, as a CONDSTORE server does.
+        fn touch(&mut self, uid: u32) {
+            if let Some(m) = &mut self.modseq {
+                *m += 1;
+                self.changed.insert(uid, *m);
+            }
+        }
     }
 
     thread_local! {
@@ -927,7 +1000,7 @@ mod tests {
 
         async fn select(&mut self, folder: &str) -> Result<FolderState> {
             let exists = in_folder(folder, |_| true).len() as u32;
-            Ok(FolderState { exists, uid_validity: Some(1), highest_modseq: None })
+            Ok(FolderState { exists, uid_validity: Some(1), highest_modseq: server(|s| s.modseq) })
         }
 
         async fn fetch_new(&mut self, folder: &str, after: u32) -> Result<Vec<MessageSummary>> {
@@ -947,12 +1020,21 @@ mod tests {
             Ok(in_folder(folder, |m| uids.contains(&m.uid)))
         }
 
-        async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<Flags>> {
-            let found = in_folder(folder, |m| ranges.iter().any(|(a, b)| (*a..=*b).contains(&m.uid)));
+        async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)], changed_since: Option<u64>) -> Result<Vec<Flags>> {
+            let changed = server(|s| s.changed.clone());
+            let found = in_folder(folder, |m| {
+                ranges.iter().any(|(a, b)| (*a..=*b).contains(&m.uid)) && changed_since.is_none_or(|n| changed.get(&m.uid).is_some_and(|c| *c > n))
+            });
+            server(|s| s.flags_returned = found.len());
             Ok(found
                 .iter()
                 .map(|m| Flags { uid: m.uid, seen: m.seen, flagged: m.flagged, answered: m.answered, labels: Some(m.labels.clone()) })
                 .collect())
+        }
+
+        async fn existing_uids(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<u32>> {
+            server(|s| s.uid_searches += 1);
+            Ok(in_folder(folder, |m| ranges.iter().any(|(a, b)| (*a..=*b).contains(&m.uid))).iter().map(|m| m.uid).collect())
         }
 
         async fn fetch_threads(&mut self, _: &str, _: &[u32]) -> Result<Vec<(u32, u64)>> {
@@ -993,6 +1075,7 @@ mod tests {
                         s.folders.entry(dest.clone()).or_default().push(moved);
                     }
                 }
+                s.touch(uid);
             });
             Ok(())
         }
@@ -1044,6 +1127,7 @@ mod tests {
             conn: None,
             used: SystemTime::now(),
             active: None,
+            background: false,
             on_event: Arc::new(move |e| sink.lock().unwrap().push(e)),
         };
         (worker, events)
@@ -1081,6 +1165,56 @@ mod tests {
         }).flatten().collect();
         assert_eq!(new_mail, [3]);
         assert_eq!(errors(&events), []);
+    }
+
+    #[tokio::test]
+    async fn condstore_sync_asks_only_for_changes() {
+        server(|s| {
+            s.modseq = Some(10);
+            s.folders.insert("INBOX".into(), vec![message(1, true), message(2, true), message(3, true)]);
+        });
+        let (mut worker, events) = worker();
+        worker.execute(Command::SyncAll).await;
+        assert_eq!(cached(&worker), [1, 2, 3]);
+
+        // A flag change and an arrival: only the changed flags come back, and the count adds up.
+        server(|s| {
+            s.folders.get_mut("INBOX").unwrap()[1].seen = false;
+            s.touch(2);
+            s.folders.get_mut("INBOX").unwrap().push(message(4, false));
+            s.touch(4);
+        });
+        worker.execute(Command::SyncAll).await;
+        assert_eq!(cached(&worker), [1, 2, 3, 4]);
+        let unread: Vec<u32> = worker.store.messages("INBOX", 10).unwrap().iter().filter(|m| !m.seen).map(|m| m.uid).collect();
+        assert_eq!(unread.len(), 2);
+        assert!(unread.contains(&2));
+        assert_eq!(server(|s| (s.flags_returned, s.uid_searches)), (1, 0));
+
+        // An expunge does not add up: a UID SEARCH finds out which one.
+        server(|s| {
+            s.folders.get_mut("INBOX").unwrap().remove(0);
+            s.touch(1);
+        });
+        worker.execute(Command::SyncAll).await;
+        assert_eq!(cached(&worker), [2, 3, 4]);
+        assert_eq!(server(|s| (s.flags_returned, s.uid_searches)), (0, 1));
+        assert_eq!(errors(&events), []);
+    }
+
+    #[tokio::test]
+    async fn background_check_downloads_only_new_bodies() {
+        server(|s| s.folders.insert("INBOX".into(), (1..=5).map(|uid| message(uid, true)).collect()));
+        let (mut worker, _) = worker();
+        worker.background = true;
+        worker.execute(Command::SyncAll).await;
+        assert_eq!(worker.store.uids_missing_body("INBOX", 10, 10).unwrap().len(), 5);
+
+        server(|s| s.folders.get_mut("INBOX").unwrap().push(message(6, false)));
+        worker.execute(Command::SyncAll).await;
+        let mut missing = worker.store.uids_missing_body("INBOX", 10, 10).unwrap();
+        missing.sort_unstable();
+        assert_eq!(missing, [1, 2, 3, 4, 5]);
     }
 
     #[test]

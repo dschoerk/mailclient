@@ -317,17 +317,20 @@ impl Imap {
             .collect())
     }
 
-    /// Current flags of all messages with UID in one of the inclusive `ranges`, as (uid, seen, flagged, answered).
-    /// Current flags (and Gmail labels) of all messages with UID in one of the inclusive `ranges`.
-    pub async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<Flags>> {
+    /// Current flags (and Gmail labels) of all messages with UID in one of the inclusive `ranges`;
+    /// with `changed_since`, only of those whose mod-sequence is above it (needs CONDSTORE).
+    pub async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)], changed_since: Option<u64>) -> Result<Vec<Flags>> {
         self.ensure_selected(folder).await?;
         let mut flags = Vec::new();
-        // Scattered search hits make long sets; servers limit command lines to a few kB.
+        let items = if self.gmail { "(UID FLAGS X-GM-LABELS)" } else { "(UID FLAGS)" };
+        let query = match changed_since {
+            Some(modseq) => format!("{items} (CHANGEDSINCE {modseq})"),
+            None => items.to_string(),
+        };
         for chunk in ranges.chunks(500) {
-            let set: Vec<String> = chunk.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}:{b}") }).collect();
             let fetches: Vec<Fetch> = self
                 .session
-                .uid_fetch(set.join(","), if self.gmail { "(UID FLAGS X-GM-LABELS)" } else { "(UID FLAGS)" })
+                .uid_fetch(range_set(chunk), &query)
                 .await?
                 .try_collect()
                 .await?;
@@ -340,6 +343,19 @@ impl Imap {
             }));
         }
         Ok(flags)
+    }
+
+    /// UIDs of the messages still in `folder` with UID in one of the inclusive `ranges`: a UID SEARCH
+    /// answers with numbers only, much less than the flags (RFC 4549 6.1).
+    pub async fn existing_uids(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<u32>> {
+        self.ensure_selected(folder).await?;
+        let mut uids = Vec::new();
+        for chunk in ranges.chunks(500) {
+            let found = self.session.uid_search(format!("UID {}", range_set(chunk))).await?;
+            self.confirm().await?;
+            uids.extend(found.into_iter().filter(|uid| chunk.iter().any(|(a, b)| (a..=b).contains(&uid))));
+        }
+        Ok(uids)
     }
 
     /// Gmail's conversation id (X-GM-THRID) of each of these messages; none from other servers.
@@ -585,8 +601,12 @@ impl Backend for Imap {
         Imap::fetch_headers(self, folder, uids).await
     }
 
-    async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<Flags>> {
-        Imap::fetch_flags(self, folder, ranges).await
+    async fn fetch_flags(&mut self, folder: &str, ranges: &[(u32, u32)], changed_since: Option<u64>) -> Result<Vec<Flags>> {
+        Imap::fetch_flags(self, folder, ranges, changed_since).await
+    }
+
+    async fn existing_uids(&mut self, folder: &str, ranges: &[(u32, u32)]) -> Result<Vec<u32>> {
+        Imap::existing_uids(self, folder, ranges).await
     }
 
     async fn fetch_threads(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<(u32, u64)>> {
@@ -770,6 +790,13 @@ fn uid_set(uids: &[u32]) -> String {
         });
         i += 1;
     }
+    parts.join(",")
+}
+
+/// Inclusive UID ranges as an IMAP sequence set. Scattered search hits make long sets; callers send
+/// at most 500 ranges at a time, as servers limit command lines to a few kB.
+fn range_set(ranges: &[(u32, u32)]) -> String {
+    let parts: Vec<String> = ranges.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}:{b}") }).collect();
     parts.join(",")
 }
 

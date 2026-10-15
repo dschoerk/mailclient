@@ -60,6 +60,10 @@ fn discovers_saves_and_syncs() {
         let calendars = store.calendars().unwrap();
         assert_eq!(calendars.len(), 1, "{calendars:?}");
         assert_eq!(calendars[0].id, format!("{SERVER}/{user}/work/"));
+        // Unchanged since: the next sync keeps the events without reading them again.
+        assert!(!calendars[0].tag.is_empty(), "Radicale sends a sync-token");
+        calendar::sync(&account, &creds, &mut store).await.unwrap();
+        assert_eq!(store.calendars().unwrap(), calendars);
         let events: Vec<(String, i64)> = store.events(utc("2026-10-01 00:00"), utc("2026-12-01 00:00")).unwrap().into_iter().map(|s| (s.event.summary, s.event.start)).collect();
         assert_eq!(
             events,

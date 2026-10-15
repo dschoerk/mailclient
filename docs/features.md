@@ -238,5 +238,5 @@ Servo also runs with JIT, WebAssembly, WebGL, WebGPU and service workers turned 
 - Removing an account from inside the app. For now, edit `config.toml`.
 - Address autocomplete, and rich-text (HTML) writing.
 - Grouping conversations by subject (except on Gmail, which does it itself), or across accounts.
-- CONDSTORE/QRESYNC. Flag changes are found by fetching the flags of cached messages
-  again.
+- QRESYNC, and change tracking on servers without CONDSTORE (Exchange, GMX, Yahoo), where flag
+  changes are found by fetching the flags of cached messages again.

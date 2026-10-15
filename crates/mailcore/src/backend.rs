@@ -68,12 +68,17 @@ pub trait Backend: Sized + Send + 'static {
         uids: &[u32],
     ) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
 
-    /// (uid, seen, flagged, answered) of all messages with UID in one of the inclusive `ranges`.
+    /// (uid, seen, flagged, answered) of all messages with UID in one of the inclusive `ranges`;
+    /// with `changed_since` a mod-sequence, only of those changed after it (CONDSTORE, RFC 7162).
     fn fetch_flags(
         &mut self,
         folder: &str,
         ranges: &[(u32, u32)],
+        changed_since: Option<u64>,
     ) -> impl Future<Output = Result<Vec<Flags>>> + Send;
+
+    /// UIDs of the messages still in `folder` with UID in one of the inclusive `ranges`.
+    fn existing_uids(&mut self, folder: &str, ranges: &[(u32, u32)]) -> impl Future<Output = Result<Vec<u32>>> + Send;
 
     /// (uid, conversation id) of these messages, for servers that group conversations themselves
     /// (Gmail); empty elsewhere.

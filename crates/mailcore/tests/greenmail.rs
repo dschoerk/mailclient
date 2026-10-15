@@ -148,7 +148,7 @@ fn send_sync_flag_delete_idle() {
         rt.block_on(async {
             let mut imap = Imap::connect(&account, "any").await.unwrap();
             let state = imap.select("INBOX").await.unwrap();
-            let flags = imap.fetch_flags("INBOX", &[(uid, uid)]).await.unwrap();
+            let flags = imap.fetch_flags("INBOX", &[(uid, uid)], None).await.unwrap();
             imap.logout().await;
             (state.exists, flags)
         })

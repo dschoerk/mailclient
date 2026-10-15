@@ -138,6 +138,12 @@ impl Credentials {
         }
     }
 
+    /// Whether these are still the credentials of `account` with this password or refresh token
+    /// (the keyring's): not after the account was edited or signed in again.
+    pub async fn are_for(&self, account: &AccountConfig, secret: &str) -> bool {
+        self.account == *account && self.state.lock().await.0 == secret
+    }
+
     /// Drops the cached access tokens: the server refused one before it should have expired.
     pub async fn forget_tokens(&self) {
         self.state.lock().await.1.clear();

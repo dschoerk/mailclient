@@ -248,7 +248,7 @@ fn summary_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageSummary> {
 }
 
 /// Schema version of a new cache; [`migrate`] brings older ones up to it.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// SQL condition on a message `m`: not waiting to be moved away or deleted.
 const KEPT: &str = "NOT EXISTS (SELECT 1 FROM pending_ops p WHERE p.folder = m.folder AND p.uid = m.uid AND p.kind IN ('move', 'expunge'))";
@@ -301,6 +301,13 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         let exists: bool = tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('messages') WHERE name = 'thread'", [], |r| r.get(0))?;
         if !exists {
             tx.execute("ALTER TABLE messages ADD COLUMN thread INTEGER NOT NULL DEFAULT 0", [])?;
+        }
+    }
+    if version < 6 {
+        // A cache older than the calendars table got it, column included, from init.
+        let exists: bool = tx.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('calendars') WHERE name = 'tag'", [], |r| r.get(0))?;
+        if !exists {
+            tx.execute("ALTER TABLE calendars ADD COLUMN tag TEXT NOT NULL DEFAULT ''", [])?;
         }
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -378,7 +385,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS calendars (
                  id TEXT PRIMARY KEY,
                  name TEXT NOT NULL DEFAULT '',
-                 color TEXT NOT NULL DEFAULT ''
+                 color TEXT NOT NULL DEFAULT '',
+                 tag TEXT NOT NULL DEFAULT ''
              );
              -- One row per instance: repeating events are expanded when stored.
              CREATE TABLE IF NOT EXISTS events (
@@ -950,12 +958,19 @@ impl Store {
     // ---- calendar ----
 
     /// Replaces everything synced from the server; [`LOCAL_CALENDAR`] stays.
-    pub fn replace_synced_events(&mut self, calendars: &[CalendarInfo], events: &[StoredEvent]) -> Result<()> {
+    /// `kept`: calendars the server reports unchanged, whose stored events stay as they are.
+    pub fn replace_synced_events(&mut self, calendars: &[CalendarInfo], events: &[StoredEvent], kept: &[String]) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM calendars", [])?;
-        tx.execute("DELETE FROM events WHERE calendar != ?1", [LOCAL_CALENDAR])?;
+        let stored: Vec<String> = tx
+            .prepare("SELECT DISTINCT calendar FROM events WHERE calendar != ?1")?
+            .query_map([LOCAL_CALENDAR], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        for id in stored.iter().filter(|id| !kept.contains(id)) {
+            tx.execute("DELETE FROM events WHERE calendar = ?1", [id])?;
+        }
         for c in calendars {
-            tx.execute("INSERT OR REPLACE INTO calendars (id, name, color) VALUES (?1, ?2, ?3)", params![c.id, c.name, c.color])?;
+            tx.execute("INSERT OR REPLACE INTO calendars (id, name, color, tag) VALUES (?1, ?2, ?3, ?4)", params![c.id, c.name, c.color, c.tag])?;
         }
         insert_events(&tx, events, "")?;
         tx.commit()?;
@@ -1004,8 +1019,8 @@ impl Store {
 
     /// The synced calendars, in the server's order.
     pub fn calendars(&self) -> Result<Vec<CalendarInfo>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, color FROM calendars ORDER BY rowid")?;
-        let rows = stmt.query_map([], |r| Ok(CalendarInfo { id: r.get(0)?, name: r.get(1)?, color: r.get(2)? }))?;
+        let mut stmt = self.conn.prepare("SELECT id, name, color, tag FROM calendars ORDER BY rowid")?;
+        let rows = stmt.query_map([], |r| Ok(CalendarInfo { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, tag: r.get(3)? }))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -1077,6 +1092,8 @@ pub struct CalendarInfo {
     pub id: String,
     pub name: String,
     pub color: String,
+    /// The server's change tag (sync-token, getctag) its events were read at; empty when it has none.
+    pub tag: String,
 }
 
 fn insert_events(tx: &rusqlite::Transaction, events: &[StoredEvent], ics: &str) -> Result<()> {
@@ -1149,9 +1166,11 @@ mod tests {
         let ev = |uid: &str, start: i64| Event { uid: uid.into(), summary: uid.into(), start, end: start + 3600, attendees: vec![max.clone()], ..Default::default() };
         let synced = |uid: &str, start: i64| StoredEvent { calendar: "https://dav/cal/".into(), href: format!("https://dav/cal/{uid}.ics"), event: ev(uid, start), ..Default::default() };
         store.add_local_events("BEGIN:VCALENDAR", &[ev("accepted", 1000)]).unwrap();
-        let cal = CalendarInfo { id: "https://dav/cal/".into(), name: "Work".into(), color: "#ff0000".into() };
-        store.replace_synced_events(std::slice::from_ref(&cal), &[synced("a", 5000), synced("b", 90_000)]).unwrap();
-        store.replace_synced_events(std::slice::from_ref(&cal), &[synced("a", 5000)]).unwrap();
+        let cal = CalendarInfo { id: "https://dav/cal/".into(), name: "Work".into(), color: "#ff0000".into(), tag: "t1".into() };
+        store.replace_synced_events(std::slice::from_ref(&cal), &[synced("a", 5000), synced("b", 90_000)], &[]).unwrap();
+        store.replace_synced_events(std::slice::from_ref(&cal), &[synced("a", 5000)], &[]).unwrap();
+        // Unchanged on the server: its events stay without being read again.
+        store.replace_synced_events(std::slice::from_ref(&cal), &[], std::slice::from_ref(&cal.id)).unwrap();
         let found: Vec<(String, String, String)> =
             store.events(0, 10_000).unwrap().into_iter().map(|s| (s.color, s.href, s.event.uid)).collect();
         assert_eq!(found, [("".into(), "".into(), "accepted".into()), ("#ff0000".into(), "https://dav/cal/a.ics".into(), "a".into())]);

@@ -1,9 +1,10 @@
 //! Calendar sync: CalDAV (RFC 4791) for any WebDAV calendar server and for Google, and Microsoft
 //! Graph for Outlook.com and Microsoft 365, which offer no CalDAV.
 //!
-//! Each sync fetches the instances in a window around today and replaces what was stored.
-//! shortcut: no sync-token or ETag bookkeeping; fine for personal calendars, use sync-collection
-//! (RFC 6578) and Graph delta queries if large shared calendars make syncing slow.
+//! Each sync fetches the instances in a window around today and replaces what was stored; a CalDAV
+//! calendar whose change tag (sync-token, getctag) did not move since is kept as it is.
+//! shortcut: a changed calendar is re-read whole; use sync-collection (RFC 6578) and Graph delta
+//! queries if large shared calendars make syncing slow.
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
@@ -57,9 +58,9 @@ fn google_primary(account: &AccountConfig) -> String {
 pub async fn sync(account: &AccountConfig, creds: &Credentials, store: &mut Store) -> Result<()> {
     let Some(source) = source(account, creds).await? else { return Ok(()) };
     let (from, to) = window();
-    let (calendars, events) = match source {
+    let (calendars, events, kept) = match source {
         Source::CalDav { start, auth } => {
-            let calendars = match (discover(&auth, &start).await, account.auth) {
+            let mut calendars = match (discover(&auth, &start).await, account.auth) {
                 (Ok(c), Auth::Google) if c.is_empty() => vec![CalendarInfo { id: google_primary(account), ..Default::default() }],
                 (Err(e), Auth::Google) => {
                     log::info!("calendar discovery: {e:#}; using the main calendar");
@@ -67,15 +68,30 @@ pub async fn sync(account: &AccountConfig, creds: &Credentials, store: &mut Stor
                 }
                 (result, _) => result?,
             };
+            // Only calendars whose change tag moved are read again; all of them once a day, as the
+            // window moves along. Servers without a tag: every time.
+            let today = Utc::now().date_naive();
+            let stored = store.calendars()?;
             let mut events = Vec::new();
-            for c in &calendars {
+            let mut kept = Vec::new();
+            for c in &mut calendars {
+                if !c.tag.is_empty() {
+                    c.tag = format!("{today} {}", c.tag);
+                    if stored.iter().any(|s| s.id == c.id && s.tag == c.tag) {
+                        kept.push(c.id.clone());
+                        continue;
+                    }
+                }
                 events.extend(report(&auth, &c.id, from, to).await.with_context(|| format!("reading calendar {}", c.name))?);
             }
-            (calendars, events)
+            (calendars, events, kept)
         }
-        Source::Graph { auth } => graph_events(&auth, from, to).await?,
+        Source::Graph { auth } => {
+            let (calendars, events) = graph_events(&auth, from, to).await?;
+            (calendars, events, Vec::new())
+        }
     };
-    store.replace_synced_events(&calendars, &events)
+    store.replace_synced_events(&calendars, &events, &kept)
 }
 
 /// Puts an event into the account's calendar. `ics` is a full VCALENDAR; `invitation` says it
@@ -363,7 +379,7 @@ async fn dav(auth: &str, method: &str, url: &str, depth: &str, body: &str) -> Re
 
 async fn propfind(auth: &str, url: &str, depth: &str, props: &str) -> Result<(String, Vec<DavResponse>)> {
     let body = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/"><d:prop>{props}</d:prop></d:propfind>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/" xmlns:cs="http://calendarserver.org/ns/"><d:prop>{props}</d:prop></d:propfind>"#
     );
     let (url, r) = dav(auth, "PROPFIND", url, depth, &body).await?;
     Ok((url, multistatus(&r.text())?))
@@ -380,7 +396,7 @@ async fn discover(auth: &str, start: &str) -> Result<Vec<CalendarInfo>> {
     if start.path() == "/" {
         start.set_path("/.well-known/caldav");
     }
-    let (url, found) = propfind(auth, start.as_str(), "0", "<d:current-user-principal/><d:resourcetype/><d:displayname/><a:calendar-color/>").await?;
+    let (url, found) = propfind(auth, start.as_str(), "0", "<d:current-user-principal/><d:resourcetype/><d:displayname/><a:calendar-color/><d:sync-token/><cs:getctag/>").await?;
     if let Some(r) = found.first().filter(|r| r.is_calendar()) {
         return Ok(vec![calendar_info(&url, r)?]);
     }
@@ -395,7 +411,7 @@ async fn discover(auth: &str, start: &str) -> Result<Vec<CalendarInfo>> {
         .ok_or_else(|| anyhow!("the server has no calendars for this account"))?;
     let home = join(&url, &home)?;
     let (url, found) =
-        propfind(auth, &home, "1", "<d:resourcetype/><d:displayname/><a:calendar-color/><c:supported-calendar-component-set/>").await?;
+        propfind(auth, &home, "1", "<d:resourcetype/><d:displayname/><a:calendar-color/><c:supported-calendar-component-set/><d:sync-token/><cs:getctag/>").await?;
     found
         .iter()
         .filter(|r| r.is_calendar())
@@ -409,7 +425,9 @@ fn calendar_info(base: &str, r: &DavResponse) -> Result<CalendarInfo> {
     let name = r.prop("displayname").map(|p| p.text.trim().to_string()).filter(|n| !n.is_empty());
     let fallback = id.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
     let color = r.prop("calendar-color").map(|p| p.text.trim().to_string()).unwrap_or_default();
-    Ok(CalendarInfo { id, name: name.unwrap_or(fallback), color })
+    // Either changes with every change to the calendar: sync-token (RFC 6578), or CalendarServer's getctag.
+    let tag = ["sync-token", "getctag"].iter().filter_map(|n| r.prop(n)).map(|p| p.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+    Ok(CalendarInfo { id, name: name.unwrap_or(fallback), color, tag })
 }
 
 fn dav_time(ts: i64) -> String {
@@ -479,6 +497,7 @@ async fn graph_events(auth: &str, from: i64, to: i64) -> Result<(Vec<CalendarInf
             id: c["id"].as_str().unwrap_or_default().to_string(),
             name: c["name"].as_str().unwrap_or_default().to_string(),
             color: c["hexColor"].as_str().unwrap_or_default().to_string(),
+            ..Default::default()
         })
         .collect();
     let mut events = Vec::new();
@@ -576,7 +595,8 @@ mod tests {
   <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
  <d:response><d:href>/remote.php/dav/calendars/max/personal/</d:href>
   <d:propstat><d:prop><d:resourcetype><d:collection/><cal:calendar/></d:resourcetype><d:displayname>Personal</d:displayname>
-   <x1:calendar-color>#0082c9</x1:calendar-color>
+   <x1:calendar-color>#0082c9</x1:calendar-color><d:sync-token>http://sabre.io/ns/sync/42</d:sync-token>
+   <cs:getctag xmlns:cs="http://calendarserver.org/ns/">42</cs:getctag>
    <cal:supported-calendar-component-set><cal:comp name="VEVENT"/><cal:comp name="VTODO"/></cal:supported-calendar-component-set></d:prop>
    <d:status>HTTP/1.1 200 OK</d:status></d:propstat>
   <d:propstat><d:prop><d:getetag/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
@@ -599,7 +619,8 @@ mod tests {
             [CalendarInfo {
                 id: "https://cloud.example.org/remote.php/dav/calendars/max/personal/".into(),
                 name: "Personal".into(),
-                color: "#0082c9".into()
+                color: "#0082c9".into(),
+                tag: "http://sabre.io/ns/sync/42 42".into()
             }]
         );
     }

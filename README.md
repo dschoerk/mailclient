@@ -52,7 +52,12 @@ The screenshots show made-up mail on the local GreenMail test server (see "End-t
   one below the other, including your replies from Sent.
 - Folder list with special-use detection, unread counts.
 - Local SQLite cache: the last 500 messages per synced folder; bodies downloaded on
-  open plus the 40 newest per sync. Works offline from the cache.
+  open plus the 40 newest per sync (not in Gmail's All Mail, which repeats the other folders; in
+  Android's background check only the new mail's). Works offline from the cache.
+- Sync asks for changes only where the server can tell: CONDSTORE servers (Gmail, Fastmail,
+  Dovecot, iCloud) send the flags changed since the last sync, and CalDAV servers a change tag that
+  spares re-reading an unchanged calendar. Others (Exchange, GMX, Yahoo) get the flags of the
+  whole window each time a folder changes.
 - Push via IMAP IDLE on the inbox, polling every 5 minutes as a fallback; a system
   notification for new unread mail while the app runs (Linux desktop and Android). On Android
   a background job checks the inboxes about every 15 minutes while the app is closed.
@@ -244,6 +249,14 @@ scripts/test-caldav.sh                                      # start (stop: scrip
 cargo test -p mailcore --test caldav -- --ignored
 ```
 
+Sync against a server with CONDSTORE, a local [Dovecot](https://www.dovecot.org) in Docker
+(GreenMail has none): only changed flags fetched, expunges found by count or UID SEARCH.
+
+```sh
+scripts/test-mailserver.sh && scripts/test-dovecot.sh      # the first makes the test CA
+cargo test -p mailcore --test dovecot -- --ignored
+```
+
 Invitations between vendors, through real Gmail and GMX test accounts (`crates/mailcore/tests/interop_live.rs`):
 our invitations Gmail → GMX and GMX → Gmail with the answers back, and an invitation Google
 Calendar sends itself, answered by us. Checks that the other side's mail and calendar understand
@@ -331,11 +344,12 @@ crates/app        Slint UI
 - Calendar: repeating events are edited and deleted as a whole series, and their times cannot be
   changed; the form cannot make repeating or multi-day timed events. Removed attendees get no
   cancellation. An answered invitation is not marked as answered in Google's or Exchange's own copy.
-  A CalDAV server must use the account's username and password and accept Basic auth. Each sync
-  re-reads ±1 year instead of asking for changes only. Tested against Radicale, not yet against
+  A CalDAV server must use the account's username and password and accept Basic auth. A changed
+  calendar (and every calendar once a day) is re-read in full, not by sync-collection; Microsoft
+  calendars are re-read every sync. Tested against Radicale, not yet against
   Microsoft, Nextcloud or iCloud; Google with the live test (`google_live`).
 - Conversations are grouped by headers only (Gmail: as Gmail groups them), not by subject, and per account.
-- No CONDSTORE/QRESYNC yet; flag changes are found by re-fetching flags of cached
-  messages (fine for the 500-message window).
+- No QRESYNC: on CONDSTORE servers expunges are found by counting, else by a UID SEARCH of the
+  window. Servers without CONDSTORE get every flag of the window when a folder changed.
 - Windows/macOS: the Servo rendering path from the Slint example is kept but untested,
   and the platform-specific dependencies are not wired up in `Cargo.toml`.
