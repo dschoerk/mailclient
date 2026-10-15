@@ -45,6 +45,8 @@ pub async fn request(method: &str, url: &str, headers: &[(&str, &str)], body: &[
     raw.extend_from_slice(body);
     let response = tokio::time::timeout(Duration::from_secs(30), async {
         let tcp = TcpStream::connect((host.as_str(), port)).await?;
+        // The request's last packet goes out at once instead of waiting for an acknowledgement.
+        tcp.set_nodelay(true)?;
         match url.scheme() {
             "https" => {
                 let name = rustls::pki_types::ServerName::try_from(host.clone())?;

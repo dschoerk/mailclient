@@ -75,6 +75,9 @@ impl Imap {
             .with_context(|| {
                 format!("connecting to {}:{}", account.imap_host, account.imap_port)
             })?;
+        // Each command is small and waits for its answer; with Nagle's algorithm on, it would also
+        // wait for the server to acknowledge the previous one, which Gmail delays: seconds per sync.
+        tcp.set_nodelay(true)?;
 
         let tls = match account.imap_security {
             Security::Tls => {
