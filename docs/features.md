@@ -75,7 +75,7 @@ What the mail client can do today. For ideas that are not built yet see
 - **Notifications**: new unread mail arriving in an inbox while the app runs shows a system
   notification (sender and subject; a count for several). Linux desktops get it through the
   freedesktop notification service; Android asks for the permission on first start, and
-  tapping the notification opens the app. Mail already there at setup is not announced.
+  tapping the notification opens the message (for several, their folder). Mail already there at setup is not announced.
 - **Works offline**: browsing, reading cached mail and searching all work without a
   connection.
 - **Changes apply at once**: read/unread, flag, archive and delete show immediately and

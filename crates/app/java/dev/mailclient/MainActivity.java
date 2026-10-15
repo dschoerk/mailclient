@@ -137,6 +137,21 @@ public final class MainActivity extends NativeActivity {
         }
     }
 
+    /** singleTask: a tapped notification arrives here while the app runs; onResume follows. */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+    }
+
+    /** What the tapped notification asks to open ("email\nfolder\nuid"), once; null otherwise. */
+    public synchronized String takeOpen() {
+        Intent intent = getIntent();
+        String open = intent != null ? intent.getStringExtra("open") : null;
+        if (open != null) intent.removeExtra("open");
+        return open;
+    }
+
     /** Back the app did not use: leave like Android 12+ launchers do, without finishing, so it reopens instantly. */
     @Override
     public void onBackPressed() {

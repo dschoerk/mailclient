@@ -55,8 +55,9 @@ fn type_in(c: &impl ComponentHandle, label: &str, text: &str) -> Outcome {
     Ok(())
 }
 
+/// The listed messages; undo strips are not.
 fn subjects(w: &AppWindow) -> Vec<String> {
-    w.get_messages().iter().map(|m| m.subject.to_string()).collect()
+    w.get_messages().iter().filter(|m| m.removed.is_empty()).map(|m| m.subject.to_string()).collect()
 }
 
 fn ensure(cond: bool, msg: impl Into<String>) -> Outcome {
@@ -262,7 +263,7 @@ fn user_stories() {
             let shown = crate::platform::NOTIFIED.with(|n| n.borrow().clone());
             ensure(shown.is_empty(), format!("mail already there when set up was announced: {shown:?}"))?;
             click(&w, "Folder Sent")?;
-            wait_for("Sent list", || subjects(&w).is_empty() && w.get_list_title() == "Sent").await?;
+            wait_for("Sent list", || subjects(&w).is_empty() && w.get_filter_in() == "Sent").await?;
             click(&w, "Folder Inbox")?;
             ensure(subjects(&w).len() == 2, format!("inbox after switching back: {:?}", subjects(&w)))?;
             sleep(2000).await; // let the folder sync finish
@@ -432,7 +433,7 @@ fn user_stories() {
             click(&w, "Close")?;
             ensure(!w.get_composing(), "empty composer did not close")?;
             click(&w, "Folder Inbox")?;
-            wait_for("inbox", || w.get_list_title() == "Inbox").await
+            wait_for("inbox", || w.get_filter_in() == "Inbox").await
         }
         .await;
         record("US18 drafts", r);
@@ -443,9 +444,14 @@ fn user_stories() {
             wait_for("pushed message listed", || subjects(&w).iter().any(|s| s == "Pushed via IDLE")).await?;
             // US19: and announces it with a notification.
             let notified = || crate::platform::NOTIFIED.with(|n| n.borrow().clone());
-            wait_for("notification", || notified().iter().any(|(_, body)| body.contains("Pushed via IDLE"))).await?;
-            let (title, _) = notified().into_iter().find(|(_, body)| body.contains("Pushed via IDLE")).unwrap();
-            ensure(title.contains("Carol"), format!("notification title: {title}"))
+            wait_for("notification", || notified().iter().any(|(_, body, _)| body.contains("Pushed via IDLE"))).await?;
+            let (title, _, open) = notified().into_iter().find(|(_, body, _)| body.contains("Pushed via IDLE")).unwrap();
+            ensure(title.contains("Carol"), format!("notification title: {title}"))?;
+            // US19: tapping it opens the message, from another folder too.
+            click(&w, "Folder Sent")?;
+            wait_for("Sent list", || w.get_filter_in() == "Sent").await?;
+            crate::app::open_notified_later(open);
+            wait_for("notified message open", || w.get_msg_subject() == "Pushed via IDLE" && w.get_filter_in() == "Inbox").await
         }
         .await;
         record("US10/US19 receive new mail, notified", r);
@@ -479,7 +485,7 @@ fn user_stories() {
                 element(&w, &format!("Select Erin: {subject}"), &[AccessibleRole::Checkbox])?.invoke_accessible_default_action();
                 Ok(())
             };
-            let row = |subject: &str| w.get_messages().iter().find(|m| m.subject == subject);
+            let row = |subject: &str| w.get_messages().iter().find(|m| m.subject == subject && m.removed.is_empty());
             tick("Bulk one")?;
             tick("Bulk two")?;
             ensure(w.get_checked_count() == 2, format!("{} ticked", w.get_checked_count()))?;
@@ -539,12 +545,13 @@ fn user_stories() {
             click(&w, "Frank: Garden party")?;
             wait_for("message open", || w.get_msg_subject() == "Garden party").await?;
             click(&w, "More from this sender")?;
-            ensure(w.get_search_text() == "from:frank@example.org", format!("search box: {}", w.get_search_text()))?;
+            ensure(w.get_filter_from() == "frank@example.org", format!("from pill: {}", w.get_filter_from()))?;
             ensure(subjects(&w) == ["Bring a chair", "Garden party"], format!("from Frank: {:?}", subjects(&w)))?;
             // Typed by hand, with a word: only Frank's mail about chairs.
             type_in(&w, "Search", "from:FRANK@example.org chair")?;
             ensure(subjects(&w) == ["Bring a chair"], format!("from Frank about chairs: {:?}", subjects(&w)))?;
             type_in(&w, "Search", "")?;
+            w.invoke_remove_filter_from();
             ensure(subjects(&w) == inbox, format!("inbox not restored: {:?}", subjects(&w)))
         }
         .await;
@@ -571,7 +578,7 @@ fn user_stories() {
                 .await
                 .map_err(|e| format!("{e}; folders: {:?}", folder_rows(&w)))?;
             click(&w, "Folder Receipts")?;
-            wait_for("subfolder opened", || w.get_list_title() == "Receipts").await?;
+            wait_for("subfolder opened", || w.get_filter_in() == "Receipts").await?;
             click(&w, "Folder Inbox")?;
 
             edit_folders(&account, &[], &["Projects.Website", "INBOX.Receipts.2026"]);
@@ -590,7 +597,7 @@ fn user_stories() {
             let before = subjects(&w);
             sleep(40_000).await;
             click(&w, "Folder Sent")?;
-            wait_for("Sent list", || w.get_list_title() == "Sent").await?;
+            wait_for("Sent list", || w.get_filter_in() == "Sent").await?;
             click(&w, "Folder Inbox")?;
             sleep(3000).await;
             ensure(subjects(&w) == before, format!("inbox changed after reconnect: {:?} -> {:?}", before, subjects(&w)))?;
@@ -613,7 +620,7 @@ fn user_stories() {
             wait_for("second account set up", || !w.get_needs_setup()).await?;
             ensure(config::load_accounts().is_ok_and(|a| a.len() == 2), "second account not saved")?;
             wait_for("unified inbox with both accounts", || {
-                w.get_list_title() == "All inboxes"
+                w.get_filter_in() == "All inboxes"
                     && subjects(&w).iter().any(|s| s == "Second account hello")
                     && subjects(&w).iter().any(|s| s == "Quarterly invoice")
             })
@@ -640,7 +647,7 @@ fn user_stories() {
 
             // Opening one account's folder shows only that account.
             click(&w, "Folder Archive")?;
-            ensure(w.get_list_title() == "Archive", format!("title: {}", w.get_list_title()))?;
+            ensure(w.get_filter_in() == "Archive", format!("title: {}", w.get_filter_in()))?;
             ensure(!subjects(&w).iter().any(|s| s == "Second account hello"), "other account's mail in folder")?;
 
             // The same address cannot be added twice; Cancel returns to the mail.
@@ -926,7 +933,7 @@ fn user_stories() {
             wait_for("muted message listed", || subjects(&w).iter().any(|s| s == "Muted arrival")).await?;
             sleep(1000).await;
             ensure(
-                !crate::platform::NOTIFIED.with(|n| n.borrow().iter().any(|(_, body)| body.contains("Muted arrival"))),
+                !crate::platform::NOTIFIED.with(|n| n.borrow().iter().any(|(_, body, _)| body.contains("Muted arrival"))),
                 "notified while muted",
             )?;
 

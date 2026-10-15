@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
 use tokio::sync::mpsc;
@@ -35,6 +35,9 @@ const BODY_BATCH: usize = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
 const CALENDAR_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// A connection unused this long (by the wall clock: the phone may have slept) is replaced, not
+/// trusted: a dead one can hang a command for minutes until TCP gives up.
+const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 
 // Commands are few and short-lived; boxing the event variants would buy nothing.
 #[allow(clippy::large_enum_variant)]
@@ -141,6 +144,7 @@ impl Engine {
                         creds,
                         store,
                         conn: None,
+                        used: SystemTime::now(),
                         active: None,
                         on_event,
                     }
@@ -177,6 +181,7 @@ pub async fn check_inbox(account: &AccountConfig, db_path: &std::path::Path) -> 
         creds: Arc::new(Credentials::load(account)?),
         store,
         conn: None,
+        used: SystemTime::now(),
         active: None,
         on_event: Arc::new(move |e| {
             if let Event::NewMail(m) = e {
@@ -266,6 +271,8 @@ struct Worker<B: Backend> {
     creds: Arc<Credentials>,
     store: Store,
     conn: Option<B>,
+    /// When `conn` was last asked for.
+    used: SystemTime,
     active: Option<String>,
     on_event: Arc<dyn Fn(Event) + Send + Sync>,
 }
@@ -344,6 +351,8 @@ impl<B: Backend> Worker<B> {
             // Usually a connection the server dropped while idle: reconnect and try again once.
             log::info!("engine: {e:#}; reconnecting");
             self.conn = None;
+            // A login refused with an access token the server considers expired: fetch a new one.
+            self.creds.forget_tokens().await;
             result = self.handle(command).await;
         }
         log::debug!("engine: {name} done in {:?}", started.elapsed());
@@ -362,6 +371,10 @@ impl<B: Backend> Worker<B> {
     }
 
     async fn conn(&mut self) -> Result<&mut B> {
+        if self.used.elapsed().unwrap_or_default() > STALE_AFTER {
+            self.conn = None;
+        }
+        self.used = SystemTime::now();
         if self.conn.is_none() {
             self.emit(Event::Status(format!(
                 "Connecting to {}…",
@@ -1029,6 +1042,7 @@ mod tests {
             account,
             store: Store::open_in_memory().unwrap(),
             conn: None,
+            used: SystemTime::now(),
             active: None,
             on_event: Arc::new(move |e| sink.lock().unwrap().push(e)),
         };
@@ -1158,6 +1172,19 @@ mod tests {
         assert!(in_folder("INBOX", |m| m.uid == 1)[0].flagged);
         assert!(worker.store.pending_ops().unwrap().is_empty());
         assert_eq!(errors(&events), []);
+    }
+
+    #[tokio::test]
+    async fn long_unused_connection_is_replaced() {
+        server(|s| s.folders.insert("INBOX".into(), vec![message(1, true)]));
+        let (mut worker, _) = worker();
+        worker.execute(Command::SyncAll).await;
+        worker.execute(Command::SyncAll).await;
+        let connects = server(|s| s.connects);
+
+        worker.used -= STALE_AFTER + Duration::from_secs(1);
+        worker.execute(Command::SyncAll).await;
+        assert_eq!(server(|s| s.connects), connects + 1);
     }
 
     #[tokio::test]

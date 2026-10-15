@@ -2,7 +2,7 @@
 //! (Microsoft, Google). OAuth uses the authorization code flow with PKCE and a loopback
 //! redirect (RFC 8252), which works the same on desktop and Android.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
@@ -115,8 +115,9 @@ pub struct Credentials {
     state: tokio::sync::Mutex<(String, AccessTokens)>,
 }
 
-/// (scopes, access token, valid until).
-type AccessTokens = Vec<(&'static str, String, Instant)>;
+/// (scopes, access token, valid until). Wall-clock time: Instant stops while the phone sleeps, so
+/// after a night in Doze an expired token would still look valid and the login fail.
+type AccessTokens = Vec<(&'static str, String, SystemTime)>;
 
 impl Credentials {
     /// Reads the password or refresh token from the keyring.
@@ -137,6 +138,11 @@ impl Credentials {
         }
     }
 
+    /// Drops the cached access tokens: the server refused one before it should have expired.
+    pub async fn forget_tokens(&self) {
+        self.state.lock().await.1.clear();
+    }
+
     /// An access token for the provider's calendar API (Google CalDAV, Microsoft Graph).
     pub async fn calendar_token(&self) -> Result<String> {
         self.token(provider(self.account.auth)?.calendar_scopes)
@@ -146,7 +152,7 @@ impl Credentials {
 
     async fn token(&self, scopes: &'static str) -> Result<String> {
         let mut state = self.state.lock().await;
-        if let Some((_, token, _)) = state.1.iter().find(|(s, _, until)| *s == scopes && Instant::now() < *until) {
+        if let Some((_, token, _)) = state.1.iter().find(|(s, _, until)| *s == scopes && SystemTime::now() < *until) {
             return Ok(token.clone());
         }
         let tokens = refresh_for(self.account.auth, &state.0, scopes)
@@ -157,7 +163,7 @@ impl Credentials {
             self.account.store_password(&new)?;
             state.0 = new;
         }
-        let until = Instant::now() + tokens.expires_in.saturating_sub(Duration::from_secs(60));
+        let until = SystemTime::now() + tokens.expires_in.saturating_sub(Duration::from_secs(60));
         state.1.retain(|(s, _, _)| *s != scopes);
         state.1.push((scopes, tokens.access.clone(), until));
         Ok(tokens.access)

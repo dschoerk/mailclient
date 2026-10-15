@@ -15,13 +15,15 @@ pub fn open_url(url: &str) -> Result<()> {
 #[cfg(test)]
 thread_local! {
     /// Notifications shown during a test, instead of going to the desktop.
-    pub static NOTIFIED: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub static NOTIFIED: std::cell::RefCell<Vec<(String, String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Shows a desktop notification (freedesktop Notifications over D-Bus on Linux).
-pub fn notify(title: &str, body: &str) {
+/// shortcut: clicking opens nothing (`open` is for tests); upgrade when desktop notifications get actions.
+#[cfg_attr(not(test), allow(unused_variables))]
+pub fn notify(title: &str, body: &str, open: &str) {
     #[cfg(test)]
-    return NOTIFIED.with(|n| n.borrow_mut().push((title.into(), body.into())));
+    return NOTIFIED.with(|n| n.borrow_mut().push((title.into(), body.into(), open.into())));
     #[cfg(all(target_os = "linux", not(test)))]
     {
         let (title, body) = (title.to_string(), body.to_string());

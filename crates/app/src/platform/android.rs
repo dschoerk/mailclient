@@ -70,6 +70,20 @@ fn use_data_dir(dir: PathBuf) {
 /// with it, so mail that arrived meanwhile is fetched now.
 extern "system" fn on_resumed(_env: JNIEnv, _class: JClass) {
     crate::app::sync_now();
+    open_notified();
+}
+
+/// Opens the message of the notification that started or brought back the app, if one did.
+pub fn open_notified() {
+    let taken = on_activity(|env, activity| {
+        let open = env.call_method(activity, "takeOpen", "()Ljava/lang/String;", &[])?.l()?;
+        if open.is_null() { Ok(None) } else { Ok(Some(env.get_string(&JString::from(open))?.into())) }
+    });
+    match taken {
+        Ok(Some(open)) => crate::app::open_notified_later(open),
+        Ok(None) => {}
+        Err(e) => log::warn!("cannot read the tapped notification: {e}"),
+    }
 }
 
 /// SyncJob's periodic check, in its own process (`:sync`) without the UI: syncs each inbox
@@ -108,7 +122,7 @@ fn check_mail() -> Result<()> {
             Ok(arrived) => {
                 log::info!("background check of {}: {} new", account.email, arrived.len());
                 if !arrived.is_empty() {
-                    crate::app::notify_new_mail(&arrived);
+                    crate::app::notify_new_mail(&account.email, &arrived);
                 }
             }
             Err(e) => log::warn!("background check of {}: {e:#}", account.email),
@@ -140,9 +154,10 @@ pub fn haptic() {
     }
 }
 
-/// Posts a new-mail notification; tapping it opens the app. A newer one replaces the older.
-pub fn notify(title: &str, body: &str) {
-    if let Err(e) = with_context(|env, context| post_notification(env, context, title, body)) {
+/// Posts a new-mail notification; tapping it opens the app, which then opens `open`
+/// (see MainActivity.takeOpen). A newer one replaces the older.
+pub fn notify(title: &str, body: &str, open: &str) {
+    if let Err(e) = with_context(|env, context| post_notification(env, context, title, body, open)) {
         log::warn!("cannot show notification: {e}");
     }
 }
@@ -150,6 +165,8 @@ pub fn notify(title: &str, body: &str) {
 /// Android's FLAG_ACTIVITY_NEW_TASK: needed when starting an activity from a context that is not one.
 const FLAG_ACTIVITY_NEW_TASK: i32 = 0x1000_0000;
 const PENDING_INTENT_FLAG_IMMUTABLE: i32 = 0x0400_0000;
+/// The new notification's extras replace those of the one it replaces.
+const PENDING_INTENT_FLAG_UPDATE_CURRENT: i32 = 0x0800_0000;
 const NOTIFICATION_IMPORTANCE_DEFAULT: i32 = 3;
 const PERMISSION_GRANTED: i32 = 0;
 const POST_NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
@@ -221,7 +238,7 @@ fn request_notification_permission(env: &mut Env, activity: &Obj) -> jni::errors
     Ok(())
 }
 
-fn post_notification(env: &mut Env, context: &Obj, title: &str, body: &str) -> jni::errors::Result<()> {
+fn post_notification(env: &mut Env, context: &Obj, title: &str, body: &str, open: &str) -> jni::errors::Result<()> {
     let service = env.new_string("notification")?;
     let manager =
         env.call_method(context, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[(&service).into()])?.l()?;
@@ -240,12 +257,14 @@ fn post_notification(env: &mut Env, context: &Obj, title: &str, body: &str) -> j
     let launch = env
         .call_method(&packages, "getLaunchIntentForPackage", "(Ljava/lang/String;)Landroid/content/Intent;", &[(&package).into()])?
         .l()?;
+    let (key, open) = (env.new_string("open")?, env.new_string(open)?);
+    env.call_method(&launch, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", &[(&key).into(), (&open).into()])?;
     let on_tap = env
         .call_static_method(
             "android/app/PendingIntent",
             "getActivity",
             "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
-            &[context.into(), 0.into(), (&launch).into(), PENDING_INTENT_FLAG_IMMUTABLE.into()],
+            &[context.into(), 0.into(), (&launch).into(), (PENDING_INTENT_FLAG_IMMUTABLE | PENDING_INTENT_FLAG_UPDATE_CURRENT).into()],
         )?
         .l()?;
     // shortcut: the system mail icon; the app has no icon resources of its own yet.

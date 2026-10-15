@@ -118,6 +118,34 @@ impl Controller {
         self.render_selected();
     }
 
+    /// A tapped new-mail notification: opens the message (uid 0: just its folder), from the list
+    /// shown if it is there (the unified inbox), else from its folder.
+    pub(super) fn open_notified(&self, email: &str, folder: &str, uid: u32) {
+        let window = self.window();
+        window.set_show_settings(false);
+        window.set_show_calendar(false);
+        window.set_show_folders(false);
+        let Some(account) = self.state.borrow().accounts.iter().position(|a| a.config.email == email) else { return };
+        let listed = || {
+            let state = self.state.borrow();
+            (0..state.messages.len())
+                .find(|&i| state.messages[i].0 == account && state.conversations[i].iter().any(|m| m.folder == folder && m.uid == uid))
+        };
+        let index = match listed() {
+            Some(i) if !self.state.borrow().searching() => Some(i),
+            _ => {
+                let row = self.state.borrow().rows.iter().position(|r| *r == Row::Folder(account, folder.to_string()));
+                row.and_then(|row| {
+                    self.select_folder(row);
+                    listed()
+                })
+            }
+        };
+        if let Some(index) = index {
+            self.select_message(index);
+        }
+    }
+
     /// Shows another message of the open conversation.
     pub(super) fn select_in_conversation(&self, index: usize) {
         let found = {

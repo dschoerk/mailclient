@@ -66,8 +66,9 @@ pub(crate) fn scrolled_to_later(index: i32) {
 #[cfg_attr(not(target_os = "android"), allow(unused_imports))]
 pub(crate) use setup::db_path;
 
-/// Notification for mail that just arrived.
-pub(crate) fn notify_new_mail(messages: &[MessageSummary]) {
+/// Notification for mail that just arrived in `email`'s account; tapping it opens the message
+/// (several: their folder) through [`open_notified_later`].
+pub(crate) fn notify_new_mail(email: &str, messages: &[MessageSummary]) {
     let (title, body) = match messages {
         [m] => (format::person(&m.from_name, &m.from_addr), m.subject.clone()),
         _ => (
@@ -75,7 +76,20 @@ pub(crate) fn notify_new_mail(messages: &[MessageSummary]) {
             messages.iter().map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"),
         ),
     };
-    crate::platform::notify(&title, &body);
+    let Some(first) = messages.first() else { return };
+    let uid = if messages.len() == 1 { first.uid } else { 0 };
+    crate::platform::notify(&title, &body, &format!("{email}\n{}\n{uid}", first.folder));
+}
+
+/// Opens what a tapped notification names, "email\nfolder\nuid" (any thread).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn open_notified_later(open: String) {
+    with_controller(move |c| {
+        let mut parts = open.splitn(3, '\n');
+        if let (Some(email), Some(folder), Some(uid)) = (parts.next(), parts.next(), parts.next().and_then(|u| u.parse().ok())) {
+            c.open_notified(email, folder, uid);
+        }
+    });
 }
 
 /// Syncs every account now, from any thread (Android: the app came back to the front).
@@ -583,7 +597,7 @@ impl Controller {
                 // An answer to an invitation is mail too: the server's calendar may have changed.
                 self.send(account, Command::SyncCalendars);
                 if self.window().get_notifications() {
-                    notify_new_mail(&messages);
+                    notify_new_mail(&self.state.borrow().accounts[account].config.email, &messages);
                 }
             }
             Event::MessagesChanged(_) => {

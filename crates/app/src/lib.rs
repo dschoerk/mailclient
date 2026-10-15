@@ -31,6 +31,9 @@ pub fn run() -> anyhow::Result<()> {
     }
     let window = AppWindow::new()?;
     app::Controller::install(&window, eml)?;
+    // Started by tapping a notification: MainActivity.onResume came before the Rust side was up.
+    #[cfg(target_os = "android")]
+    platform::open_notified();
     // The first frame shows the inbox from the cache: Android's "Fully drawn" time, which
     // scripts/measure-android.sh reads (its own launch time ends at the splash screen).
     #[cfg(target_os = "android")]
